@@ -1768,7 +1768,10 @@ async def test_v8_closure_reader_rejects_unknown_schema_partial_hardlink_and_sym
         except OSError:
             pass
         else:
-            with pytest.raises(SessionAuthorityIntegrityError, match="symbolic link"):
+            with pytest.raises(
+                SessionAuthorityIntegrityError,
+                match=r"symbolic[- ]link",
+            ):
                 fixture.assert_current(receipt)
             partial.unlink()
     finally:

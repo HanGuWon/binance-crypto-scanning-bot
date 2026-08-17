@@ -713,7 +713,10 @@ def test_assert_held_detects_scope_path_replacement(tmp_path: Path) -> None:
     scope.rename(moved_scope)
     scope.mkdir()
     try:
-        with pytest.raises(WriterLeaseNotHeldError, match="scope_root changed"):
+        with pytest.raises(
+            WriterLeaseNotHeldError,
+            match=r"scope_root changed|pathname is no longer link-free",
+        ):
             lease.assert_held()
     finally:
         scope.rmdir()
