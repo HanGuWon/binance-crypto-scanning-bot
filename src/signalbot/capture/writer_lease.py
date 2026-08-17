@@ -20,6 +20,25 @@ from signalbot.capture.path_safety import (
     inspect_link_free_path,
 )
 
+_INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+_GENERIC_READ = 0x80000000
+_GENERIC_WRITE = 0x40000000
+_FILE_READ_ATTRIBUTES = 0x0080
+_FILE_SHARE_READ = 0x00000001
+_FILE_SHARE_WRITE = 0x00000002
+_OPEN_EXISTING = 3
+_OPEN_ALWAYS = 4
+_FILE_ATTRIBUTE_NORMAL = 0x00000080
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_HANDLE_FLAG_INHERIT = 0x00000001
+_LOCKFILE_FAIL_IMMEDIATELY = 0x00000001
+_LOCKFILE_EXCLUSIVE_LOCK = 0x00000002
+_ERROR_LOCK_VIOLATION = 33
+_ERROR_SHARING_VIOLATION = 32
+_FILE_BEGIN = 0
+
+
 if os.name == "nt":
     from ctypes import wintypes
 else:
@@ -1125,24 +1144,23 @@ if os.name == "nt":
     _FLUSH_FILE_BUFFERS = _KERNEL32.FlushFileBuffers
     _FLUSH_FILE_BUFFERS.argtypes = [wintypes.HANDLE]
     _FLUSH_FILE_BUFFERS.restype = wintypes.BOOL
+    _get_last_error = ctypes.get_last_error
+else:
 
-    _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
-    _GENERIC_READ = 0x80000000
-    _GENERIC_WRITE = 0x40000000
-    _FILE_READ_ATTRIBUTES = 0x0080
-    _FILE_SHARE_READ = 0x00000001
-    _FILE_SHARE_WRITE = 0x00000002
-    _OPEN_EXISTING = 3
-    _OPEN_ALWAYS = 4
-    _FILE_ATTRIBUTE_NORMAL = 0x00000080
-    _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
-    _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-    _HANDLE_FLAG_INHERIT = 0x00000001
-    _LOCKFILE_FAIL_IMMEDIATELY = 0x00000001
-    _LOCKFILE_EXCLUSIVE_LOCK = 0x00000002
-    _ERROR_LOCK_VIOLATION = 33
-    _ERROR_SHARING_VIOLATION = 32
-    _FILE_BEGIN = 0
+    def _windows_api_unavailable(*_args: object) -> int:
+        raise WriterLeaseError("Windows writer lease backend is unavailable")
+
+    _CREATE_FILE_W = _windows_api_unavailable
+    _CLOSE_HANDLE = _windows_api_unavailable
+    _SET_HANDLE_INFORMATION = _windows_api_unavailable
+    _LOCK_FILE_EX = _windows_api_unavailable
+    _UNLOCK_FILE_EX = _windows_api_unavailable
+    _GET_FILE_INFORMATION = _windows_api_unavailable
+    _SET_FILE_POINTER_EX = _windows_api_unavailable
+    _WRITE_FILE = _windows_api_unavailable
+    _SET_END_OF_FILE = _windows_api_unavailable
+    _FLUSH_FILE_BUFFERS = _windows_api_unavailable
+    _get_last_error = _windows_api_unavailable
 
 
 def _windows_open_resources(scope_root: Path, lock_path: Path) -> _OpenedLease:
@@ -1210,10 +1228,10 @@ def _windows_create_file(
     )
     value = ctypes.cast(handle, ctypes.c_void_p).value
     if value is None or value == _INVALID_HANDLE_VALUE:
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         raise OSError(error, os.strerror(error), os.fspath(path))
     if not _SET_HANDLE_INFORMATION(value, _HANDLE_FLAG_INHERIT, 0):
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         _CLOSE_HANDLE(value)
         raise OSError(error, os.strerror(error), os.fspath(path))
     return value
@@ -1230,7 +1248,7 @@ def _windows_try_lock(lock_handle: int) -> bool:
         ctypes.byref(overlapped),
     ):
         return True
-    error = ctypes.get_last_error()
+    error = _get_last_error()
     if error in {_ERROR_LOCK_VIOLATION, _ERROR_SHARING_VIOLATION}:
         return False
     raise OSError(error, os.strerror(error))
@@ -1245,20 +1263,20 @@ def _windows_unlock(lock_handle: int) -> None:
         0xFFFFFFFF,
         ctypes.byref(overlapped),
     ):
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         raise OSError(error, os.strerror(error))
 
 
 def _windows_close_handle(handle: int) -> None:
     if not _CLOSE_HANDLE(handle):
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         raise OSError(error, os.strerror(error))
 
 
 def _windows_file_information(handle: int) -> _ByHandleFileInformation:
     information = _ByHandleFileInformation()
     if not _GET_FILE_INFORMATION(handle, ctypes.byref(information)):
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         raise OSError(error, os.strerror(error))
     return information
 
@@ -1294,10 +1312,10 @@ def _windows_file_identity_for_path(path: Path, *, directory: bool) -> _FILE_ID:
 def _windows_write_metadata(lock_handle: int, payload: bytes) -> None:
     new_position = ctypes.c_int64()
     if not _SET_FILE_POINTER_EX(lock_handle, 0, ctypes.byref(new_position), _FILE_BEGIN):
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         raise OSError(error, os.strerror(error))
     buffer = ctypes.create_string_buffer(payload)
-    written = wintypes.DWORD()
+    written = ctypes.c_uint32()
     if not _WRITE_FILE(
         lock_handle,
         buffer,
@@ -1305,15 +1323,15 @@ def _windows_write_metadata(lock_handle: int, payload: bytes) -> None:
         ctypes.byref(written),
         None,
     ):
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         raise OSError(error, os.strerror(error))
     if int(written.value) != len(payload):
         raise WriterLeaseError("writer lease metadata write was short")
     if not _SET_END_OF_FILE(lock_handle):
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         raise OSError(error, os.strerror(error))
     if not _FLUSH_FILE_BUFFERS(lock_handle):
-        error = ctypes.get_last_error()
+        error = _get_last_error()
         raise OSError(error, os.strerror(error))
 
 
