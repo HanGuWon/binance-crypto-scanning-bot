@@ -1,0 +1,57 @@
+protocol_version: bt_5m_volume_r1_g4_2026-07-15
+rule_version: v3.0.0-pit-volume-g4
+experiment_plan_path: artifacts/backtest/2026-07-15-volume-r1/experiment_plan.md
+interval: 5m
+data_start: 2024-03-01T00:00:00Z
+evaluation_start: 2024-07-01T00:00:00Z
+evaluation_end: 2026-07-01T00:00:00Z
+minimum_age_days: 90
+minimum_history_bars: 210
+historical_spread_proxy_bps: 11.25
+entry_score: 80
+strategy_mode: pit_breakout_volume
+volume_feature_set: normalized_vpci
+gate_use_participation: false
+gate_use_crowding: false
+gate_use_higher_timeframes: false
+include_rsi_reversals: false
+trend_gate: 0
+participation_gate: 60
+crowding_risk_cap: 75
+execution_gate: 65
+completeness_gate: 70
+volume:
+  taker_short_bars: 3
+  taker_long_bars: 12
+  taker_short_threshold: 0.10
+  vpci_short_window: 5
+  vpci_long_window: 20
+  vpci_atr_window: 20
+  vpci_signal_window: 5
+  vpci_slope_lag: 3
+assets:
+  - {asset: BTC, cohort: anchor, spot_symbol: BTCUSDT, futures_symbol: BTCUSDT}
+  - {asset: ETH, cohort: anchor, spot_symbol: ETHUSDT, futures_symbol: ETHUSDT}
+  - {asset: BNB, cohort: major, spot_symbol: BNBUSDT, futures_symbol: BNBUSDT}
+  - {asset: SOL, cohort: major, spot_symbol: SOLUSDT, futures_symbol: SOLUSDT}
+  - {asset: XRP, cohort: major, spot_symbol: XRPUSDT, futures_symbol: XRPUSDT}
+  - {asset: DOGE, cohort: major, spot_symbol: DOGEUSDT, futures_symbol: DOGEUSDT}
+  - {asset: SUI, cohort: volatile, spot_symbol: SUIUSDT, futures_symbol: SUIUSDT}
+  - {asset: WIF, cohort: volatile, spot_symbol: WIFUSDT, futures_symbol: WIFUSDT}
+splits:
+  - {name: development, start: 2024-07-01T00:00:00Z, end: 2025-03-01T00:00:00Z}
+  - {name: validation, start: 2025-03-01T00:00:00Z, end: 2025-11-01T00:00:00Z}
+  - {name: retrospective_test, start: 2025-11-01T00:00:00Z, end: 2026-07-01T00:00:00Z}
+exits:
+  trend_failure_bars: 3
+  trailing_activation_r: 1.0
+  trailing_atr_multiple: 2.0
+  max_holding_bars: 72
+costs:
+  notional_usdt: 100.0
+  spot_fee_bps: 10.0
+  futures_fee_bps: 5.0
+  spot_slippage_bps: {anchor: 5.0, major: 5.0, volatile: 10.0}
+  futures_slippage_bps: {anchor: 3.0, major: 3.0, volatile: 8.0}
+  include_funding: true
+bootstrap: {samples: 2000, block_days: 7, seed: 20260715}

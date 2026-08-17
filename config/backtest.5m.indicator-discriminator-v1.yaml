@@ -1,0 +1,56 @@
+protocol_version: bt_5m_indicator_discriminator_v1_2026-07-20
+rule_version: v4.3.0-causal-structure-diagnostics
+experiment_plan_path: artifacts/backtest/2026-07-20-indicator-discriminator-v1/experiment_plan.md
+interval: 5m
+data_start: 2024-03-01T00:00:00Z
+evaluation_start: 2024-07-01T00:00:00Z
+evaluation_end: 2026-07-01T00:00:00Z
+minimum_age_days: 90
+minimum_history_bars: 210
+historical_spread_proxy_bps: 11.25
+entry_score: 80
+strategy_mode: gate_v2
+gate_use_participation: true
+gate_use_crowding: true
+gate_use_higher_timeframes: true
+include_rsi_reversals: false
+trend_gate: 60
+participation_gate: 60
+crowding_risk_cap: 75
+execution_gate: 65
+completeness_gate: 95
+
+# Frozen high-volatility cohort selected before this indicator experiment.
+assets:
+  - {asset: PENGU, cohort: volatile, spot_symbol: PENGUUSDT, futures_symbol: PENGUUSDT}
+  - {asset: BONK, cohort: volatile, spot_symbol: BONKUSDT, futures_symbol: 1000BONKUSDT}
+  - {asset: ENA, cohort: volatile, spot_symbol: ENAUSDT, futures_symbol: ENAUSDT}
+  - {asset: WIF, cohort: volatile, spot_symbol: WIFUSDT, futures_symbol: WIFUSDT}
+  - {asset: FLOKI, cohort: volatile, spot_symbol: FLOKIUSDT, futures_symbol: 1000FLOKIUSDT}
+  - {asset: ARB, cohort: volatile, spot_symbol: ARBUSDT, futures_symbol: ARBUSDT}
+  - {asset: OP, cohort: volatile, spot_symbol: OPUSDT, futures_symbol: OPUSDT}
+  - {asset: SEI, cohort: volatile, spot_symbol: SEIUSDT, futures_symbol: SEIUSDT}
+
+splits:
+  - {name: development, start: 2024-07-01T00:00:00Z, end: 2025-03-01T00:00:00Z}
+  - {name: validation, start: 2025-03-01T00:00:00Z, end: 2025-11-01T00:00:00Z}
+  - {name: retrospective_test, start: 2025-11-01T00:00:00Z, end: 2026-07-01T00:00:00Z}
+
+exits:
+  trend_failure_bars: 3
+  trailing_activation_r: 1.0
+  trailing_atr_multiple: 2.0
+  max_holding_bars: 72
+
+costs:
+  notional_usdt: 100.0
+  spot_fee_bps: 10.0
+  futures_fee_bps: 5.0
+  spot_slippage_bps: {anchor: 5.0, major: 5.0, volatile: 10.0}
+  futures_slippage_bps: {anchor: 3.0, major: 3.0, volatile: 8.0}
+  include_funding: true
+
+bootstrap:
+  samples: 2000
+  block_days: 7
+  seed: 20260720

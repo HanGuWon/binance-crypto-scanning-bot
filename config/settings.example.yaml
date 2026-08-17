@@ -1,0 +1,104 @@
+app_name: binance-signal-bot
+log_level: INFO
+rule_version: v4.3.0-causal-structure-diagnostics
+binance:
+  markets: [spot, futures]
+  quote_asset: USDT
+  top_n: 20
+  # Bounded all-market anomaly panel; must include the tradable top_n subset.
+  surveillance_n: 200
+  min_quote_volume: 50000000
+  minimum_age_days: 30
+  intervals: [1m, 5m, 15m, 1h, 4h]
+  primary_interval: 5m
+  bootstrap_candles: 260
+  history_limit: 600
+  websocket_batch_size: 180
+  max_connection_age_seconds: 85800
+  rest_concurrency: 5
+  request_timeout_seconds: 15
+  funding_history_points: 256
+  funding_refresh_seconds: 300
+  blacklist: []
+  excluded_base_assets: [USDC, FDUSD, USDP, TUSD, DAI, EUR, TRY, BRL]
+signals:
+  watch_score: 60
+  setup_score: 70
+  confirmed_score: 80
+  cooldown_seconds: 1800
+  maximum_spread_bps: 15
+  overbought_rsi: 75
+  oversold_rsi: 25
+  relative_volume_threshold: 1.8
+  breakout_lookback: 20
+  squeeze_percentile: 15
+  anomaly_horizon_seconds: 30
+  anomaly_min_absolute_return: 0.015
+  anomaly_robust_zscore: 4.0
+  anomaly_min_points: 20
+  anomaly_history_points: 600
+  # Frozen R2 candidate: raw C0 plus strict-prior HTF and observed BBO execution.
+  gate_enabled: true
+  entry_policy: r2_pit_htf_exec
+  execution_notional_usdt: 100.0
+  trend_gate: 60
+  participation_gate: 60
+  crowding_risk_cap: 75
+  execution_gate: 65
+  completeness_gate: 95
+  book_maximum_age_ms: 2000
+  # Settled funding is normally 8-hourly; 9h avoids treating the expected cadence as stale.
+  funding_maximum_age_ms: 32400000
+  # A UTC-duration window keeps 4h and 8h funding products comparable.
+  funding_zscore_lookback_ms: 2592000000
+  funding_zscore_minimum_history: 20
+  # Recorded as diagnostics only; the frozen R2 candidate does not select on them.
+  gate_use_participation: false
+  gate_use_crowding: false
+  gate_use_higher_timeframes: true
+  # Only a completed breakout/breakdown trigger can confirm; setup scores cannot
+  # be promoted merely because independent gates pass.
+  confirmation_mode: explicit_trigger
+  # Keep the production example on the price-only control until the frozen
+  # volume ablation clears its pre-declared validation thresholds.
+  volume_feature_set: none
+  volume:
+    taker_short_bars: 3
+    taker_long_bars: 12
+    taker_short_threshold: 0.10
+    vpci_short_window: 5
+    vpci_long_window: 20
+    vpci_atr_window: 20
+    vpci_signal_window: 5
+    vpci_slope_lag: 3
+  # Causal HH/HL or LH/LL + >=2 ATR impulse + 20-60% pullback + prior-bar
+  # recovery. This emits informational WATCH/SETUP alerts only; it can never
+  # become a confirmed entry until a frozen prospective validation is passed.
+  pullback_alert_mode: informational
+  pullback_intervals: [5m, 15m, 1h, 4h]
+  # PAPER alert lifecycle only. State is bounded and in memory; a process
+  # restart forgets pending/open paper positions and never places an order.
+  technical_exit:
+    enabled: true
+    trend_failure_bars: 3
+    trailing_activation_r: 1.0
+    trailing_atr_multiple: 2.0
+    max_holding_bars: 72
+  # Reversal families remain disabled until a causal HTF implementation is validated.
+  reversal_intervals: []
+storage:
+  url: sqlite:///./var/signalbot.db
+  echo_sql: false
+alerts:
+  discord_enabled: false
+  discord_webhook_url: null
+  discord_username: Binance Signal Bot
+  max_attempts: 3
+  timeout_seconds: 10
+  outbox_max_active_items: 10000
+runtime:
+  persist_candles: true
+  record_raw_events: false
+  raw_event_directory: ./var/raw-events
+  # Hard stop rather than silent truncation; size to the prospective capture window.
+  raw_event_max_bytes: 10737418240

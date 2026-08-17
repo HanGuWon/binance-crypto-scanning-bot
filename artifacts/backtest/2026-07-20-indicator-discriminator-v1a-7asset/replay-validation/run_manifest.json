@@ -1,0 +1,41 @@
+{
+  "code_sha256": "fcedb7911f5cd5dc212d87f5011a64a0256bfa0a61782887fdc6f4b4e5c13392",
+  "completed_at_utc": "2026-07-20T05:18:39.871642+00:00",
+  "config_path": "C:\\Users\\user\\Documents\\Binance bot-2\\config\\settings.example.yaml",
+  "config_sha256": "461a8c0b97dde70f32c5e45c47bd2f708df723ebb5e1e0ab969e8aa236e8426c",
+  "duration_seconds": 1351.4832828999497,
+  "inputs": {
+    "funding/ARB__ARBUSDT__5m.csv.gz": "7e1bd0d34a224f1ca212b8840b83bbfa1e6b1bb18f6366b3d73acf9d1c581022",
+    "funding/BONK__1000BONKUSDT__5m.csv.gz": "9c9f8b35cde00f6f193bf4deb8f06943e90b76e097e82013cbdcf788c8d9beea",
+    "funding/ENA__ENAUSDT__5m.csv.gz": "d07f4933c7e585f2b617002f20066b9ce3871115714cb584776b6a139c3ba2ed",
+    "funding/FLOKI__1000FLOKIUSDT__5m.csv.gz": "a8bf84a9d1f517137e3bbfa310a83dda0d9360b80b8b25cc0adafffbb23a24e7",
+    "funding/OP__OPUSDT__5m.csv.gz": "e3d92525490a781fc52463caabcfd897dff63b5b8d1a6a27258f26f6fe941c5e",
+    "funding/SEI__SEIUSDT__5m.csv.gz": "04415d67b0f9d3d640905c46f1cba4473e4cd2aacb6d10d1728f2f870283c00f",
+    "funding/WIF__WIFUSDT__5m.csv.gz": "4536fe5bd694ab93283ee59270f5d5712cb3c67d2a7e351197d2776f2d7bbbd8",
+    "futures/ARB__ARBUSDT__5m.csv.gz": "72df5c2113b5384a7e75afa1d93b5f124d109e522d35e604bde7246b5ee003b9",
+    "futures/BONK__1000BONKUSDT__5m.csv.gz": "5fe39f2e413ac51c342c42f875e36c06eb6b356ab2cb4338c60f111b12b69247",
+    "futures/ENA__ENAUSDT__5m.csv.gz": "a68c49a99325148be26eac58f6d80c2faeec044a72110b8351643169b39f3fd4",
+    "futures/FLOKI__1000FLOKIUSDT__5m.csv.gz": "a4cf7b23d9006ddef004eeb4dc67ef2b070e072c0ca1fa306c856d5007d21429",
+    "futures/OP__OPUSDT__5m.csv.gz": "bfa948c8daf9f3410983e414bbefb5933916675727225b44cebf8e9654595175",
+    "futures/SEI__SEIUSDT__5m.csv.gz": "d502d205aa5637e2a80b1b1b595ef2bd7f98dbeca4f1dabc5cdbd1202ccb1ed3",
+    "futures/WIF__WIFUSDT__5m.csv.gz": "89bab01409bcf7eda4dbdc2b66161293abc15c3f2bff970367445c42177b50f8",
+    "spot/ARB__ARBUSDT__5m.csv.gz": "3ea648aaf6e190e600e653bb44f05b6dbea5cb7b89066540681472dc8945c57c",
+    "spot/BONK__BONKUSDT__5m.csv.gz": "59cc68724ab88eb68f394cfcd6ad0d60eaeb59fd7ac406c1728832966900b3e5",
+    "spot/ENA__ENAUSDT__5m.csv.gz": "d64cd0078b7901fbd0ba1980bc91e068870f0f047271026ee6aa04bed3c678c4",
+    "spot/FLOKI__FLOKIUSDT__5m.csv.gz": "508a965dfa193c3cb1ad4588433b8685dabce2a7fe7196c668c9047b1d705f21",
+    "spot/OP__OPUSDT__5m.csv.gz": "b07d30aff97d92330500234586726d6ace2688f990a41780b95d95539bdf5ccc",
+    "spot/SEI__SEIUSDT__5m.csv.gz": "e4220aa1be6262a831e7ed19c7699786e32c852240066348f4c41f20f2d8f4bf",
+    "spot/WIF__WIFUSDT__5m.csv.gz": "b4bae62f6f1f8df46347d8ec2957c377dc3d83029102a9672bdd3fd657ecb75e"
+  },
+  "outputs": {
+    "outcomes.csv": "8ebd2f68cb6c189cb678bd7eb4b672f87675e68f2930f40e917186fd77f36e9f",
+    "recommendations.csv": "558319cdad25f459dcb8f73f1ef2a737832fb1ce295be1b039bd8e36c5877a4a",
+    "report_ko.md": "4dbac998eb6e85c6a7a73350dc7248fa3aa369ae1ba8923558113c2a09548c2a",
+    "results.json": "848125d11de23a4364ed8b5afc68c178857d2ccb9393bd54423c050bdf9dd039"
+  },
+  "protocol_version": "alert_replay_v3_2026-07-20_indicator_discriminator",
+  "rule_version": "v4.3.0-causal-structure-diagnostics",
+  "spec_path": "C:\\Users\\user\\Documents\\Binance bot-2\\config\\backtest.5m.indicator-discriminator-v1a-7asset.yaml",
+  "spec_sha256": "254c30755ad310d3e683a8013a1639a6691071bc53c334574c45dc97afca3852",
+  "started_at_utc": "2026-07-20T04:56:08.420529+00:00"
+}

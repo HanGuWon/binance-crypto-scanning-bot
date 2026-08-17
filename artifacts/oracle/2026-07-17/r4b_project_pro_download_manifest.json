@@ -1,0 +1,24 @@
+{
+  "schema_version": "project_pro_download_manifest_v1",
+  "retrieved_at_utc": "2026-07-17T04:57:19.046Z",
+  "source_conversation": "https://chatgpt.com/g/g-p-69a9f92954288191a063fd1eea40b983-gasanghwapye-teureiding/c/6a599091-df04-83ee-a7b7-f6475d3de4bc",
+  "retrieval_method": "authenticated_chatgpt_artifact_response_via_existing_chrome_session",
+  "files": [
+    {
+      "name": "R4b_adversarial_design_review_20260717.md",
+      "workspace_path": "artifacts/oracle/2026-07-17/R4b_adversarial_design_review_20260717.md",
+      "downloads_path": "C:/Users/user/Downloads/R4b_adversarial_design_review_20260717.md",
+      "bytes": 44465,
+      "sha256": "0d55c65a359e82698b913fecaa38b1818ae464fc2436fc28cd79e52aa11bcfba"
+    },
+    {
+      "name": "R4b_frozen_experiment_spec_v1.yaml",
+      "workspace_path": "artifacts/oracle/2026-07-17/R4b_frozen_experiment_spec_v1.yaml",
+      "downloads_path": "C:/Users/user/Downloads/R4b_frozen_experiment_spec_v1.yaml",
+      "bytes": 20798,
+      "sha256": "9c925f5988e65a1371e8859dd00ea6a61db0c3b9ea34622432e9a28a3bab297b",
+      "yaml_parse": "PASS",
+      "yaml_root_type": "mapping"
+    }
+  ]
+}

@@ -1,0 +1,578 @@
+protocol:
+  id: R4B_CAUSAL_V1
+  version: 1.0.0
+  status: FROZEN_DRAFT_FOR_EXTERNAL_TIMESTAMPING
+  frozen_at: '2026-07-17T11:52:53+09:00'
+  project: crypto_trading
+  purpose: >-
+    Falsify or provisionally support at most three orthogonal closed-5m alert
+    mechanisms using executable, point-in-time net returns after fees, slippage,
+    depth walking, and futures funding. This protocol does not authorize live orders.
+  permitted_modes:
+    - historical_replay_when_required_raw_data_exist
+    - shadow_alerting
+    - paper_execution
+  prohibited_modes:
+    - private_exchange_endpoints
+    - signed_requests
+    - live_orders
+    - margin_or_leverage_above_1x
+    - post_result_threshold_tuning
+  claims_forbidden:
+    - guaranteed_profit
+    - validated_edge_before_all_gates
+    - untouched_holdout_claim_from_exposed_history
+    - r4b_beats_r4a_without_auditable_r4a_artifacts
+
+r4a_boundary:
+  status: SEALED_READ_ONLY
+  source_status: USER_STIPULATED_NOT_INDEPENDENTLY_VERIFIED
+  stipulated_result:
+    event_universe: closed_5m_spot_breakout_long_and_futures_breakdown_short_C0
+    out_of_fold_predictions: 52107
+    selected_predictions: 0
+    maximum_predicted_net_return: negative
+  consequences:
+    - no_retraining_or_recalibration_on_the_r4a_ledger
+    - no_threshold_relaxation_or_feature_addition_on_the_r4a_ledger
+    - no_rsi_privilege
+    - no_claim_that_a_new_family_is_an_r4a_repair
+  artifact_gate: >-
+    Raw R4a predictions, labels, folds, code, configuration, costs, feature contract,
+    model card, and hashes must be supplied before any independent replication or
+    comparative claim is permitted.
+
+research_hypotheses:
+  family_A:
+    name: derivatives_crowding_to_forced_deleveraging_transition
+    primary_null: mean_synchronized_daily_net_return_bps_le_0
+  family_B:
+    name: order_flow_and_visible_liquidity_dislocation
+    primary_null: mean_synchronized_daily_net_return_bps_le_0
+    children:
+      - depletion_continuation
+      - absorption_reversal
+  family_C:
+    name: cross_sectional_common_shock_lag_catchup
+    primary_null: mean_synchronized_daily_net_return_bps_le_0
+
+clock_and_point_in_time_contract:
+  bar_interval: 5m
+  signal_bars: fully_closed_only
+  decision_cutoff: 'bar_close_time + 2000ms'
+  base_execution_latency_ms: 250
+  admissible_feature_record: >-
+    exchange_event_time <= bar_close_time AND local_receipt_time <= decision_cutoff
+  entry_rule: >-
+    First valid executable opposite-side BBO/depth snapshot received at or after
+    decision_cutoff + execution_latency.
+  exit_rule: >-
+    First valid executable opposite-side BBO/depth snapshot after the first closed
+    bar satisfying an exit condition, or after the hard horizon.
+  invalid_quote_policy:
+    quote_age_ms_max: 2000
+    spread_bps_max_for_execution: 20
+    crossed_or_locked_book: NON_EXECUTABLE
+    sequence_gap: NON_EXECUTABLE
+    insufficient_depth: NON_EXECUTABLE
+    missing_data: NON_EXECUTABLE
+    zero_return_imputation: forbidden
+  timestamps_required:
+    - exchange_event_time
+    - exchange_transaction_time_when_available
+    - local_receipt_time
+    - persistence_time
+  finalization_required: true
+
+universe:
+  reconstruction: point_in_time
+  refresh_time_utc: '00:00:00'
+  spot:
+    quote_asset: USDT
+    status: TRADING
+  futures:
+    contract_type: USD_M_LINEAR_PERPETUAL
+    margin_asset: USDT
+    status: TRADING
+  exclusions:
+    - stablecoin_or_fiat_base_assets_from_frozen_taxonomy
+    - leveraged_tokens
+    - inactive_suspended_or_delisting_intervals
+    - redenomination_or_contract_migration_intervals_without_explicit_mapping
+  minimum_history:
+    complete_prior_days: 30
+    closed_5m_bars: 8640
+  liquidity_floor:
+    prior_30d_median_daily_quote_volume_usdt_min: 10000000
+    prior_30d_median_spread_bps_max: 10
+    prior_30d_spread_bps_p99_max: 50
+  capacity_constraints:
+    max_fraction_visible_depth_within_10bp: 0.01
+    max_fraction_closed_5m_quote_volume: 0.01
+  cross_sectional_minimum_symbols: 20
+  no_current_top_n_survivor_selection: true
+
+common_feature_definitions:
+  robust_zscore:
+    id: RZ
+    lookback_closed_5m_bars: 8640
+    formula: '(x_t - median(x_[t-W,t-1])) / (1.4826 * MAD(x_[t-W,t-1]) + epsilon)'
+    current_observation_excluded: true
+  log_return: 'r_i,h(t) = ln(close_i,t / close_i,t-h)'
+  true_range: 'TR_t = max(high_t-low_t, abs(high_t-close_t-1), abs(low_t-close_t-1))'
+  epsilon: 1.0e-12
+
+families:
+  A:
+    data_required_for_features:
+      - closed_5m_klines
+      - timestamped_open_interest_or_open_interest_value
+      - mark_price
+      - index_price
+      - mark_price_stream_funding_estimate
+      - aggregate_trades_or_individual_trades
+    data_required_for_execution:
+      - book_ticker
+      - sequence_consistent_depth
+      - actual_fee_schedule
+      - realized_funding_settlements_during_hold
+    optional_diagnostic_data:
+      - liquidation_force_order_stream
+    feature_definitions:
+      return_1: 'r1_t = ln(close_t / close_t-1)'
+      return_12: 'r12_t = ln(close_t / close_t-12)'
+      oi_change_1: 'doi1_t = ln(OI_value_t / OI_value_t-1)'
+      oi_change_12: 'doi12_t = ln(OI_value_t / OI_value_t-12)'
+      basis: 'basis_t = ln(mark_price_t / index_price_t)'
+      aggressive_flow: >-
+        flow_t = (aggressive_buy_quote_notional - aggressive_sell_quote_notional) /
+        (aggressive_buy_quote_notional + aggressive_sell_quote_notional + epsilon)
+      funding_estimate: >-
+        Last next-funding estimate published by the mark-price stream and received by
+        decision_cutoff; future realized funding history is forbidden as a feature.
+      crowd_direction: 'c = sign(r12_t-1)'
+    precondition_at_t_minus_1:
+      - 'abs(RZ(r12_t-1)) >= 1.5'
+      - 'RZ(doi12_t-1) >= 1.5'
+      - 'c * RZ(basis_t-1) >= 1.5'
+      - 'c * RZ(funding_estimate_t-1) >= 1.0'
+    closed_bar_trigger_at_t:
+      - 'c * RZ(r1_t) <= -0.5'
+      - 'RZ(doi1_t) <= -1.0'
+      - 'c * flow_t <= -0.35'
+    actions:
+      crowded_long_unwind_c_plus_1:
+        spot: EXIT_RISK
+        futures: SHORT
+      crowded_short_unwind_c_minus_1:
+        spot: LONG
+        futures: LONG
+    exits:
+      hard_horizon_bars: 12
+      normalization:
+        condition: 'c * RZ(basis_current) <= 0'
+      flow_reversal:
+        condition: 'c * flow_current >= 0.20 for 2 consecutive closed bars'
+      adverse_invalidation:
+        crowded_long_unwind: 'closed_close > max(high_[t-12,t-1])'
+        crowded_short_unwind: 'closed_close < min(low_[t-12,t-1])'
+    liquidation_use: >-
+      Diagnostic causal attribution only. It is not a gate or a complete-volume
+      measure because the official all-market liquidation stream is a censored snapshot.
+
+  B:
+    data_required_for_features:
+      - aggregate_trades_or_individual_trades
+      - book_ticker
+      - sequence_consistent_depth
+    data_required_for_execution:
+      - book_ticker
+      - sequence_consistent_depth
+      - actual_fee_schedule
+      - realized_funding_settlements_during_hold_for_futures
+    local_book_contract:
+      sequence_fields_required:
+        - U
+        - u
+        - pu
+      depth_band_bps: 10
+      stream_choice: FROZEN_BEFORE_T0
+      rpi_treatment: >-
+        The chosen standard-depth or RPI-depth stream must be fixed in the manifest;
+        visible depth means only venue-published depth available through that stream.
+    bar_features:
+      aggressive_imbalance: >-
+        I_t = (Q_buy_t - Q_sell_t) / (Q_buy_t + Q_sell_t + epsilon), where
+        buyer_is_maker=false is aggressive buy and buyer_is_maker=true is aggressive sell.
+      mid_return: >-
+        r_bar_t = ln(median_BBO_mid_last_5s / median_BBO_mid_first_5s)
+      opposing_depth_start: 'median opposing-side visible depth within 10bp during first 30s'
+      opposing_depth_low: '5th percentile opposing-side visible depth within 10bp during bar'
+      opposing_depth_end: 'median opposing-side visible depth within 10bp during last 30s'
+      spread_95: '95th percentile BBO spread in bps during bar'
+    child_B1_depletion_continuation:
+      trigger:
+        - 'abs(RZ(I_t)) >= 2.0'
+        - 'sign(I_t) * RZ(r_bar_t) >= 1.0'
+        - 'D_low / D_start <= 0.50'
+        - 'D_end / D_low < 1.20'
+        - 'spread_95 <= 20'
+      action: 'direction = sign(I_t)'
+    child_B2_absorption_reversal:
+      trigger:
+        - 'abs(RZ(I_t)) >= 2.0'
+        - 'sign(I_t) * RZ(r_bar_t) <= 0.25'
+        - 'abs(RZ(r_bar_t)) <= 0.75'
+        - 'D_end / D_low >= 1.50'
+        - 'spread_95 <= 20'
+      action: 'direction = -sign(I_t)'
+    direction_mapping:
+      positive:
+        spot: LONG
+        futures: LONG
+      negative:
+        spot: EXIT_RISK
+        futures: SHORT
+    exits:
+      hard_horizon_bars: 3
+      flow_reversal: 'position_sign * I_current <= -0.30 on a closed bar'
+      adverse_invalidation: 'close moves against position by 1.0 * event_bar_true_range from entry reference'
+    primary_family_portfolio: >-
+      Union of B1 and B2 under the common non-overlap policy, with equal ex-ante risk
+      budgets. Child-level claims use Bonferroni alpha 0.025.
+
+  C:
+    data_required_for_mechanism_screen:
+      - point_in_time_closed_5m_klines_for_full_eligible_universe
+    data_required_for_executable_net_test:
+      - book_ticker
+      - sequence_consistent_depth
+      - actual_fee_schedule
+      - realized_funding_settlements_during_hold_for_futures
+    venue_calculation: separate_spot_and_futures_cross_sections
+    feature_definitions:
+      asset_return_3: 'r_i3_t = ln(close_i,t / close_i,t-3)'
+      common_return_3: 'm3_t = cross_sectional_median_i(r_i3_t)'
+      lagged_beta: >-
+        beta_i,t = clip(Cov(r_i, m) / Var(m), 0.25, 2.5), estimated only from
+        the previous 8640 closed bars.
+      residual: 'e_i3_t = r_i3_t - beta_i,t * m3_t'
+      residual_scale: 'sigma_i,t = 1.4826 * MAD(e_i3 over previous 8640 bars)'
+      lag_score: 'L_i,t = sign(m3_t) * (beta_i,t * m3_t - r_i3_t) / (sigma_i,t + epsilon)'
+    common_shock_gate:
+      - 'abs(m3_t) / robust_scale_30d(m3) >= 2.5'
+      - 'same_sign_cross_sectional_breadth >= 0.70'
+      - 'eligible_symbols >= 20'
+    selection:
+      - 'top decile by L_i,t within venue'
+      - 'L_i,t >= 1.5'
+    actions:
+      positive_common_shock:
+        spot: LONG
+        futures: LONG
+      negative_common_shock:
+        spot: EXIT_RISK
+        futures: SHORT
+    frozen_gap_exit_math:
+      initial_gap: 'g0 = sign(m3_t) * (beta_i,t * m3_t - r_i3_t)'
+      catchup_at_h: >-
+        catch_h = sign(m3_t) * (ln(close_i,t+h/close_i,t) -
+        beta_i,t * median_j(ln(close_j,t+h/close_j,t)))
+    exits:
+      hard_horizon_bars: 6
+      catchup_complete: 'catch_h >= 0.75 * g0'
+      adverse_widening: 'catch_h <= -0.50 * g0'
+
+spot_exit_risk_estimand:
+  precondition: standardized_long_inventory_exists
+  inventory_notional_usdt: 100
+  action_at_alert: sell_at_next_executable_bid
+  action_at_family_exit: rebuy_at_next_executable_ask
+  incremental_net_utility: >-
+    terminal wealth of exit-and-rebuy path minus terminal wealth of uninterrupted
+    long inventory, including the two additional fee and slippage legs.
+  no_inventory_behavior: alert_only_no_synthetic_short
+
+execution_and_cost_model:
+  order_type: taker_marketable_only
+  maker_fill_model: forbidden_in_v1
+  price_model: full_visible_depth_walk
+  fee_source: actual_venue_fee_schedule_snapshot_hashed_at_freeze
+  fee_discount_assumptions:
+    vip_tier: none
+    bnb_or_other_token_discount: none
+  funding:
+    feature_use: strict_prior_estimate_only
+    pnl_use: actual_settlement_cashflows_during_hold
+  notional_scenarios_usdt:
+    - 100
+    - 1000
+    - 10000
+  mandatory_promotion_notional_scenarios_usdt:
+    - 100
+    - 1000
+  sensitivity_grid:
+    latency_ms:
+      - 250
+      - 1000
+      - 3000
+      - 10000
+    all_in_cost_multiplier:
+      - 1.0
+      - 1.5
+      - 2.0
+      - 3.0
+    visible_depth_haircut:
+      - 0.0
+      - 0.5
+      - 0.8
+  stop_and_exit_fill: next_executable_quote_never_candle_high_low_or_next_open
+
+non_overlapping_portfolio:
+  family_risk_budget_each: 0.3333333333
+  one_position_per_venue_symbol: true
+  repeat_signal_policy: ignore_until_flat_plus_one_closed_5m_cooldown
+  same_symbol_same_direction_across_families: aggregate_not_duplicate
+  opposite_new_signals_same_decision: cancel_new_trade
+  spot_exit_risk_priority_over_spot_entry: true
+  futures_max_leverage: 1.0
+  gross_notional_to_nav_max: 1.0
+  combined_symbol_notional_to_nav_max: 0.10
+  volatility_target_annualized: 0.10
+  volatility_estimator: lagged_30d_daily_portfolio_returns
+  mark_to_market: executable_BBO
+
+sequential_testing_ladder:
+  stage_0_data_and_artifact_qualification:
+    pass_requirements:
+      - immutable_source_manifest_and_hashes
+      - schema_and_timestamp_contract_tests
+      - point_in_time_universe_reconstruction
+      - r4a_sealed_namespace
+      - no_private_or_order_dependencies
+    fail_outcome: STOP_ENGINEERING_OR_DATA
+  stage_1_mechanism_sanity_exposed_development_only:
+    outputs:
+      - event_paths
+      - pretrend_checks
+      - matched_placebos
+      - sign_and_unit_invariants
+    parameter_changes_after_stage: forbidden
+  stage_2_fixed_rule_gross_edge:
+    primary_gate: 'one-sided 95% synchronized block-bootstrap lower bound of gross mean > 0'
+    failure_action: reject_family_before_machine_learning
+  stage_3_executable_replay:
+    requirement: next_BBO_depth_walk_fees_and_funding
+    missing_required_data_outcome: INCONCLUSIVE_DATA
+    proxies_for_missing_execution_data: forbidden
+  stage_4_leakage_safe_anchored_walk_forward:
+    train_days: 360
+    calibration_days: 90
+    test_days: 90
+    step_days: 90
+    synchronized_cross_asset_folds: true
+    purge: maximum_label_or_holding_horizon_around_each_boundary
+    embargo_bars: 1
+    fit_on_prior_data_only:
+      - robust_locations_and_scales
+      - betas
+      - universe_eligibility
+      - optional_model
+      - probability_calibration
+  stage_5_optional_simple_model:
+    activation: only_if_fixed_rule_family_is_executable_net_positive
+    model: penalized_logistic_regression
+    target: positive_executable_net_return
+    calibration: isotonic_if_calibration_gates_are_estimable
+    model_zoo_or_hyperparameter_sweep: forbidden
+    permitted_role: rank_or_abstain_not_rescue_negative_family
+  stage_6_portfolio_capacity_and_stress:
+    requirement: all_non_overlap_and_execution_sensitivities
+  stage_7_prospective_sealed_holdout:
+    evaluation_count: one
+
+inference_and_overfitting_controls:
+  primary_family_count: 3
+  familywise_error_rate: 0.05
+  correction: Holm_one_sided_across_A_B_C
+  family_B_child_correction: Bonferroni_alpha_0.025
+  primary_observation_unit: synchronized_UTC_daily_portfolio_net_PnL
+  bootstrap:
+    type: circular_moving_block
+    repetitions: 50000
+    primary_block_days: 7
+    sensitivity_block_days:
+      - 14
+      - 28
+    random_seed: 20260717
+    quantile_method: linear
+  required_backtest_overfitting_diagnostics:
+    deflated_sharpe_probability_min: 0.95
+    probability_of_backtest_overfitting_max: 0.10
+    reality_check: White
+    superior_predictive_ability_test: Hansen
+    library_scope: every_R4b_variant_attempted_including_failures
+  matched_null_conditioning:
+    - symbol
+    - venue
+    - UTC_time_of_week
+    - side
+    - holding_duration
+    - liquidity_and_spread_decile
+    - volatility_regime
+    - event_cluster
+  negative_controls:
+    - one_bar_future_shift_must_trigger_leakage_failure
+    - sign_randomized_flow
+    - within_day_timestamp_shuffle
+    - pre_event_placebo
+    - stale_or_crossed_quote_injection
+  trade_level_iid_tests: forbidden
+  immutable_attempt_ledger: required
+
+minimum_sample_and_coverage:
+  historical_out_of_fold_per_family:
+    executed_alerts_min: 1000
+    non_overlapping_episodes_min: 300
+    calendar_days_min: 365
+    complete_calendar_quarters_min: 4
+  prospective_holdout_per_family:
+    executions_min: 500
+    non_overlapping_episodes_min: 150
+    calendar_days_min: 180
+    complete_calendar_quarters_min: 2
+    maximum_calendar_days: 365
+    insufficient_by_maximum: INCONCLUSIVE_COVERAGE
+  sleeve_minimums:
+    historical_executions_min: 250
+    historical_active_days_min: 75
+    prospective_executions_min: 100
+    prospective_active_days_min: 45
+    below_minimum: sleeve_disabled_no_claim
+
+promotion_gates_all_required:
+  data_quality:
+    required_field_availability_min: 0.999
+    invalid_bootstrap_fraction_max: 0.001
+    unresolved_schema_shift_count: 0
+    unresolved_sequence_gap_count: 0
+    raw_payload_hashes_required: true
+  economic:
+    synchronized_block_bootstrap_mean_net_bps_lower_95_gt: 0.0
+    mean_net_bps_per_execution_min: 5.0
+    gross_edge_to_baseline_all_in_cost_ratio_min: 1.5
+    cumulative_net_pnl_gt: 0.0
+    profit_factor_point_min: 1.20
+    profit_factor_block_bootstrap_lower_95_min: 1.05
+    cost_2x_mean_net_bps_min: 0.0
+    cost_2x_profit_factor_min: 1.0
+    cost_3x: report_only
+  stability:
+    positive_oof_fold_fraction_min: 0.75
+    positive_calendar_quarters_min: 3
+    calendar_quarters_evaluated_min: 4
+    max_positive_pnl_share_single_quarter: 0.35
+    max_positive_pnl_share_single_symbol: 0.20
+    positive_event_symbol_fraction_min: 0.60
+    net_positive_after_removing_top_symbols: 3
+    net_positive_after_removing_top_trades: 10
+  risk_adjusted:
+    daily_net_sharpe_min: 1.0
+    daily_net_sortino_min: 1.25
+    deflated_sharpe_probability_min: 0.95
+    cost_2x_daily_sharpe_min: 0.0
+    target_vol_max_drawdown_max: 0.15
+    calmar_min: 0.75
+  calibration_if_model_used:
+    brier_skill_vs_rolling_base_rate_gt: 0.0
+    log_loss_below_intercept_only: true
+    calibration_slope_min: 0.8
+    calibration_slope_max: 1.2
+    calibration_intercept_abs_max: 0.05
+    expected_calibration_error_max: 0.03
+    observations_per_probability_decile_min: 100
+    accepted_bucket_predicted_net_lower_95_gt: 0.0
+    monotonic_predicted_to_realized_net: true
+  capacity:
+    must_pass_notional_usdt:
+      - 100
+      - 1000
+    notional_10000_usdt: report_capacity_only
+
+prospective_untouched_holdout:
+  start_definition: >-
+    First 00:00 UTC after (i) external timestamp of signed specification, code,
+    configuration, schema, container and source hashes; (ii) 30 consecutive days of
+    required-stream coverage >= 99.9%; and (iii) zero open P0 or P1 defects.
+  operational_visibility_during_holdout:
+    allowed:
+      - data_coverage
+      - parser_and_sequence_health
+      - duplicate_and_outbox_metrics
+      - resource_bounds
+    forbidden:
+      - labels
+      - family_or_sleeve_PnL
+      - threshold_conditioned_outcomes
+      - calibration_outcomes
+  evaluate_once_after:
+    calendar_days_min: 180
+    all_sample_gates_met: true
+  maximum_days: 365
+  open_positions_at_cutoff: right_censored_at_last_executable_BBO
+  reset_triggers:
+    - feature_or_threshold_change
+    - action_mapping_change
+    - exit_or_horizon_change
+    - fee_or_slippage_model_change
+    - universe_rule_change
+    - data_source_or_schema_change
+    - outcome_affecting_bug
+  forbidden_backfill:
+    - reconstructed_receipt_times
+    - kline_proxy_for_BBO_or_depth
+    - synthetic_liquidation_completeness
+
+hard_stop_rules:
+  - no_auditable_R4a_artifacts_for_comparison_claim
+  - required_raw_data_absent_for_historical_efficacy_claim
+  - gross_event_study_lower_bound_not_positive
+  - edge_disappears_at_next_BBO_or_1_5x_cost
+  - two_x_cost_net_negative_or_profit_factor_below_1
+  - any_primary_holdout_gate_fails
+  - stability_concentration_DSR_or_PBO_gate_fails
+  - observed_slippage_exceeds_model_by_25_percent_or_2_standard_errors_over_30d
+  - material_data_gap_schema_shift_or_exchange_market_structure_change
+  - any_post_hoc_parameter_change
+  - insufficient_prospective_sample_by_365_days
+  - all_three_families_fail_stage_2_or_sealed_holdout
+
+change_control:
+  thresholds_and_formulas_mutable_after_external_timestamp: false
+  new_version_required_for_any_material_change: true
+  new_version_resets_future_holdout: true
+  failed_family_retesting_on_same_exposed_history: forbidden
+  permitted_non_outcome_changes:
+    - documentation_typo_that_does_not_change_parser_or_logic
+    - monitoring_only_change_with_hash_and_independent_review
+  required_artifacts:
+    - source_manifest_with_SHA256
+    - raw_data_manifest_with_checksums_and_coverage
+    - schema_registry
+    - endpoint_and_stream_registry
+    - fee_schedule_snapshot
+    - container_or_lockfile_hash
+    - deterministic_seed_registry
+    - immutable_attempt_ledger
+    - fold_assignments
+    - opportunity_ledger
+    - execution_ledger
+    - synchronized_daily_portfolio_ledger
+    - test_and_validation_reports
+
+terminal_decision_labels:
+  pass: PROVISIONAL_POSITIVE_EXPECTANCY_ALERT_FAMILY_RESEARCH_ONLY
+  fail: REJECTED
+  missing_data: INCONCLUSIVE_DATA
+  insufficient_sample: INCONCLUSIVE_COVERAGE
+  invalidated: VOID_PROTOCOL_VIOLATION

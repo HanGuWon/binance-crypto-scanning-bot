@@ -1,0 +1,30 @@
+{
+  "data_root": "data/backtest",
+  "files": {
+    "funding/BNB__BNBUSDT__5m.csv.gz": "bb0181f03a4f47d3d6f35837c483fdbe343cd69b331edbef064ee802d79117f7",
+    "funding/BTC__BTCUSDT__5m.csv.gz": "51495fd4ffc163cd3b801b6981eeb07719216950d1c69687b0ed190c9bae5e46",
+    "funding/DOGE__DOGEUSDT__5m.csv.gz": "177a8f253632160097dbf7dd6cfe4f833f94ef402eb7e2410d3476311d133c8a",
+    "funding/ETH__ETHUSDT__5m.csv.gz": "18655396921527037f48e6c1bb38d14e75d08d4f755e4aa6d16e6c38db45c20b",
+    "funding/SOL__SOLUSDT__5m.csv.gz": "7b430d47903156cabdacf3dc78d11604604df62326d1f729bd8834aed5e589ae",
+    "funding/SUI__SUIUSDT__5m.csv.gz": "c15e2b54f17b7e9cdd0e4e6dbd7ab4852838c51ef2943d38080a55eadc39b8bd",
+    "funding/WIF__WIFUSDT__5m.csv.gz": "4536fe5bd694ab93283ee59270f5d5712cb3c67d2a7e351197d2776f2d7bbbd8",
+    "funding/XRP__XRPUSDT__5m.csv.gz": "a7215a22243ea942fcc19e57355ad2dd62e56f823e4c55fd6517afc1558396d7",
+    "futures/BNB__BNBUSDT__5m.csv.gz": "e3ab201d4e2bbd28355f80b4b40a349f39f62857180ef1f8ad61d5fa1e111ad6",
+    "futures/BTC__BTCUSDT__5m.csv.gz": "d34772591f6d46e41f2a0e4b9368d13c5798ed34f218940bcf69ca204fe71bab",
+    "futures/DOGE__DOGEUSDT__5m.csv.gz": "874ae17292c17bb6ac6c5d5531ad1ff886d1345b3613da2f419d8c965bcc783e",
+    "futures/ETH__ETHUSDT__5m.csv.gz": "aa10b1d59b1c47fa033a46f9d474a8ddfec0ae6774a964b6147540601d68c383",
+    "futures/SOL__SOLUSDT__5m.csv.gz": "af204bd6992d7560a30af6b17ea887b26387482bda110a883ef23ea573ef58b8",
+    "futures/SUI__SUIUSDT__5m.csv.gz": "0245fe7cc26d701eca69ebbcf5eb11924d22bd4f1d37c3e1a5394c665410a156",
+    "futures/WIF__WIFUSDT__5m.csv.gz": "89bab01409bcf7eda4dbdc2b66161293abc15c3f2bff970367445c42177b50f8",
+    "futures/XRP__XRPUSDT__5m.csv.gz": "550c737df796e73a33951366c6d80120b0e44c3181d89fa4f0058ea20c7dd426",
+    "spot/BNB__BNBUSDT__5m.csv.gz": "17973aaa114abba48fe604f0c4ab7d2c5379beec788cfbcba0b43fb99c1b5011",
+    "spot/BTC__BTCUSDT__5m.csv.gz": "310133001fce1168430f93610160e668f38c922492ca5628d5d721cbd0d66a20",
+    "spot/DOGE__DOGEUSDT__5m.csv.gz": "22cf1512c996122f83777f95f521be02851d53d6026e58ef7d96da713d72b86f",
+    "spot/ETH__ETHUSDT__5m.csv.gz": "f564308990ce4ddb08f9f7db6be399e227c6f37a179b81679d8e13f3ceb28867",
+    "spot/SOL__SOLUSDT__5m.csv.gz": "4e97916518a4e4e01fc3ec6dca8d92a33de8c5b7cbe4cb1b6ce2de58b9da1e95",
+    "spot/SUI__SUIUSDT__5m.csv.gz": "d4d3135652184b849d6a8c77b2a8a3c7f42bed0431ac4b38fe1b30f7d6aa6515",
+    "spot/WIF__WIFUSDT__5m.csv.gz": "b4bae62f6f1f8df46347d8ec2957c377dc3d83029102a9672bdd3fd657ecb75e",
+    "spot/XRP__XRPUSDT__5m.csv.gz": "ee074c7f953d6e78b42c9fe7b511952f4011f4b5dc3a46076ba5124474697394"
+  },
+  "protocol_version": "r3_exposed_kline_proxy_diagnostic_v1"
+}

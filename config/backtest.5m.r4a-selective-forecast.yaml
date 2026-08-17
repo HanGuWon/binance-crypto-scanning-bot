@@ -1,0 +1,33 @@
+protocol_version: r4a_c0_selective_forecast_diagnostic_v1
+source_protocol_version: r3_exposed_kline_proxy_diagnostic_v1
+source_opportunities_sha256: ff97d7d0384f7f0628b49e0efbb70ce723e4bd7a58fd1b6f744d409e9b772c7b
+experiment_plan_path: artifacts/backtest/2026-07-17-r4/experiment_plan.md
+interval: 5m
+horizon_bars: 12
+evaluation_start: 2024-07-01T00:00:00Z
+first_test_start: 2025-03-01T00:00:00Z
+evaluation_end: 2026-07-01T00:00:00Z
+minimum_training_months: 6
+calibration_months: 2
+laplace_alpha: 1.0
+variance_floor: 0.0001
+temperature_grid: [0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0]
+intercept_grid: [-1.0, -0.5, -0.25, 0.0, 0.25, 0.5, 1.0]
+edge_margin_bps: 5.0
+minimum_edge_probability: 0.60
+minimum_expected_net_bps: 5.0
+minimum_group_rows: 100
+reliability_bins: 10
+bootstrap_samples: 5000
+bootstrap_block_days: 7
+matched_random_samples: 2000
+seed: 20260717
+acceptance:
+  minimum_selected: 500
+  minimum_days: 120
+  minimum_coverage: 0.02
+  maximum_coverage: 0.30
+  minimum_profit_factor: 1.05
+  minimum_positive_assets: 6
+  maximum_positive_contribution_share: 0.35
+  maximum_ece: 0.05

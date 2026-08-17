@@ -1,0 +1,79 @@
+{
+  "decision": {
+    "event_id": "event-1",
+    "market": "futures",
+    "symbol": "BTCUSDT",
+    "family": "breakout_long",
+    "stage": "confirmed",
+    "direction": "long",
+    "timeframe": "5m",
+    "event_time_ms": 600000,
+    "score": 85,
+    "price": "100",
+    "reasons": [
+      "closed above range",
+      "relative volume 2.0x"
+    ],
+    "invalidation": "98",
+    "regime": {
+      "label": "risk_on",
+      "btc_trend": "bullish",
+      "breadth_ratio": 0.7
+    },
+    "rule_version": "test-v1",
+    "metadata": {}
+  },
+  "candles": [
+    {
+      "market": "spot",
+      "symbol": "BTCUSDT",
+      "interval": "5m",
+      "open_time_ms": 300000,
+      "close_time_ms": 599999,
+      "open": "199.9",
+      "high": "200.5",
+      "low": "199.5",
+      "close": "200",
+      "volume": "100.0",
+      "quote_volume": "20000.0",
+      "trade_count": 100,
+      "taker_buy_base_volume": "55.00000000000001",
+      "taker_buy_quote_volume": "11000.0",
+      "is_closed": true
+    },
+    {
+      "market": "spot",
+      "symbol": "BTCUSDT",
+      "interval": "5m",
+      "open_time_ms": 900000,
+      "close_time_ms": 1199999,
+      "open": "104.9",
+      "high": "110",
+      "low": "95",
+      "close": "105",
+      "volume": "100.0",
+      "quote_volume": "10500.0",
+      "trade_count": 100,
+      "taker_buy_base_volume": "55.00000000000001",
+      "taker_buy_quote_volume": "5775.000000000001",
+      "is_closed": true
+    },
+    {
+      "market": "spot",
+      "symbol": "BTCUSDT",
+      "interval": "5m",
+      "open_time_ms": 1200000,
+      "close_time_ms": 1499999,
+      "open": "97.9",
+      "high": "106",
+      "low": "90",
+      "close": "98",
+      "volume": "100.0",
+      "quote_volume": "9800.0",
+      "trade_count": 100,
+      "taker_buy_base_volume": "55.00000000000001",
+      "taker_buy_quote_volume": "5390.0",
+      "is_closed": true
+    }
+  ]
+}

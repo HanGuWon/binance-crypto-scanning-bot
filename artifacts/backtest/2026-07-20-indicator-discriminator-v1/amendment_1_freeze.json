@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "status": "FROZEN_BEFORE_CORRECTED_DEVELOPMENT_REPLAY",
+  "created_at_utc": "2026-07-20T02:48:46.4593040Z",
+  "performance_labels_inspected": false,
+  "relevant_code_sha256": "a3e616be89fb44b31e0eccfcec9bfaa3b039cc84e2138d47e46e024b068401a2",
+  "relevant_source_files": [
+    "src/signalbot/backtest/alert_filter.py",
+    "src/signalbot/backtest/alert_replay.py",
+    "src/signalbot/backtest/indicator_analysis.py"
+  ],
+  "file_sha256": {
+    "config/backtest.5m.indicator-discriminator-v1-development-amendment.yaml": "a9c64938ef4d9cbfe2ccf90f42ef089735b75c982b5b56fa3bf4f74cf2da5ac3",
+    "artifacts/backtest/2026-07-20-indicator-discriminator-v1/amendment_1.md": "f837c3d40487e003e04bdf639f4da6abe8b232b8bc9bba2b80b1ee073837f8c6"
+  },
+  "note": "The repository-wide source digest changed during the first replay because unrelated shared-workspace source files were edited concurrently. All frozen experiment-relevant files remained byte-identical."
+}

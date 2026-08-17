@@ -1,0 +1,176 @@
+{
+  "schema_version": "r4b_v2_recorded_burst_fixture_manifest_v1",
+  "classification": "DIAGNOSTIC_PROVISIONAL_NOT_QUALIFICATION",
+  "purpose": "phase_1_disconnected_capture_pipeline_benchmark_only",
+  "efficacy_evaluated": false,
+  "contains_raw_market_payload": false,
+  "contains_pnl_or_outcomes": false,
+  "qualification_evidence": false,
+  "source": {
+    "csv_file": "R4b_queue_overflow_tail_trace_20260717.csv",
+    "csv_bytes": 14412094,
+    "csv_sha256": "be62309809c6e80608334f97e926907df331e841575d1455e99514e7fc7f306c",
+    "manifest_file": "R4b_queue_overflow_tail_trace_20260717.manifest.json",
+    "manifest_bytes": 1538,
+    "manifest_sha256": "309468cd21c9a3df65ee1f6f2c8198276ca20ebcbc2a6f18deb1d7355b6c944b",
+    "session_id": "1784282167461-c9a46255b0424aa2bb80deb9c40dc101",
+    "capture_plan_sha256": "d5d996fbfe51b62f8598da1909a7114f951a8c16323182db1a2fd98195440b17",
+    "source_manifest_sha256": "aba36de6ff5dec476136c011b60a65bf5da557dd3622fa02da1233c71f7af642",
+    "classification": "INFRASTRUCTURE_FAIL_QUEUE_OVERFLOW"
+  },
+  "derivation": {
+    "operation": "identity-preserving compression of the exact source CSV bytes",
+    "row_filter": "NONE",
+    "row_reordering": "NONE",
+    "field_transformation": "NONE",
+    "codec": "zstd",
+    "compression_level": 9,
+    "threads": 0,
+    "content_size": true,
+    "checksum": true,
+    "dictionary_id": false,
+    "python_zstandard_version": "0.25.0",
+    "backend_zstd_version": "1.5.7"
+  },
+  "fixture": {
+    "file": "queue_overflow_tail_trace_20260717.csv.zst",
+    "bytes": 1042809,
+    "sha256": "1c621bea6e28294c1e7cf847f43b98662ba9f567770f5d8cf434a4dc01b2c70d",
+    "decompressed_bytes": 14412094,
+    "decompressed_sha256": "be62309809c6e80608334f97e926907df331e841575d1455e99514e7fc7f306c"
+  },
+  "evidence": {
+    "columns": [
+      "ingest_seq",
+      "received_at_ms",
+      "received_monotonic_ns",
+      "delta_received_at_ms",
+      "delta_received_monotonic_ns",
+      "encoded_line_bytes",
+      "schema_version",
+      "source",
+      "market",
+      "route",
+      "transport",
+      "source_kind",
+      "role_or_stream"
+    ],
+    "row_count": 99999,
+    "first_ingest_seq": 9310159,
+    "last_ingest_seq": 9410157,
+    "first_received_at_ms": 1784293572321,
+    "last_received_at_ms": 1784293605890,
+    "first_received_monotonic_ns": 228733871985800,
+    "last_received_monotonic_ns": 228767441178900,
+    "receipt_span_monotonic_ns": 33569193100,
+    "encoded_line_bytes_sum": 96189433,
+    "encoded_line_bytes_min": 905,
+    "encoded_line_bytes_max": 42441,
+    "schema_counts": {
+      "capture_envelope_v1": 99976,
+      "rest_envelope_v2": 23
+    },
+    "order_route_size_digest_format": "UTF-8 JSON arrays [ingest_seq,encoded_line_bytes,market,route,transport,source_kind,role_or_stream], compact separators, ASCII escaping, LF after every row",
+    "order_route_size_sha256": "cbc898b6c9c394144f58631bf6f02461be68e1f036e3b19f513d28f68e7bf56e",
+    "source_route_counts": [
+      {
+        "market": "futures",
+        "route": "",
+        "transport": "https",
+        "source_kind": "rest",
+        "role_or_stream": "futures_open_interest",
+        "count": 18
+      },
+      {
+        "market": "futures",
+        "route": "",
+        "transport": "https",
+        "source_kind": "rest",
+        "role_or_stream": "futures_premium_index",
+        "count": 3
+      },
+      {
+        "market": "futures",
+        "route": "",
+        "transport": "https",
+        "source_kind": "rest",
+        "role_or_stream": "futures_venue_time",
+        "count": 1
+      },
+      {
+        "market": "futures",
+        "route": "market",
+        "transport": "websocket",
+        "source_kind": "websocket",
+        "role_or_stream": "combined:capture-futures-market-1",
+        "count": 3142
+      },
+      {
+        "market": "futures",
+        "route": "public",
+        "transport": "websocket",
+        "source_kind": "websocket",
+        "role_or_stream": "combined:capture-futures-public-1",
+        "count": 75722
+      },
+      {
+        "market": "spot",
+        "route": "",
+        "transport": "https",
+        "source_kind": "rest",
+        "role_or_stream": "spot_venue_time",
+        "count": 1
+      },
+      {
+        "market": "spot",
+        "route": "spot",
+        "transport": "websocket",
+        "source_kind": "websocket",
+        "role_or_stream": "combined:capture-spot-1",
+        "count": 21112
+      }
+    ]
+  },
+  "replay_contract": {
+    "timing": "absolute pacing from the recorded monotonic offsets; test envelopes use monotonic zero as a non-authoritative rebase sentinel",
+    "payload": "deterministic non-market payload plus test-only plan-id padding used only to reproduce each recorded encoded-line byte count",
+    "queue_bounds_provenance": "failed-canary V1 configured bounds, retained only as diagnostic comparison",
+    "queue_max_events": 100000,
+    "queue_max_encoded_bytes": 268435456,
+    "low_water_events": 0,
+    "low_water_encoded_bytes": 0,
+    "low_water_label": "diagnostic_full_drain_not_an_acceptance_threshold",
+    "multipliers": [
+      {
+        "value": 1,
+        "label": "recorded_1x_diagnostic"
+      },
+      {
+        "value": 2,
+        "label": "provisional_2x_burst_diagnostic"
+      }
+    ],
+    "multiplier_status": "PROVISIONAL_DIAGNOSTIC_ONLY; final-panel sealed qualification is still required",
+    "forbidden_claims": [
+      "final-panel capacity qualification",
+      "production readiness",
+      "strategy efficacy",
+      "PnL or outcome evidence"
+    ]
+  },
+  "authoritative_qualification_gate": {
+    "source": "R4B_CAUSAL_V2_mandatory_addendum_selected_spec.yaml storage_capacity and capture_storage.codec_benchmark_before_T0",
+    "sample": "24 complete hours on the actual final 25+25 panel and final codec",
+    "record_drop_count": 0,
+    "p99_cpu_percent_max": 70,
+    "p99_queue_fraction_max": 0.5,
+    "p99_fsync_ms_max": 100,
+    "sustained_write_throughput_min": "2 * p99_one_second_input_bytes",
+    "current_fixture_status": "NOT_QUALIFIED",
+    "not_qualified_reasons": [
+      "failed-canary tail is approximately 33.569 seconds from a three-symbol capture, not a complete actual-final-panel 24-hour sample",
+      "in-memory sink does not measure final-codec fsync or durable sustained-write throughput",
+      "CPU and p99 queue qualification distributions are not established by this diagnostic replay"
+    ]
+  }
+}

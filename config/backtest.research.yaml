@@ -1,0 +1,49 @@
+protocol_version: bt_1h_v1_frozen_2026-07-14
+rule_version: v1.1.0-bt-1h
+interval: 1h
+data_start: 2023-03-01T00:00:00Z
+evaluation_start: 2023-07-01T00:00:00Z
+evaluation_end: 2026-07-01T00:00:00Z
+minimum_age_days: 90
+minimum_history_bars: 210
+# Historical top-of-book spread is unavailable in klines. 11.25 bps passes
+# the 15 bps liquidity gate without granting the rule's <=7.5 bps bonus.
+historical_spread_proxy_bps: 11.25
+entry_score: 80
+assets:
+  - {asset: BTC, cohort: anchor, spot_symbol: BTCUSDT, futures_symbol: BTCUSDT}
+  - {asset: ETH, cohort: anchor, spot_symbol: ETHUSDT, futures_symbol: ETHUSDT}
+  - {asset: BNB, cohort: major, spot_symbol: BNBUSDT, futures_symbol: BNBUSDT}
+  - {asset: SOL, cohort: major, spot_symbol: SOLUSDT, futures_symbol: SOLUSDT}
+  - {asset: XRP, cohort: major, spot_symbol: XRPUSDT, futures_symbol: XRPUSDT}
+  - {asset: DOGE, cohort: major, spot_symbol: DOGEUSDT, futures_symbol: DOGEUSDT}
+  - {asset: ADA, cohort: major, spot_symbol: ADAUSDT, futures_symbol: ADAUSDT}
+  - {asset: LINK, cohort: major, spot_symbol: LINKUSDT, futures_symbol: LINKUSDT}
+  - {asset: AVAX, cohort: major, spot_symbol: AVAXUSDT, futures_symbol: AVAXUSDT}
+  - {asset: DOT, cohort: major, spot_symbol: DOTUSDT, futures_symbol: DOTUSDT}
+  - {asset: SUI, cohort: volatile, spot_symbol: SUIUSDT, futures_symbol: SUIUSDT}
+  - {asset: WIF, cohort: volatile, spot_symbol: WIFUSDT, futures_symbol: WIFUSDT}
+  - {asset: APT, cohort: volatile, spot_symbol: APTUSDT, futures_symbol: APTUSDT}
+  - {asset: ARB, cohort: volatile, spot_symbol: ARBUSDT, futures_symbol: ARBUSDT}
+  - {asset: OP, cohort: volatile, spot_symbol: OPUSDT, futures_symbol: OPUSDT}
+  - {asset: PEPE, cohort: volatile, spot_symbol: PEPEUSDT, futures_symbol: 1000PEPEUSDT}
+splits:
+  - {name: development, start: 2023-07-01T00:00:00Z, end: 2024-07-01T00:00:00Z}
+  - {name: validation, start: 2024-07-01T00:00:00Z, end: 2025-07-01T00:00:00Z}
+  - {name: holdout, start: 2025-07-01T00:00:00Z, end: 2026-07-01T00:00:00Z}
+exits:
+  trend_failure_bars: 2
+  trailing_activation_r: 1.0
+  trailing_atr_multiple: 2.0
+  max_holding_bars: 24
+costs:
+  notional_usdt: 100.0
+  spot_fee_bps: 10.0
+  futures_fee_bps: 5.0
+  spot_slippage_bps: {anchor: 5.0, major: 5.0, volatile: 10.0}
+  futures_slippage_bps: {anchor: 3.0, major: 3.0, volatile: 8.0}
+  include_funding: true
+bootstrap:
+  samples: 2000
+  block_days: 7
+  seed: 20260714

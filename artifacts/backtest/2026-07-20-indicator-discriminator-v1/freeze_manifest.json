@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "status": "FROZEN_BEFORE_OUTCOME_REPLAY",
+  "created_at_utc": "2026-07-20T02:18:39.0141698Z",
+  "code_sha256": "b84e4708ab9e0b91959a39d8de98225a6291c12c2c1b7f464f09ab3ff901ee3f",
+  "experiment_contract": {
+    "assets": ["PENGU", "BONK", "ENA", "WIF", "FLOKI", "ARB", "OP", "SEI"],
+    "development_split": "development",
+    "validation_split": "validation",
+    "retrospective_stress_split": "retrospective_test",
+    "primary_horizon_bars": 12,
+    "reference_price": "recommendation_candle_close",
+    "deduplication_key": ["asset", "direction", "decision_time_ms"],
+    "deduplication_priority": ["spot", "futures"],
+    "score_fit": "development empirical CDF, four equal-weight axes",
+    "selection": "development composite score 75th percentile",
+    "fit_uses_outcomes": false,
+    "bootstrap_samples": 10000,
+    "bootstrap_block_days": 7,
+    "seed": 20260720
+  },
+  "verification_before_freeze": {
+    "pytest_full": "2518 passed, 11 skipped",
+    "pytest_targeted": "83 passed",
+    "ruff": "passed",
+    "pyright": "0 errors",
+    "compileall": "passed"
+  },
+  "file_sha256": {
+    "config/backtest.5m.indicator-discriminator-v1.yaml": "51f172cceae615c2422bdfdd91a3559c221b42ab2c0c42cce9b058b616978e0e",
+    "config/settings.example.yaml": "461a8c0b97dde70f32c5e45c47bd2f708df723ebb5e1e0ab969e8aa236e8426c",
+    "artifacts/backtest/2026-07-20-indicator-discriminator-v1/experiment_plan.md": "068569b56a30431d692ae0eed615aa29e980ba5e4eb7ebc9df083e25a590c99b",
+    "src/signalbot/backtest/alert_filter.py": "f4632a15cfe2462aaa196aff7495f6fe79bd61271e6e61559d580784a7eb2d03",
+    "src/signalbot/backtest/alert_replay.py": "8c6945f6441d20c4aca1907581073adbf8d777e12f72b183b1bd13b3a2822765",
+    "src/signalbot/backtest/indicator_analysis.py": "eb7da87031b3b34878772de66ddf12907fb3f5874a85c86d1556fded87d5e8e6",
+    "tests/unit/test_backtest_alert_filter.py": "524f9d9f2bc5e0ad66404807541846d5103b439c1cd28b9252d5ec7e7e7f826e",
+    "tests/unit/test_alert_replay.py": "5194a2e4d0133a0a6fa0c5e3182bd8283569b3bb1dfba17462bbf391d42d35df",
+    "tests/unit/test_indicator_analysis.py": "eb241fcfbf940fe6e734a473054424abc0f2dca0381684eea80ba7144bf23bcc"
+  }
+}

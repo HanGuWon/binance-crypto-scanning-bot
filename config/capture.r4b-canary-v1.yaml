@@ -1,0 +1,67 @@
+schema_version: capture_canary_config_v1
+purpose: infrastructure_only
+efficacy_outputs_enabled: false
+order_execution_enabled: false
+api_credentials_enabled: false
+protocol_sha256: 9c925f5988e65a1371e8859dd00ea6a61db0c3b9ea34622432e9a28a3bab297b
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+duration_seconds: 86400
+
+websocket:
+  batch_size: 25
+  maximum_connection_age_seconds: 86100
+  heartbeat_interval_seconds: 60
+  pong_timeout_seconds: 10
+  connect_timeout_seconds: 20
+  close_timeout_seconds: 10
+  internal_queue_frames: 2048
+  maximum_frame_bytes: 8388608
+  maximum_reconnect_attempts: 8
+  reconnect_delays_seconds: [1, 2, 4, 8, 16, 30, 30, 30]
+  depth_stream_variant: standard
+
+handoff:
+  maximum_events: 100000
+  maximum_encoded_bytes: 268435456
+
+storage:
+  maximum_total_bytes: 107374182400
+  emergency_reserve_bytes: 536870912
+  rotation_interval_ms: 300000
+  maximum_segment_uncompressed_bytes: 268435456
+  maximum_segment_websocket_frames: 1000000
+
+rest:
+  method: GET
+  maximum_concurrency: 4
+  timeout_seconds: 15
+  maximum_body_bytes: 16777216
+  maximum_attempts: 2
+  retry_delays_seconds: [1.0]
+  maximum_retry_after_seconds: 30
+  follow_redirects: false
+  trust_environment: false
+
+polling:
+  venue_time_seconds: 30
+  exchange_info_seconds: 60
+  exchange_info_hash_on_change: true
+  spot_depth_snapshot_limit: 5000
+  futures_depth_snapshot_limit: 1000
+  depth_snapshot_bridge_maximum_attempts: 3
+  depth_snapshot_bridge_wait_seconds: 2
+  depth_snapshot_triggers: [startup, reconnect, sequence_gap]
+  futures_open_interest_seconds: 5
+  futures_open_interest_history_period: 5m
+  futures_open_interest_history_bar_alignment_seconds: 300
+  futures_open_interest_history_delay_seconds: 15
+  futures_open_interest_history_data_role: cross_check_non_primary
+  futures_premium_index_seconds: 30
+  futures_premium_index_data_role: cross_check_non_primary
+  futures_funding_rate_delay_seconds: 15
+  futures_funding_rate_maximum_attempts: 2
+  futures_funding_info_seconds: 300
+  futures_funding_info_on_exchange_info_change: true

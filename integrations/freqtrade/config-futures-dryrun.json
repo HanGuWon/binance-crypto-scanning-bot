@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.freqtrade.io/schema.json",
+  "strategy": "SignalParityFuturesStrategy",
+  "dry_run": true,
+  "dry_run_wallet": 1000,
+  "trading_mode": "futures",
+  "margin_mode": "isolated",
+  "max_open_trades": 3,
+  "stake_currency": "USDT",
+  "stake_amount": 100,
+  "tradable_balance_ratio": 0.95,
+  "fiat_display_currency": "USD",
+  "timeframe": "5m",
+  "process_only_new_candles": true,
+  "cancel_open_orders_on_exit": true,
+  "db_url": "sqlite:///integrations/freqtrade/tradesv3.dryrun.sqlite",
+  "exchange": {
+    "name": "binance",
+    "key": "",
+    "secret": "",
+    "ccxt_config": {"enableRateLimit": true},
+    "ccxt_async_config": {"enableRateLimit": true},
+    "pair_whitelist": [],
+    "pair_blacklist": [".*(UP|DOWN|BULL|BEAR)/.*"]
+  },
+  "pairlists": [
+    {
+      "method": "VolumePairList",
+      "number_assets": 50,
+      "sort_key": "quoteVolume",
+      "min_value": 50000000,
+      "refresh_period": 1800
+    },
+    {"method": "AgeFilter", "min_days_listed": 30},
+    {"method": "SpreadFilter", "max_spread_ratio": 0.0015}
+  ],
+  "entry_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1
+  },
+  "exit_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1
+  },
+  "unfilledtimeout": {"entry": 10, "exit": 10, "unit": "minutes"},
+  "api_server": {"enabled": false},
+  "telegram": {"enabled": false},
+  "bot_name": "signal-parity-dryrun",
+  "initial_state": "running",
+  "force_entry_enable": false,
+  "internals": {"process_throttle_secs": 5}
+}

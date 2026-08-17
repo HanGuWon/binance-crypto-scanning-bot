@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: signalbot
+      POSTGRES_USER: signalbot
+      POSTGRES_PASSWORD: signalbot-local-only
+    volumes: ["signalbot-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U signalbot -d signalbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  scanner:
+    build: .
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment: &signalbot-environment
+      SIGNALBOT_DATABASE_URL: postgresql+psycopg://signalbot:signalbot-local-only@postgres:5432/signalbot
+      SIGNALBOT_DISCORD_WEBHOOK_URL: ${SIGNALBOT_DISCORD_WEBHOOK_URL:-}
+      SIGNALBOT_LOG_LEVEL: ${SIGNALBOT_LOG_LEVEL:-INFO}
+    volumes:
+      - ./config:/app/config:ro
+      - signalbot-var:/app/var
+    restart: unless-stopped
+
+  api:
+    build: .
+    command:
+      - signalbot
+      - serve-api
+      - --config
+      - config/settings.example.yaml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment: *signalbot-environment
+    volumes:
+      - ./config:/app/config:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+volumes:
+  signalbot-postgres:
+  signalbot-var:

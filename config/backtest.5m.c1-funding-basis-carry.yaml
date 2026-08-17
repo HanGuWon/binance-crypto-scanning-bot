@@ -1,0 +1,60 @@
+protocol_version: c1_exposed_funding_basis_carry_v1
+rule_version: v3.3.0-c1-funding-basis-carry
+experiment_plan_path: artifacts/backtest/2026-07-17-c1/experiment_plan.md
+interval: 5m
+data_start: 2024-03-01T00:00:00Z
+evaluation_start: 2024-07-01T00:00:00Z
+evaluation_end: 2026-07-01T00:00:00Z
+assets:
+  - {asset: BTC, cohort: anchor, spot_symbol: BTCUSDT, futures_symbol: BTCUSDT}
+  - {asset: ETH, cohort: anchor, spot_symbol: ETHUSDT, futures_symbol: ETHUSDT}
+  - {asset: BNB, cohort: major, spot_symbol: BNBUSDT, futures_symbol: BNBUSDT}
+  - {asset: SOL, cohort: major, spot_symbol: SOLUSDT, futures_symbol: SOLUSDT}
+  - {asset: XRP, cohort: major, spot_symbol: XRPUSDT, futures_symbol: XRPUSDT}
+  - {asset: DOGE, cohort: major, spot_symbol: DOGEUSDT, futures_symbol: DOGEUSDT}
+  - {asset: SUI, cohort: volatile, spot_symbol: SUIUSDT, futures_symbol: SUIUSDT}
+  - {asset: WIF, cohort: volatile, spot_symbol: WIFUSDT, futures_symbol: WIFUSDT}
+splits:
+  - {name: development, start: 2024-07-01T00:00:00Z, end: 2025-03-01T00:00:00Z}
+  - {name: validation, start: 2025-03-01T00:00:00Z, end: 2025-11-01T00:00:00Z}
+  - {name: retrospective_test, start: 2025-11-01T00:00:00Z, end: 2026-07-01T00:00:00Z}
+carry:
+  basis_lookback_bars: 8640
+  funding_lookback_days: 30
+  funding_minimum_events: 60
+  entry_basis_quantile: 0.90
+  funding_floor_quantile: 0.25
+  minimum_positive_funding_fraction: 0.75
+  expected_convergence_fraction: 0.50
+  edge_margin_bps: 10.0
+  cooldown_hours: 24
+  maximum_holding_days: 7
+  split_edge_purge_days: 7
+  stop_floor_bps: 50.0
+  stop_mad_multiple: 3.0
+  mad_consistency_scale: 1.4826
+costs:
+  # Full unlevered pair capital, shared by equal-base-quantity Spot/perpetual legs.
+  notional_usdt: 100.0
+  spot_fee_bps: 10.0
+  futures_fee_bps: 5.0
+  spot_slippage_bps: {anchor: 5.0, major: 5.0, volatile: 10.0}
+  futures_slippage_bps: {anchor: 3.0, major: 3.0, volatile: 8.0}
+  include_funding: true
+acceptance:
+  minimum_completed_episodes: 100
+  minimum_2x_slippage_mean_pair_return_bps: 10.0
+  bootstrap_block_days: 7
+  bootstrap_samples: 50000
+  bootstrap_seed: 20260717
+  one_sided_confidence: 0.95
+  maximum_invalid_bootstrap_fraction: 0.001
+  bootstrap_pnl_attribution: entry_decision_utc_day
+  include_zero_event_days: true
+  primary_calendar_start: 2025-03-01T00:00:00Z
+  primary_calendar_end: 2026-07-01T00:00:00Z
+  minimum_2x_slippage_profit_factor: 1.25
+  required_positive_splits: [validation, retrospective_test]
+  maximum_asset_positive_pnl_share: 0.50
+  maximum_outcome_unobservable: 0
+  prospective_minimum_months: 6

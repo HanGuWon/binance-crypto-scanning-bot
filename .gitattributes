@@ -1,0 +1,5 @@
+# These frozen research contracts are byte-addressed.  Preserve their original
+# CRLF bytes on every platform so the preregistered SHA-256 values remain valid.
+/artifacts/** -text
+/docs/r4b-v2-historical-three-family-consensus-experiment.md -text
+/docs/r4b-v2-historical-three-family-topology-preoutcome-amendment.md -text

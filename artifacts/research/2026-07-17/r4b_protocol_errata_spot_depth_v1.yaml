@@ -1,0 +1,44 @@
+schema_version: r4b_protocol_errata_spot_depth_v1
+document_role: pre_holdout_issue_record_not_a_protocol_revision
+scope: spot_depth_sequence_data_contract_only
+downloaded_protocol:
+  path: artifacts/oracle/2026-07-17/R4b_frozen_experiment_spec_v1.yaml
+  sha256: 9c925f5988e65a1371e8859dd00ea6a61db0c3b9ea34622432e9a28a3bab297b
+  mutated_by_this_errata: false
+official_research_artifact:
+  path: artifacts/research/2026-07-17/binance_public_capture_contract_20260717.md
+  sha256: c2bac0a16aa13ea449c5cead80b5733b0745d69943f332f86562d9c8325b07c6
+issue:
+  downloaded_protocol_path: families.B.local_book_contract.sequence_fields_required
+  generic_required_fields:
+    - U
+    - u
+    - pu
+  official_spot_stream_sequence_fields:
+    - U
+    - u
+  official_usd_m_futures_stream_sequence_fields:
+    - U
+    - u
+    - pu
+  conflict: >-
+    The generic U/u/pu requirement cannot be met by the official Spot diff-depth
+    payload because Spot does not publish pu.
+safe_interim_decision:
+  spot_family_B_enabled: false
+  spot_family_B_status: INCONCLUSIVE_DATA
+  synthesize_spot_pu: forbidden
+  spot_snapshot_bridge_authority: DESIGN
+  spot_snapshot_bridge_predicates:
+    - u > local_id
+    - U <= local_id + 1
+    - local_id + 1 <= u
+  bridge_failure_action: invalidate_local_book_and_resnapshot
+required_adjudication:
+  timing: before_any_prospective_holdout_start
+  requirements:
+    - publish a new protocol version with venue-specific depth sequence contracts
+    - independently review the Spot U/u bridge and Futures U/u/pu continuity rules
+    - regenerate all protocol-dependent source, configuration, and registry hashes
+    - explicitly retain Spot Family B as disabled unless its official U/u contract is accepted
+prospective_holdout_started: false
