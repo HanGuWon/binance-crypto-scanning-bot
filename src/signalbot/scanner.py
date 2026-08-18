@@ -59,21 +59,28 @@ class MarketScanner:
         if not universe.tradable:
             raise RuntimeError(f"no tradable symbols selected for {self.market.value}")
         self.universe = universe
+        market_data_symbols = sorted(
+            set(universe.tradable_symbols) | set(universe.context_symbols)
+        )
         self.runtime.set_active_symbols(
             frozenset(universe.tradable_symbols),
             universe.surveillance_symbols,
+            universe.context_symbols,
         )
         if self.market is Market.FUTURES:
             await self._refresh_funding(universe.tradable_symbols, bootstrap=True)
-        await self._bootstrap(universe.tradable_symbols)
+        await self._bootstrap(market_data_symbols)
         LOGGER.info("market scanner prepared", extra={"market": self.market.value})
         return universe
 
     async def run(self) -> None:
         universe = self.universe or await self.prepare()
+        market_data_symbols = sorted(
+            set(universe.tradable_symbols) | set(universe.context_symbols)
+        )
         plans = build_websocket_plans(
             self.market,
-            universe.tradable_symbols,
+            market_data_symbols,
             self.settings.binance.intervals,
             self.settings.binance.websocket_batch_size,
         )

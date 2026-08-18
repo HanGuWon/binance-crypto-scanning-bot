@@ -78,6 +78,7 @@ class MarketRuntime:
         self.anomaly = AnomalyDetector(settings.signals)
         self.tradable_symbols: frozenset[str] = frozenset()
         self.surveillance_symbols: frozenset[str] = frozenset()
+        self.context_symbols: frozenset[str] = frozenset()
         self._features: dict[tuple[str, str], FeatureSnapshot] = {}
         self._feature_history: dict[
             tuple[str, str], deque[FeatureSnapshot]
@@ -94,37 +95,40 @@ class MarketRuntime:
         self,
         tradable_symbols: frozenset[str],
         surveillance_symbols: frozenset[str],
+        context_symbols: frozenset[str] = frozenset(),
     ) -> None:
         """Apply one bounded universe rotation and prune all runtime-owned state."""
 
         tradable = frozenset(symbol.upper() for symbol in tradable_symbols)
         surveillance = frozenset(symbol.upper() for symbol in surveillance_symbols)
+        context = frozenset(symbol.upper() for symbol in context_symbols)
         if len(tradable) > self.settings.binance.top_n:
             raise ValueError("tradable universe exceeds configured top_n")
         if len(surveillance) > self.settings.binance.surveillance_n:
             raise ValueError("surveillance universe exceeds configured surveillance_n")
         if not tradable.issubset(surveillance):
             raise ValueError("tradable universe must be a subset of surveillance universe")
-
         self.tradable_symbols = tradable
         self.surveillance_symbols = surveillance
-        self.candles.retain_symbols(self.market, tradable)
+        self.context_symbols = context
+        retained_market_data = tradable | context
+        self.candles.retain_symbols(self.market, retained_market_data)
         self.order_flow.retain_symbols(self.market, tradable)
         self.books.retain_symbols(self.market, tradable)
         self.funding.retain_symbols(tradable)
         self.anomaly.retain_symbols(surveillance)
-        self.regime.retain_symbols(self.market, tradable)
+        self.regime.retain_symbols(self.market, retained_market_data)
         self.state_machine.prune_symbols(surveillance)
         self.paper_positions.prune_symbols(tradable)
         self._features = {
             key: feature
             for key, feature in self._features.items()
-            if key[0] in tradable
+            if key[0] in retained_market_data
         }
         self._feature_history = {
             key: history
             for key, history in self._feature_history.items()
-            if key[0] in tradable
+            if key[0] in retained_market_data
         }
 
     def bootstrap(self, candles: list[Candle], *, rebuild: bool = True) -> int:
@@ -133,7 +137,7 @@ class MarketRuntime:
             for candle in candles
             if candle.is_closed
             and candle.market is self.market
-            and candle.symbol in self.tradable_symbols
+            and candle.symbol in (self.tradable_symbols | self.context_symbols)
             and candle.interval in self.settings.binance.intervals
         ]
         inserted = self.candles.add_many(accepted)
@@ -212,7 +216,10 @@ class MarketRuntime:
             for evaluation in evaluations:
                 await self._process(evaluation)
             return
-        if event.symbol not in self.tradable_symbols:
+        if isinstance(event, Candle):
+            if event.symbol not in (self.tradable_symbols | self.context_symbols):
+                return
+        elif event.symbol not in self.tradable_symbols:
             return
         if isinstance(event, BookTicker):
             received_at_ms = self.clock.now_ms()
@@ -240,7 +247,10 @@ class MarketRuntime:
         gap = self.candles.detect_latest_gap(candle)
         recovered = True
         if gap is not None:
-            if candle.interval == self.settings.binance.primary_interval:
+            if (
+                candle.interval == self.settings.binance.primary_interval
+                and candle.symbol in self.tradable_symbols
+            ):
                 checkpoint = self.paper_positions.checkpoint_symbol(candle.symbol)
                 try:
                     gap_exits = self.paper_positions.reset_for_gap(candle)
@@ -264,6 +274,8 @@ class MarketRuntime:
         if feature is None:
             return
         if candle.interval != self.settings.binance.primary_interval:
+            return
+        if candle.symbol not in self.tradable_symbols:
             return
         contexts = self._context_features(candle.symbol, feature.event_time_ms)
         new_decisions: list[SignalDecision] = []

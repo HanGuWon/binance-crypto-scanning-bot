@@ -142,7 +142,54 @@ def _color(d: SignalDecision) -> int:
         return 0x3498DB
     if d.family is SignalFamily.TECHNICAL_EXIT:
         return 0xF1C40F
+    if d.family in {SignalFamily.PUMP_RISK, SignalFamily.CRASH_RISK}:
+        return 0xF39C12
+    if d.stage is not SignalStage.CONFIRMED:
+        return 0x3498DB
     return 0x2ECC71 if d.direction in {Direction.LONG, Direction.RISK_UP} else 0xE74C3C
+
+
+def _recommendation_summary(d: SignalDecision) -> str:
+    """Translate the existing decision state into a direct user-facing recommendation.
+
+    This is presentation-only. It does not create a new score, probability,
+    gate, or trading rule. Only a CONFIRMED directional decision is rendered
+    as an entry candidate. WATCH/SETUP/INVALIDATED, research-only, and rapid
+    risk events remain explicit no-entry recommendations.
+    """
+
+    if d.family is SignalFamily.TECHNICAL_EXIT:
+        if d.market is Market.SPOT:
+            return "🟠 추천: 보유 포지션 정리 검토 · 신규 매수 보류"
+        side = "LONG" if d.direction is Direction.LONG else "SHORT"
+        return f"🟠 추천: 기존 {side} 정리 검토 · 신규 진입 보류"
+    if d.family is SignalFamily.PUMP_RISK:
+        return "⚠️ 추천: 진입 보류 · 단기 급등 위험"
+    if d.family is SignalFamily.CRASH_RISK:
+        return "⚠️ 추천: 진입 보류 · 단기 급락 위험"
+    if d.stage is SignalStage.INVALIDATED:
+        return "⏸️ 추천: 진입 보류 · 직전 진입 조건 무효화"
+    if d.metadata.get("informational_only") is True:
+        bias = (
+            "상승 조건 관찰 중"
+            if d.direction is Direction.LONG
+            else "하락 조건 관찰 중"
+        )
+        return f"⏸️ 추천: 진입 보류 · {bias}"
+    if d.stage is not SignalStage.CONFIRMED:
+        bias = (
+            "상승 조건 형성 중"
+            if d.direction is Direction.LONG
+            else "하락 조건 형성 중"
+        )
+        return f"⏸️ 추천: 진입 보류 · {bias}"
+    if d.direction is Direction.LONG:
+        action = "매수 후보" if d.market is Market.SPOT else "LONG 후보"
+        return f"🟢 추천: 상승 예상 · {action}"
+    if d.direction is Direction.SHORT:
+        action = "신규 매수 보류" if d.market is Market.SPOT else "SHORT 후보"
+        return f"🔴 추천: 하락 예상 · {action}"
+    return "⏸️ 추천: 진입 보류"
 
 
 _FAMILY_LABELS = {
@@ -232,8 +279,7 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
         (
             _setup_line(long_label, diagnostics.long),
             _setup_line(short_label, diagnostics.short),
-            "서로 다른 규칙 점수의 차이는 방향 우세량으로 계산하지 않습니다.",
-            "방향별 규칙 중 대표 원점수이며 합산값이나 확률이 아닙니다.",
+            "각 방향의 대표 규칙 강도이며 진입 여부는 추천 요약과 게이트 상태를 따릅니다.",
         )
     )
 
@@ -364,7 +410,7 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
 
     return [
         {
-            "name": "방향별 최고 설정 점수 · 확률 아님",
+            "name": "상승·하락 근거 강도",
             "value": score_value[:1024],
             "inline": False,
         },
@@ -412,10 +458,11 @@ def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]
     informational_only = d.metadata.get("informational_only") is True
     if informational_only and d.stage is SignalStage.CONFIRMED:
         raise ValueError("informational-only decisions cannot be CONFIRMED")
-    headline = (
-        f"INFORMATION_ONLY · {d.stage.value.upper()}"
-        if informational_only
-        else f"{d.action_label} · {d.stage.value.upper()}"
+    recommendation = _recommendation_summary(d)
+    status_line = (
+        "PAPER 포지션 종료 추적"
+        if paper_exit
+        else f"상태: {d.stage.value.upper()} · 근거 강도: {d.score}/100"
     )
     if paper_exit:
         fill_time_ms = d.metadata.get("fill_time_ms")
@@ -500,20 +547,8 @@ def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]
             },
         )
     embed: dict[str, Any] = {
-        "title": f"{d.symbol} · {d.family.value}",
-        "description": (
-            f"**{headline}**\n"
-            + (
-                "**PAPER ONLY · NO ORDER PLACED**"
-                if paper_exit
-                else (
-                    f"정보용 SETUP · 진입 승인 아님\nRule strength: **{d.score}/100** "
-                    "(not a probability)"
-                    if informational_only
-                    else f"Rule strength: **{d.score}/100** (not a probability)"
-                )
-            )
-        ),
+        "title": f"{d.symbol} · {recommendation}",
+        "description": f"**{status_line}**",
         "color": _color(d),
         "fields": fields,
         "footer": {"text": f"event {d.event_id} · rules {d.rule_version}"},

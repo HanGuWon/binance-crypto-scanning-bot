@@ -11,6 +11,7 @@ from signalbot.domain.models import Instrument
 from signalbot.exchange.binance.rest import BinanceRestClient
 
 LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
+BENCHMARK_SYMBOL = "BTCUSDT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +19,7 @@ class Universe:
     market: Market
     tradable: tuple[Instrument, ...]
     surveillance: tuple[Instrument, ...]
+    context: tuple[Instrument, ...] = ()
 
     @property
     def tradable_symbols(self) -> list[str]:
@@ -27,11 +29,36 @@ class Universe:
     def surveillance_symbols(self) -> frozenset[str]:
         return frozenset(item.symbol for item in self.surveillance)
 
+    @property
+    def context_symbols(self) -> frozenset[str]:
+        return frozenset(item.symbol for item in self.context)
+
 
 class UniverseSelector:
     def __init__(self, settings: BinanceSettings, clock: Clock) -> None:
         self.settings = settings
         self.clock = clock
+
+    def _surveillance_with_benchmark(
+        self,
+        ranked: list[Instrument],
+        benchmark: Instrument | None,
+        required_symbols: frozenset[str],
+    ) -> tuple[Instrument, ...]:
+        selected = list(ranked[: self.settings.surveillance_n])
+        if benchmark is None or benchmark in selected:
+            return tuple(selected)
+        replaceable_index = next(
+            (
+                index
+                for index in range(len(selected) - 1, -1, -1)
+                if selected[index].symbol not in required_symbols
+            ),
+            None,
+        )
+        if replaceable_index is not None:
+            selected[replaceable_index] = benchmark
+        return tuple(selected)
 
     async def select(self, client: BinanceRestClient) -> Universe:
         info, rows = await client.exchange_info(), await client.tickers_24h()
@@ -41,7 +68,6 @@ class UniverseSelector:
             candidates,
             key=lambda item: (-item.quote_volume, item.symbol),
         )
-        surveillance = tuple(ranked[: self.settings.surveillance_n])
         liquid = [
             item
             for item in candidates
@@ -52,7 +78,16 @@ class UniverseSelector:
                 : self.settings.top_n
             ]
         )
-        return Universe(client.market, tradable, surveillance)
+        benchmark = next(
+            (item for item in ranked if item.symbol == BENCHMARK_SYMBOL), None
+        )
+        surveillance = self._surveillance_with_benchmark(
+            ranked,
+            benchmark,
+            frozenset(item.symbol for item in tradable),
+        )
+        context = () if benchmark is None else (benchmark,)
+        return Universe(client.market, tradable, surveillance, context)
 
     @staticmethod
     def _ticker_volumes(rows: list[dict[str, Any]]) -> dict[str, Decimal]:
