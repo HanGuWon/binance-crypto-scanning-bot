@@ -18,6 +18,8 @@ from signalbot.persistence.models import (
     Base,
     CandleRow,
     OutcomeRow,
+    ShadowCoverageRow,
+    ShadowObservationRow,
     SignalRow,
 )
 
@@ -443,4 +445,180 @@ class SqlRepository:
                 row.mae = mae
                 row.close_return = close_return
                 row.observed_until_ms = observed_until_ms
+            session.commit()
+
+    def save_shadow_observation(
+        self,
+        *,
+        observation_id: str,
+        campaign_id: str,
+        opportunity_id: str,
+        market: str,
+        symbol: str,
+        family: str,
+        direction: str,
+        decision_time_ms: int,
+        primary_interval: str,
+        payload: dict[str, Any],
+        policy_sha256: str,
+        created_at_ms: int,
+    ) -> bool:
+        """Persist one prospective shadow comparator observation.
+
+        Returns ``True`` when a new row was created. Replaying the same
+        ``observation_id`` with byte-identical canonical content is a no-op.
+        Reusing the ID for different content raises ``EventIdConflictError``.
+        """
+
+        payload_text = json.dumps(
+            payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False
+        )
+        fingerprint = hashlib.sha256(payload_text.encode("utf-8")).hexdigest()
+        with Session(self.engine) as session:
+            existing = session.get(ShadowObservationRow, observation_id)
+            if existing is not None:
+                if (
+                    existing.payload_sha256 != fingerprint
+                    or existing.payload_json != payload_text
+                    or existing.policy_sha256 != policy_sha256
+                ):
+                    raise EventIdConflictError(
+                        f"shadow observation {observation_id} maps to conflicting evidence"
+                    )
+                return False
+            session.add(
+                ShadowObservationRow(
+                    observation_id=observation_id,
+                    campaign_id=campaign_id,
+                    opportunity_id=opportunity_id,
+                    market=market,
+                    symbol=symbol,
+                    family=family,
+                    direction=direction,
+                    decision_time_ms=decision_time_ms,
+                    primary_interval=primary_interval,
+                    payload_json=payload_text,
+                    payload_sha256=fingerprint,
+                    policy_sha256=policy_sha256,
+                    created_at_ms=created_at_ms,
+                )
+            )
+            session.commit()
+            return True
+
+    def count_shadow_observations(
+        self, *, campaign_id: str, decision_time_ms: int | None = None
+    ) -> int:
+        with Session(self.engine) as session:
+            statement = select(func.count()).select_from(ShadowObservationRow).where(
+                ShadowObservationRow.campaign_id == campaign_id
+            )
+            if decision_time_ms is not None:
+                statement = statement.where(
+                    ShadowObservationRow.decision_time_ms == decision_time_ms
+                )
+            return int(session.scalar(statement) or 0)
+
+    def get_shadow_coverage(
+        self,
+        *,
+        campaign_id: str,
+        market: str,
+        decision_close_ms: int,
+        primary_interval: str,
+    ) -> dict[str, Any] | None:
+        with Session(self.engine) as session:
+            row = session.scalar(
+                select(ShadowCoverageRow).where(
+                    ShadowCoverageRow.campaign_id == campaign_id,
+                    ShadowCoverageRow.market == market,
+                    ShadowCoverageRow.decision_close_ms == decision_close_ms,
+                    ShadowCoverageRow.primary_interval == primary_interval,
+                )
+            )
+            if row is None:
+                return None
+            return {
+                "mature_count": row.mature_count,
+                "expected_tradable_count": row.expected_tradable_count,
+                "raw_c0_count": row.raw_c0_count,
+                "comparator_rows": row.comparator_rows,
+                "complete": row.complete,
+                "failures": row.failures_json,
+            }
+
+    def save_shadow_coverage(
+        self,
+        *,
+        campaign_id: str,
+        market: str,
+        decision_close_ms: int,
+        primary_interval: str,
+        expected_tradable_count: int,
+        tradable_universe_hash: str,
+        mature_count: int,
+        htf_ready_count: int,
+        fresh_bbo_count: int,
+        raw_c0_count: int,
+        comparator_rows: int,
+        complete: bool,
+        failures: list[str],
+        created_at_ms: int,
+    ) -> None:
+        """Upsert one coverage cell idempotently, conflict-loud on drift."""
+
+        cell = {
+            "campaign_id": campaign_id,
+            "market": market,
+            "decision_close_ms": decision_close_ms,
+            "primary_interval": primary_interval,
+            "expected_tradable_count": expected_tradable_count,
+            "tradable_universe_hash": tradable_universe_hash,
+            "mature_count": mature_count,
+            "htf_ready_count": htf_ready_count,
+            "fresh_bbo_count": fresh_bbo_count,
+            "raw_c0_count": raw_c0_count,
+            "comparator_rows": comparator_rows,
+            "complete": complete,
+            "failures": failures,
+        }
+        content_sha = hashlib.sha256(
+            json.dumps(cell, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        with Session(self.engine) as session:
+            existing = session.scalar(
+                select(ShadowCoverageRow).where(
+                    ShadowCoverageRow.campaign_id == campaign_id,
+                    ShadowCoverageRow.market == market,
+                    ShadowCoverageRow.decision_close_ms == decision_close_ms,
+                    ShadowCoverageRow.primary_interval == primary_interval,
+                )
+            )
+            if existing is not None:
+                if existing.content_sha256 != content_sha:
+                    raise EventIdConflictError(
+                        "shadow coverage cell content drifted for "
+                        f"{campaign_id}/{market}/{decision_close_ms}"
+                    )
+                return
+            session.add(
+                ShadowCoverageRow(
+                    campaign_id=campaign_id,
+                    market=market,
+                    decision_close_ms=decision_close_ms,
+                    primary_interval=primary_interval,
+                    expected_tradable_count=expected_tradable_count,
+                    tradable_universe_hash=tradable_universe_hash,
+                    mature_count=mature_count,
+                    htf_ready_count=htf_ready_count,
+                    fresh_bbo_count=fresh_bbo_count,
+                    raw_c0_count=raw_c0_count,
+                    comparator_rows=comparator_rows,
+                    complete=complete,
+                    failures_json=json.dumps(
+                        failures, separators=(",", ":"), ensure_ascii=False
+                    ),
+                    content_sha256=content_sha,
+                )
+            )
             session.commit()

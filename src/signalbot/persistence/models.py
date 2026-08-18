@@ -86,3 +86,57 @@ class OutcomeRow(Base):
     mae: Mapped[float] = mapped_column(Float)
     close_return: Mapped[float] = mapped_column(Float)
     observed_until_ms: Mapped[int] = mapped_column(BigInteger)
+
+
+class ShadowObservationRow(Base):
+    """One durable prospective comparator observation for a raw C0 opportunity.
+
+    Idempotent by ``observation_id``. Replaying the same opportunity with the
+    same canonical payload is a no-op; reusing the ID with different content is
+    a hard conflict so evidence can never be silently overwritten.
+    """
+
+    __tablename__ = "shadow_observations"
+    observation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(String(64), index=True)
+    opportunity_id: Mapped[str] = mapped_column(String(64), index=True)
+    market: Mapped[str] = mapped_column(String(16), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    family: Mapped[str] = mapped_column(String(32))
+    direction: Mapped[str] = mapped_column(String(16))
+    decision_time_ms: Mapped[int] = mapped_column(BigInteger, index=True)
+    primary_interval: Mapped[str] = mapped_column(String(8))
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_sha256: Mapped[str] = mapped_column(String(64))
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    created_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
+class ShadowCoverageRow(Base):
+    """Compact per-close coverage ledger proving no silent observation holes."""
+
+    __tablename__ = "shadow_coverage"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "market",
+            "decision_close_ms",
+            "primary_interval",
+            name="uq_shadow_coverage_cell",
+        ),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[str] = mapped_column(String(64), index=True)
+    market: Mapped[str] = mapped_column(String(16), index=True)
+    decision_close_ms: Mapped[int] = mapped_column(BigInteger, index=True)
+    primary_interval: Mapped[str] = mapped_column(String(8))
+    expected_tradable_count: Mapped[int] = mapped_column(Integer)
+    tradable_universe_hash: Mapped[str] = mapped_column(String(64))
+    mature_count: Mapped[int] = mapped_column(Integer)
+    htf_ready_count: Mapped[int] = mapped_column(Integer)
+    fresh_bbo_count: Mapped[int] = mapped_column(Integer)
+    raw_c0_count: Mapped[int] = mapped_column(Integer)
+    comparator_rows: Mapped[int] = mapped_column(Integer)
+    complete: Mapped[bool] = mapped_column(Boolean)
+    failures_json: Mapped[str] = mapped_column(Text)
+    content_sha256: Mapped[str] = mapped_column(String(64))

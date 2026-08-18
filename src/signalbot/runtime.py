@@ -29,6 +29,7 @@ from signalbot.domain.models import (
 from signalbot.exchange.binance.schemas import PayloadError, parse_payload
 from signalbot.indicators.core import FeatureEngine
 from signalbot.persistence.repository import SqlRepository
+from signalbot.prospective.observer import ShadowObserver
 from signalbot.regime.market import MarketRegimeEngine
 from signalbot.signals.positions import (
     PaperLifecycleCheckpoint,
@@ -52,6 +53,7 @@ class MarketRuntime:
         clock: Clock,
         decision_handler: DecisionHandler,
         gap_recoverer: GapRecoverer | None = None,
+        campaign_id: str | None = None,
     ) -> None:
         self.market = market
         self.settings = settings
@@ -71,6 +73,16 @@ class MarketRuntime:
         self.regime = MarketRegimeEngine(settings.binance.history_limit)
         self.feature_engine = FeatureEngine(settings.signals)
         self.rule_engine = SignalRuleEngine(settings.signals, settings.shadow)
+        self.shadow_observer: ShadowObserver | None = None
+        if settings.shadow.observation_enabled:
+            self.shadow_observer = ShadowObserver(
+                settings,
+                self.rule_engine,
+                repository,
+                campaign_id=campaign_id
+                or (f"campaign-{settings.rule_version}-shadow-er-context-v1"),
+                created_at_ms=clock.now_ms(),
+            )
         self.state_machine = SignalStateMachine(settings.signals, settings.rule_version)
         self.paper_positions = PaperPositionLifecycle(
             settings.signals.technical_exit,
@@ -290,6 +302,10 @@ class MarketRuntime:
         if candle.symbol not in self.tradable_symbols:
             return
         contexts = self._context_features(candle.symbol, feature.event_time_ms)
+        if self.shadow_observer is not None:
+            self.shadow_observer.observe(
+                feature, contexts, self.tradable_symbols
+            )
         new_decisions: list[SignalDecision] = []
         for evaluation in self.rule_engine.evaluate(feature, contexts):
             decision = await self._process(evaluation)

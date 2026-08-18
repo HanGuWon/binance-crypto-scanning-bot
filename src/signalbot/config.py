@@ -90,6 +90,23 @@ class ShadowPolicySettings(StrictModel):
     round_trip_cost_bps: float = Field(default=26.0, gt=0, le=200)
     cost_headroom_multiple: float = Field(default=2.0, ge=1, le=20)
     require_btc_context_aligned: bool = True
+    # Separate observer control. When enabled, production continues to use the
+    # frozen R2 entry_policy while the shadow successor is evaluated and its
+    # evidence persisted. This is the prospective observation path; selecting
+    # entry_policy="shadow_er_context_v1" is a legacy standalone mode that must
+    # not be used for a prospective campaign.
+    observation_enabled: bool = False
+    observation_schema_version: str = "shadow_observation_v1"
+
+    @model_validator(mode="after")
+    def freeze_observation_clock(self) -> ShadowPolicySettings:
+        if not self.observation_enabled:
+            return self
+        if self.observation_schema_version != "shadow_observation_v1":
+            raise ValueError("shadow observation schema version is frozen")
+        if self.policy_version != "er_context_v1":
+            raise ValueError("shadow policy version is frozen for observation")
+        return self
 
 
 class SignalSettings(StrictModel):
@@ -262,6 +279,27 @@ class Settings(StrictModel):
             if missing:
                 raise ValueError(
                     "shadow_er_context_v1 requires subscribed intervals: "
+                    + ", ".join(missing)
+                )
+        if self.shadow.observation_enabled:
+            # A prospective campaign observes ONE causal 5m clock while R2 stays
+            # the production path. A silent non-5m clock would corrupt the frozen
+            # sampling contract, so reject it at configuration load time.
+            if self.signals.entry_policy != "r2_pit_htf_exec":
+                raise ValueError(
+                    "shadow observation requires entry_policy=r2_pit_htf_exec"
+                )
+            if self.binance.primary_interval != "5m":
+                raise ValueError("shadow observation requires primary_interval=5m")
+            if not self.signals.gate_enabled:
+                raise ValueError("shadow observation requires gate_enabled")
+            required_intervals = {"5m", "15m", "1h"}
+            missing = sorted(
+                required_intervals.difference(self.binance.intervals)
+            )
+            if missing:
+                raise ValueError(
+                    "shadow observation requires subscribed intervals: "
                     + ", ".join(missing)
                 )
         return self

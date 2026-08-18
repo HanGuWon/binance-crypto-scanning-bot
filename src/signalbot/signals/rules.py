@@ -7,13 +7,17 @@ from signalbot.config import ShadowPolicySettings, SignalSettings
 from signalbot.domain.enums import Direction, SignalFamily
 from signalbot.domain.models import (
     DIRECTIONAL_DIAGNOSTICS_METADATA_KEY,
+    ComparatorCandidate,
     DirectionalDiagnostics,
     DirectionalSetupScore,
     FeatureSnapshot,
     RuleEvaluation,
 )
 from signalbot.signals.gates import evaluate_entry_gates
-from signalbot.signals.shadow_policy import evaluate_shadow_gate
+from signalbot.signals.shadow_policy import (
+    SHADOW_GATE_METADATA_KEY,
+    evaluate_shadow_gate,
+)
 
 
 def _decimal(value: float) -> Decimal:
@@ -67,6 +71,61 @@ class SignalRuleEngine:
             evaluated = [self._apply_gate(item, feature, context_values) for item in values]
         evaluated = [self._lock_informational_only(item) for item in evaluated]
         return self._with_directional_diagnostics(feature, evaluated)
+
+    def evaluate_comparator(
+        self,
+        feature: FeatureSnapshot,
+        contexts: Mapping[str, FeatureSnapshot] | None = None,
+    ) -> ComparatorCandidate | None:
+        """Build one deterministic common-opportunity comparator view.
+
+        The candidate family is locked by market (Spot BREAKOUT_LONG / Futures
+        BREAKDOWN_SHORT), mirroring the frozen R2 family. Both the incumbent R2
+        gate and the shadow successor gate are evaluated on the exact same raw
+        C0 candidate and the same strictly-prior context cutoff. ``None`` is
+        returned only for markets outside the permitted families (never for an
+        ordinary Spot/Futures Close).
+        """
+
+        context_values = contexts or {}
+        if feature.market.value == "spot":
+            raw = self._breakout(feature)
+        elif feature.market.value == "futures":
+            raw = self._breakdown(feature)
+        else:
+            return None
+
+        gate = evaluate_entry_gates(
+            feature, raw.direction, context_values, self.settings
+        )
+        r2_passed = gate.passed and raw.metadata.get("informational_only") is not True
+
+        shadow_evaluation = evaluate_shadow_gate(
+            raw, feature, context_values, self.settings, self.shadow
+        )
+        shadow_gate = shadow_evaluation.metadata.get(
+            SHADOW_GATE_METADATA_KEY, {}
+        ) if isinstance(
+            shadow_evaluation.metadata.get(SHADOW_GATE_METADATA_KEY), dict
+        ) else {}
+
+        return ComparatorCandidate(
+            market=feature.market,
+            symbol=feature.symbol,
+            family=raw.family,
+            direction=raw.direction,
+            decision_time_ms=feature.event_time_ms,
+            primary_interval=feature.interval,
+            raw_c0_triggered=raw.triggered,
+            raw_score=raw.score,
+            r2_passed=r2_passed,
+            r2_failures=tuple(gate.failures),
+            shadow_passed=shadow_evaluation.triggered,
+            shadow_failures=tuple(
+                shadow_gate.get("failures", []) if isinstance(shadow_gate, dict) else []
+            ),
+            shadow_gate=shadow_gate,
+        )
 
     def _evaluate_shadow_policy(
         self,

@@ -34,6 +34,14 @@ class AnomalyDetector:
         machine needs a valid idle observation to clear a prior intrabar warning.
         Rejected symbols, invalid prices, and out-of-order observations return no
         evaluations and therefore cannot accidentally reset live state.
+
+        Liquidity semantics (documented fail-closed contract):
+        - a *valid* quote_volume below the configured floor is real evidence of
+          insufficient liquidity and therefore emits the idle (score 0) families,
+          which is what allows a previously liquidity-qualified warning to clear;
+        - a *missing* (``None``) quote_volume is unusable evidence: liquidity
+          qualification cannot be evaluated, so no evaluation is returned and any
+          prior warning is preserved. Absence of data never clears a warning.
         """
 
         if ticker.symbol not in allowed_symbols or ticker.close <= 0:

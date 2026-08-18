@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 
 from signalbot.config import ShadowPolicySettings, SignalSettings
@@ -12,6 +14,39 @@ from signalbot.signals.gates import (
 
 SHADOW_POLICY_METADATA_KEY = "shadow_policy"
 SHADOW_GATE_METADATA_KEY = "shadow_gate"
+
+
+def shadow_policy_identity(
+    shadow: ShadowPolicySettings, signals: SignalSettings
+) -> str:
+    """Deterministic SHA-256 of the frozen shadow scientific parameters.
+
+    The digest covers every value that can change shadow scoring semantics,
+    including the shared signal-level inputs the shadow gate consumes
+    (relative-volume threshold, execution freshness/spread/notional contract).
+    Any change to a frozen parameter produces a different identity, so a new
+    prospective campaign must be preregistered under the new digest.
+    """
+
+    canonical = {
+        "policy_name": "shadow_er_context",
+        "policy_version": shadow.policy_version,
+        "efficiency_ratio_min": shadow.efficiency_ratio_min,
+        "breakout_max_distance_atr": shadow.breakout_max_distance_atr,
+        "round_trip_cost_bps": shadow.round_trip_cost_bps,
+        "cost_headroom_multiple": shadow.cost_headroom_multiple,
+        "require_btc_context_aligned": shadow.require_btc_context_aligned,
+        "shared": {
+            "relative_volume_threshold": signals.relative_volume_threshold,
+            "book_maximum_age_ms": signals.book_maximum_age_ms,
+            "maximum_spread_bps": signals.maximum_spread_bps,
+            "execution_notional_usdt": signals.execution_notional_usdt,
+        },
+    }
+    payload = json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def evaluate_shadow_gate(

@@ -3,6 +3,26 @@
 This plan leaves the frozen R2 formulas, thresholds, market/direction restrictions,
 and R4B efficacy gates unchanged. Repairs are separated from strategy research.
 
+## Status — 2026-08-18 (prospective shadow observer)
+
+Implemented as a single local source-freeze commit (not pushed): the
+`shadow_er_context_v1` successor is no longer selectable as a production
+`entry_policy`; it is a simultaneous observer gated by
+`shadow.observation_enabled` (default `false`). Production keeps
+`entry_policy: r2_pit_htf_exec`. The observer:
+
+- evaluates R2 and the shadow on the SAME causal 5m feature/context cutoff;
+- writes one durable comparator observation per raw C0 opportunity (idempotent,
+  conflict-loud) and a per-close coverage ledger (raw C0 count == comparator
+  rows) proving no silent observation holes;
+- derives a frozen policy SHA-256 and config SHA-256 for immutable provenance;
+- is informational-only: it cannot enter the state machine, create a PAPER
+  position, or cause a Discord recommendation.
+
+Scientific status remains `SHADOW_SUCCESSOR_ONLY`. A prospective campaign must
+be preregistered with its own activation timestamp after source/config/policy
+freeze; no prospective time has been started from this environment.
+
 ## P0 — release and prospective-governance blockers
 
 1. Establish a canonical Git commit/tag and source manifest before another
