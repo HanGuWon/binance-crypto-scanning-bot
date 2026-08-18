@@ -137,30 +137,49 @@ def _execution_score(
     direction: Direction,
     settings: SignalSettings,
 ) -> tuple[int, list[str]]:
+    if settings.entry_policy == "r2_pit_htf_exec":
+        return evaluate_fresh_bbo_execution(feature, direction, settings)
     spread = feature.spread_bps
     if spread is None or spread > settings.maximum_spread_bps:
         return 0, ["fresh decision-time BBO spread unavailable or too wide"]
-    if settings.entry_policy == "r2_pit_htf_exec":
-        capacity = (
-            feature.ask_quote_capacity
-            if direction is Direction.LONG
-            else feature.bid_quote_capacity
-        )
-        if feature.spread_is_proxy or feature.book_age_ms is None or capacity is None:
-            return 0, ["fresh observed BBO price and quantity are required"]
-        if not 0 <= feature.book_age_ms <= settings.book_maximum_age_ms:
-            return 0, [
-                "observed BBO age "
-                f"{feature.book_age_ms}ms is outside [0, "
-                f"{settings.book_maximum_age_ms}]ms"
-            ]
-        if capacity < settings.execution_notional_usdt:
-            return 0, [
-                "top-of-book quote capacity "
-                f"{capacity:.2f} < {settings.execution_notional_usdt:.2f} USDT"
-            ]
     if feature.spread_is_proxy:
         return 65, []
+    return (100 if spread <= settings.maximum_spread_bps / 2 else 75), []
+
+
+def evaluate_fresh_bbo_execution(
+    feature: FeatureSnapshot,
+    direction: Direction,
+    settings: SignalSettings,
+) -> tuple[int, list[str]]:
+    """Score one decision-time execution check against observed BBO evidence.
+
+    This is the single owner of the fresh-BBO contract shared by the frozen
+    R2 policy and the shadow successor policy. A proxy, missing, stale, or
+    under-sized book observation always fails closed.
+    """
+
+    spread = feature.spread_bps
+    if spread is None or spread > settings.maximum_spread_bps:
+        return 0, ["fresh decision-time BBO spread unavailable or too wide"]
+    capacity = (
+        feature.ask_quote_capacity
+        if direction is Direction.LONG
+        else feature.bid_quote_capacity
+    )
+    if feature.spread_is_proxy or feature.book_age_ms is None or capacity is None:
+        return 0, ["fresh observed BBO price and quantity are required"]
+    if not 0 <= feature.book_age_ms <= settings.book_maximum_age_ms:
+        return 0, [
+            "observed BBO age "
+            f"{feature.book_age_ms}ms is outside [0, "
+            f"{settings.book_maximum_age_ms}]ms"
+        ]
+    if capacity < settings.execution_notional_usdt:
+        return 0, [
+            "top-of-book quote capacity "
+            f"{capacity:.2f} < {settings.execution_notional_usdt:.2f} USDT"
+        ]
     return (100 if spread <= settings.maximum_spread_bps / 2 else 75), []
 
 

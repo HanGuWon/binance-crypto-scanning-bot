@@ -216,3 +216,37 @@ def test_universe_contract_rejects_capacity_and_subset_violations() -> None:
             frozenset({"BUSDT"}),
         )
     repository.close()
+
+
+@pytest.mark.asyncio
+async def test_conflicting_book_ticker_cursor_is_discarded_without_raising() -> None:
+    runtime, repository = _runtime(_settings())
+    runtime.set_active_symbols(frozenset({"BTCUSDT"}), frozenset({"BTCUSDT"}))
+    first = BookTicker(
+        market=Market.SPOT,
+        symbol="BTCUSDT",
+        event_time_ms=1_000,
+        bid_price=Decimal("99.9"),
+        bid_quantity=Decimal("1"),
+        ask_price=Decimal("100.1"),
+        ask_quantity=Decimal("1"),
+    )
+    conflicting = BookTicker(
+        market=Market.SPOT,
+        symbol="BTCUSDT",
+        event_time_ms=1_000,
+        bid_price=Decimal("98.0"),
+        bid_quantity=Decimal("1"),
+        ask_price=Decimal("100.1"),
+        ask_quantity=Decimal("1"),
+    )
+
+    await runtime.handle_event(first)
+    await runtime.handle_event(conflicting)
+
+    snapshot = runtime.books.snapshot(
+        Market.SPOT, "BTCUSDT", as_of_ms=1_000, maximum_age_ms=0
+    )
+    assert snapshot is not None
+    assert snapshot.bid_quote_capacity == float(Decimal("99.9"))
+    repository.close()

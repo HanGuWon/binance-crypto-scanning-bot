@@ -11,7 +11,11 @@ from signalbot.config import Settings
 from signalbot.data.anomaly import AnomalyDetector
 from signalbot.data.candles import CandleGap, CandleStore, interval_to_milliseconds
 from signalbot.data.funding import FundingRateTracker
-from signalbot.data.microstructure import BookState, OrderFlowTracker
+from signalbot.data.microstructure import (
+    BookState,
+    BookTickerConflictError,
+    OrderFlowTracker,
+)
 from signalbot.domain.enums import Market
 from signalbot.domain.models import (
     AggTrade,
@@ -66,7 +70,7 @@ class MarketRuntime:
         )
         self.regime = MarketRegimeEngine(settings.binance.history_limit)
         self.feature_engine = FeatureEngine(settings.signals)
-        self.rule_engine = SignalRuleEngine(settings.signals)
+        self.rule_engine = SignalRuleEngine(settings.signals, settings.shadow)
         self.state_machine = SignalStateMachine(settings.signals, settings.rule_version)
         self.paper_positions = PaperPositionLifecycle(
             settings.signals.technical_exit,
@@ -119,6 +123,7 @@ class MarketRuntime:
         self.anomaly.retain_symbols(surveillance)
         self.regime.retain_symbols(self.market, retained_market_data)
         self.state_machine.prune_symbols(surveillance)
+        self.state_machine.prune_directional_states(tradable)
         self.paper_positions.prune_symbols(tradable)
         self._features = {
             key: feature
@@ -229,7 +234,14 @@ class MarketRuntime:
                     "receipt_time_ms": received_at_ms,
                 }
             )
-            self.books.update(event)
+            try:
+                self.books.update(event)
+            except BookTickerConflictError as exc:
+                LOGGER.warning(
+                    "discarding conflicting book-ticker cursor",
+                    extra={"market": self.market.value, "symbol": event.symbol},
+                    exc_info=exc,
+                )
             return
         if isinstance(event, AggTrade):
             self.order_flow.update(event)

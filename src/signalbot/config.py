@@ -81,6 +81,17 @@ class TechnicalExitSettings(StrictModel):
     max_holding_bars: int = Field(default=72, ge=1, le=10_000)
 
 
+class ShadowPolicySettings(StrictModel):
+    """Shadow successor policy. Informational-only until prospective validation."""
+
+    policy_version: Literal["er_context_v1"] = "er_context_v1"
+    efficiency_ratio_min: float = Field(default=0.40, gt=0, le=1)
+    breakout_max_distance_atr: float = Field(default=0.50, ge=0, le=5)
+    round_trip_cost_bps: float = Field(default=26.0, gt=0, le=200)
+    cost_headroom_multiple: float = Field(default=2.0, ge=1, le=20)
+    require_btc_context_aligned: bool = True
+
+
 class SignalSettings(StrictModel):
     watch_score: int = Field(default=60, ge=1, le=100)
     setup_score: int = Field(default=70, ge=1, le=100)
@@ -97,6 +108,7 @@ class SignalSettings(StrictModel):
     anomaly_robust_zscore: float = Field(default=4.0, ge=1, le=20)
     anomaly_min_points: int = Field(default=20, ge=5, le=500)
     anomaly_history_points: int = Field(default=600, ge=50, le=10000)
+    anomaly_min_quote_volume_usdt: float = Field(default=0, ge=0)
     gate_enabled: bool = False
     trend_gate: int = Field(default=60, ge=0, le=100)
     participation_gate: int = Field(default=60, ge=0, le=100)
@@ -112,7 +124,9 @@ class SignalSettings(StrictModel):
     gate_use_participation: bool = True
     gate_use_crowding: bool = True
     gate_use_higher_timeframes: bool = True
-    entry_policy: Literal["legacy_gates", "r2_pit_htf_exec"] = "legacy_gates"
+    entry_policy: Literal[
+        "legacy_gates", "r2_pit_htf_exec", "shadow_er_context_v1"
+    ] = "legacy_gates"
     execution_notional_usdt: float = Field(default=100.0, gt=0, le=1_000_000)
     confirmation_mode: Literal["score", "explicit_trigger"] = "explicit_trigger"
     volume_feature_set: Literal[
@@ -217,6 +231,7 @@ class Settings(StrictModel):
     storage: StorageSettings = StorageSettings()
     alerts: AlertSettings = AlertSettings()
     runtime: RuntimeSettings = RuntimeSettings()
+    shadow: ShadowPolicySettings = ShadowPolicySettings()
 
     @model_validator(mode="after")
     def validate_funding_history_capacity(self) -> Settings:
@@ -237,6 +252,16 @@ class Settings(StrictModel):
             if missing:
                 raise ValueError(
                     "r2_pit_htf_exec requires subscribed intervals: "
+                    + ", ".join(missing)
+                )
+        if self.signals.entry_policy == "shadow_er_context_v1":
+            required_intervals = {"5m", "15m", "1h"}
+            missing = sorted(
+                required_intervals.difference(self.binance.intervals)
+            )
+            if missing:
+                raise ValueError(
+                    "shadow_er_context_v1 requires subscribed intervals: "
                     + ", ".join(missing)
                 )
         return self

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from decimal import Decimal
 
-from signalbot.config import SignalSettings
+from signalbot.config import ShadowPolicySettings, SignalSettings
 from signalbot.domain.enums import Direction, SignalFamily
 from signalbot.domain.models import (
     DIRECTIONAL_DIAGNOSTICS_METADATA_KEY,
@@ -13,6 +13,7 @@ from signalbot.domain.models import (
     RuleEvaluation,
 )
 from signalbot.signals.gates import evaluate_entry_gates
+from signalbot.signals.shadow_policy import evaluate_shadow_gate
 
 
 def _decimal(value: float) -> Decimal:
@@ -24,13 +25,20 @@ def _bounded(score: float) -> int:
 
 
 class SignalRuleEngine:
-    def __init__(self, settings: SignalSettings) -> None:
+    def __init__(
+        self,
+        settings: SignalSettings,
+        shadow: ShadowPolicySettings | None = None,
+    ) -> None:
         self.settings = settings
+        self.shadow = shadow or ShadowPolicySettings()
 
     def evaluate(
         self, feature: FeatureSnapshot, contexts: Mapping[str, FeatureSnapshot] | None = None
     ) -> list[RuleEvaluation]:
         context_values = contexts or {}
+        if self.settings.entry_policy == "shadow_er_context_v1":
+            return self._evaluate_shadow_policy(feature, context_values)
         if not self.settings.gate_enabled:
             if feature.spread_bps is None:
                 return self._with_directional_diagnostics(
@@ -57,6 +65,60 @@ class SignalRuleEngine:
             evaluated = [self._apply_context(item, context_values) for item in values]
         else:
             evaluated = [self._apply_gate(item, feature, context_values) for item in values]
+        evaluated = [self._lock_informational_only(item) for item in evaluated]
+        return self._with_directional_diagnostics(feature, evaluated)
+
+    def _evaluate_shadow_policy(
+        self,
+        feature: FeatureSnapshot,
+        contexts: Mapping[str, FeatureSnapshot],
+    ) -> list[RuleEvaluation]:
+        """Evaluate the informational-only shadow successor candidate set.
+
+        Only Spot BREAKOUT_LONG and Futures BREAKDOWN_SHORT participate,
+        mirroring the frozen R2 market/direction family. Every shadow
+        evaluation is informational-only and can never reach CONFIRMED.
+        """
+
+        values = [
+            self._squeeze(feature, Direction.LONG),
+            self._squeeze(feature, Direction.SHORT),
+            self._breakout(feature),
+            self._breakdown(feature),
+            self._pullback(feature, Direction.LONG),
+            self._pullback(feature, Direction.SHORT),
+            self._exhaustion(feature),
+            self._capitulation(feature),
+        ]
+        evaluated: list[RuleEvaluation] = []
+        for item in values:
+            allowed = (
+                item.family is SignalFamily.BREAKOUT_LONG
+                and feature.market.value == "spot"
+            ) or (
+                item.family is SignalFamily.BREAKDOWN_SHORT
+                and feature.market.value == "futures"
+            )
+            if not allowed:
+                evaluated.append(
+                    item.model_copy(
+                        update={
+                            "score": 0,
+                            "eligible": False,
+                            "triggered": False,
+                            "reasons": (
+                                *item.reasons,
+                                "inactive under shadow_er_context_v1",
+                            ),
+                        }
+                    )
+                )
+                continue
+            evaluated.append(
+                evaluate_shadow_gate(
+                    item, feature, contexts, self.settings, self.shadow
+                )
+            )
         evaluated = [self._lock_informational_only(item) for item in evaluated]
         return self._with_directional_diagnostics(feature, evaluated)
 

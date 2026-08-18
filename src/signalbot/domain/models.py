@@ -276,6 +276,7 @@ class FeatureSnapshot(FrozenModel):
     previous_low: float | None = None
     previous_ema20: float | None = None
     ema20_distance_atr: float | None = None
+    efficiency_ratio_20: float | None = None
     chart_structure: ChartStructureSnapshot = ChartStructureSnapshot()
     data_completeness: float = Field(default=1.0, ge=0.0, le=1.0)
     regime: MarketRegime

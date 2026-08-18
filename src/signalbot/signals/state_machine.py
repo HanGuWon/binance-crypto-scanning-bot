@@ -32,6 +32,29 @@ class SignalStateMachine:
             del self._states[key]
         return len(stale)
 
+    def prune_directional_states(
+        self, tradable_symbols: Collection[str]
+    ) -> int:
+        """Drop non-risk family state for symbols outside the tradable universe.
+
+        Risk families (PUMP_RISK/CRASH_RISK) are driven by the all-market
+        mini-ticker and must survive for surveillance-only symbols. Directional
+        entry families are only evaluated for tradable symbols, so their
+        WATCH/SETUP/cooldown state outside tradable is stale and must not be
+        resurrected when a symbol re-enters the tradable top-N.
+        """
+
+        tradable = {symbol.upper() for symbol in tradable_symbols}
+        risk_families = {"pump_risk", "crash_risk"}
+        stale = [
+            key
+            for key in self._states
+            if key[1].upper() not in tradable and key[2] not in risk_families
+        ]
+        for key in stale:
+            del self._states[key]
+        return len(stale)
+
     def process(self, e: RuleEvaluation) -> SignalDecision | None:
         e = self._validated_evaluation(e)
         key = (e.market.value, e.symbol, e.family.value, e.timeframe)
