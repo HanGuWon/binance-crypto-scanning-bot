@@ -32,6 +32,8 @@ class BinanceSettings(StrictModel):
     request_timeout_seconds: float = Field(default=15, ge=1, le=60)
     funding_history_points: int = Field(default=256, ge=3, le=1000)
     funding_refresh_seconds: int = Field(default=300, ge=30, le=3600)
+    universe_refresh_seconds: int = Field(default=900, ge=60, le=86_400)
+    universe_change_confirmations: int = Field(default=2, ge=1, le=12)
     blacklist: list[str] = Field(default_factory=list)
     excluded_base_assets: list[str] = Field(default_factory=list)
 

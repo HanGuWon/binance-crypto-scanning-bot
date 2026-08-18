@@ -19,6 +19,8 @@ binance:
   request_timeout_seconds: 15
   funding_history_points: 256
   funding_refresh_seconds: 300
+  universe_refresh_seconds: 900
+  universe_change_confirmations: 2
   blacklist: []
   excluded_base_assets: [USDC, FDUSD, USDP, TUSD, DAI, EUR, TRY, BRL]
 signals:
