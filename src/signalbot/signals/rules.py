@@ -41,8 +41,6 @@ class SignalRuleEngine:
         self, feature: FeatureSnapshot, contexts: Mapping[str, FeatureSnapshot] | None = None
     ) -> list[RuleEvaluation]:
         context_values = contexts or {}
-        if self.settings.entry_policy == "shadow_er_context_v1":
-            return self._evaluate_shadow_policy(feature, context_values)
         if not self.settings.gate_enabled:
             if feature.spread_bps is None:
                 return self._with_directional_diagnostics(
@@ -127,12 +125,14 @@ class SignalRuleEngine:
             shadow_gate=shadow_gate,
         )
 
-    def _evaluate_shadow_policy(
+    def evaluate_research_shadow(
         self,
         feature: FeatureSnapshot,
         contexts: Mapping[str, FeatureSnapshot],
     ) -> list[RuleEvaluation]:
-        """Evaluate the informational-only shadow successor candidate set.
+        """Research-only standalone shadow successor evaluation (never selectable
+        as a production entry policy). The live ``SignalSettings.entry_policy``
+        cannot target this path; it exists only for offline research/parity.
 
         Only Spot BREAKOUT_LONG and Futures BREAKDOWN_SHORT participate,
         mirroring the frozen R2 market/direction family. Every shadow

@@ -75,13 +75,15 @@ class MarketRuntime:
         self.rule_engine = SignalRuleEngine(settings.signals, settings.shadow)
         self.shadow_observer: ShadowObserver | None = None
         if settings.shadow.observation_enabled:
+            if campaign_id is not None and campaign_id != settings.shadow.campaign_id:
+                raise ValueError(
+                    "runtime campaign_id does not match configured shadow campaign_id"
+                )
             self.shadow_observer = ShadowObserver(
                 settings,
                 self.rule_engine,
                 repository,
-                campaign_id=campaign_id
-                or (f"campaign-{settings.rule_version}-shadow-er-context-v1"),
-                created_at_ms=clock.now_ms(),
+                clock=clock,
             )
         self.state_machine = SignalStateMachine(settings.signals, settings.rule_version)
         self.paper_positions = PaperPositionLifecycle(
@@ -101,6 +103,25 @@ class MarketRuntime:
         ] = {}
         self.decision_count = 0
         self.parse_error_count = 0
+
+    def flush_shadow(self) -> None:
+        """Finalize any open shadow coverage cells on graceful shutdown.
+
+        Called by the production shutdown owner before the repository is
+        closed. A shadow flush failure is failure-isolated and must never
+        damage the incumbent shutdown or the PAPER lifecycle.
+        """
+
+        if self.shadow_observer is None:
+            return
+        try:
+            self.shadow_observer.flush()
+        except Exception as exc:
+            LOGGER.error(
+                "shadow observer finalization failed; incumbent shutdown unchanged",
+                exc_info=exc,
+                extra={"market": self.market.value},
+            )
 
     def set_surveillance_symbols(self, symbols: frozenset[str]) -> None:
         """Backward-compatible replay helper that treats one set as both universes."""
@@ -302,10 +323,6 @@ class MarketRuntime:
         if candle.symbol not in self.tradable_symbols:
             return
         contexts = self._context_features(candle.symbol, feature.event_time_ms)
-        if self.shadow_observer is not None:
-            self.shadow_observer.observe(
-                feature, contexts, self.tradable_symbols
-            )
         new_decisions: list[SignalDecision] = []
         for evaluation in self.rule_engine.evaluate(feature, contexts):
             decision = await self._process(evaluation)
@@ -322,6 +339,24 @@ class MarketRuntime:
             self.paper_positions.restore_checkpoint(checkpoint)
             raise
         await self._publish_paper_transition(exits, checkpoint)
+        # Shadow observation runs strictly AFTER the production R2/state-machine/
+        # PAPER/Discord path and is failure-isolated: a shadow persistence fault
+        # can never suppress or alter the incumbent production decision for this
+        # close. Any shadow exception is caught and recorded, never propagated.
+        if self.shadow_observer is not None:
+            try:
+                self.shadow_observer.observe(
+                    feature, contexts, self.tradable_symbols
+                )
+            except Exception as exc:
+                LOGGER.error(
+                    "shadow observation failed; incumbent R2 production unchanged",
+                    exc_info=exc,
+                    extra={
+                        "market": self.market.value,
+                        "symbol": candle.symbol,
+                    },
+                )
 
     async def _recover_gap(self, gap: CandleGap) -> bool:
         if self.gap_recoverer is None:

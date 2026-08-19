@@ -16,6 +16,92 @@ class StrictPriorHtfEvaluation:
     failures: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class BboExecutionEvidence:
+    """Single structured owner of the fresh-BBO qualification contract.
+
+    Every consumer (frozen R2 gate, shadow successor gate, prospective payload,
+    coverage readiness) reads the SAME decision from this owner so there can be
+    no semantic drift between who counts a BBO as eligible. Fails closed on any
+    absent, stale, proxy, or undersized evidence.
+    """
+
+    eligible: bool
+    spread_present: bool
+    spread_within_limit: bool
+    proxy: bool
+    age_present: bool
+    age_non_negative: bool
+    age_within_limit: bool
+    capacity_present: bool
+    capacity_sufficient: bool
+    failures: tuple[str, ...]
+
+
+def evaluate_bbo_execution_evidence(
+    feature: FeatureSnapshot,
+    direction: Direction,
+    settings: SignalSettings,
+) -> BboExecutionEvidence:
+    """Qualify one decision-time observation against the fresh-BBO contract.
+
+    This is the single authority for what counts as observed execution
+    evidence. It does not change any threshold; it centralizes the semantics
+    that the R2 gate, shadow gate, observation payload, and coverage counters
+    already shared, so they cannot drift apart again.
+    """
+
+    spread = feature.spread_bps
+    spread_present = spread is not None
+    spread_within_limit = spread_present and spread <= settings.maximum_spread_bps
+    proxy = bool(feature.spread_is_proxy)
+    age_present = feature.book_age_ms is not None
+    age_non_negative = age_present and feature.book_age_ms >= 0
+    age_within_limit = age_non_negative and (
+        feature.book_age_ms <= settings.book_maximum_age_ms
+    )
+    capacity = (
+        feature.ask_quote_capacity
+        if direction is Direction.LONG
+        else feature.bid_quote_capacity
+    )
+    capacity_present = capacity is not None
+    capacity_sufficient = capacity_present and (
+        capacity >= settings.execution_notional_usdt
+    )
+
+    failures: list[str] = []
+    if not spread_present or not spread_within_limit:
+        failures.append("fresh decision-time BBO spread unavailable or too wide")
+    if proxy or not age_present or not capacity_present:
+        failures.append("fresh observed BBO price and quantity are required")
+    if not age_non_negative or not age_within_limit:
+        value = "missing" if feature.book_age_ms is None else f"{feature.book_age_ms}ms"
+        failures.append(
+            f"observed BBO age {value} is outside [0, "
+            f"{settings.book_maximum_age_ms}]ms"
+        )
+    if not capacity_sufficient:
+        value = "unavailable" if capacity is None else f"{capacity:.2f}"
+        failures.append(
+            "top-of-book quote capacity "
+            f"{value} < {settings.execution_notional_usdt:.2f} USDT"
+        )
+
+    return BboExecutionEvidence(
+        eligible=not failures,
+        spread_present=spread_present,
+        spread_within_limit=spread_within_limit,
+        proxy=proxy,
+        age_present=age_present,
+        age_non_negative=age_non_negative,
+        age_within_limit=age_within_limit,
+        capacity_present=capacity_present,
+        capacity_sufficient=capacity_sufficient,
+        failures=tuple(failures),
+    )
+
+
 def evaluate_strict_prior_htf(
     feature: FeatureSnapshot,
     direction: Direction,
@@ -159,28 +245,12 @@ def evaluate_fresh_bbo_execution(
     under-sized book observation always fails closed.
     """
 
-    spread = feature.spread_bps
-    if spread is None or spread > settings.maximum_spread_bps:
-        return 0, ["fresh decision-time BBO spread unavailable or too wide"]
-    capacity = (
-        feature.ask_quote_capacity
-        if direction is Direction.LONG
-        else feature.bid_quote_capacity
-    )
-    if feature.spread_is_proxy or feature.book_age_ms is None or capacity is None:
-        return 0, ["fresh observed BBO price and quantity are required"]
-    if not 0 <= feature.book_age_ms <= settings.book_maximum_age_ms:
-        return 0, [
-            "observed BBO age "
-            f"{feature.book_age_ms}ms is outside [0, "
-            f"{settings.book_maximum_age_ms}]ms"
-        ]
-    if capacity < settings.execution_notional_usdt:
-        return 0, [
-            "top-of-book quote capacity "
-            f"{capacity:.2f} < {settings.execution_notional_usdt:.2f} USDT"
-        ]
-    return (100 if spread <= settings.maximum_spread_bps / 2 else 75), []
+    evidence = evaluate_bbo_execution_evidence(feature, direction, settings)
+    if not evidence.eligible:
+        return 0, list(evidence.failures)
+    return (
+        100 if feature.spread_bps <= settings.maximum_spread_bps / 2 else 75
+    ), []
 
 
 def _volume_policy_score(

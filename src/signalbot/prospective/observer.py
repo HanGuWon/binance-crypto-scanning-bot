@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
 
+from signalbot.clock import Clock
 from signalbot.config import Settings
+from signalbot.domain.enums import Market, SignalFamily
 from signalbot.domain.models import (
     ComparatorCandidate,
     FeatureSnapshot,
 )
 from signalbot.persistence.repository import SqlRepository
+from signalbot.signals.gates import evaluate_bbo_execution_evidence
 from signalbot.signals.rules import SignalRuleEngine
 from signalbot.signals.shadow_policy import shadow_policy_identity
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _sha256(text: str) -> str:
@@ -57,13 +63,40 @@ def shadow_observation_id(
 def shadow_config_sha256(settings: Settings) -> str:
     """Deterministic config digest for the frozen observation inputs."""
 
+    bins = settings.binance
+    signals = settings.signals
     canonical = {
         "rule_version": settings.rule_version,
-        "primary_interval": settings.binance.primary_interval,
-        "markets": sorted(item.value for item in settings.binance.markets),
-        "intervals": sorted(settings.binance.intervals),
+        "primary_interval": bins.primary_interval,
+        "markets": sorted(item.value for item in bins.markets),
+        "intervals": sorted(bins.intervals),
         "confirmation_mode": settings.signals.confirmation_mode,
-        "shadow": settings.shadow.model_dump(mode="json"),
+        # Universe selection: every parameter that can change the opportunity
+        # denominator is bound so the config identity tracks the population.
+        "universe": {
+            "top_n": bins.top_n,
+            "surveillance_n": bins.surveillance_n,
+            "min_quote_volume": bins.min_quote_volume,
+            "minimum_age_days": bins.minimum_age_days,
+            "quote_asset": bins.quote_asset,
+            "blacklist": sorted(bins.blacklist),
+            "excluded_base_assets": sorted(bins.excluded_base_assets),
+        },
+        # Raw C0 (breakout/breakdown) contract and shared signal inputs that
+        # determine the causal trigger population.
+        "breakout_lookback": signals.breakout_lookback,
+        "shadow": {
+            k: v
+            for k, v in settings.shadow.model_dump(mode="json").items()
+            if k in {
+                "policy_version",
+                "efficiency_ratio_min",
+                "breakout_max_distance_atr",
+                "round_trip_cost_bps",
+                "cost_headroom_multiple",
+                "require_btc_context_aligned",
+            }
+        },
         "shared": {
             "relative_volume_threshold": settings.signals.relative_volume_threshold,
             "book_maximum_age_ms": settings.signals.book_maximum_age_ms,
@@ -76,6 +109,17 @@ def shadow_config_sha256(settings: Settings) -> str:
 
 def _coverage_cell_key(market: str, decision_close_ms: int) -> tuple[str, int]:
     return (market, decision_close_ms)
+
+
+def shadow_campaign_families(settings: Settings) -> dict[str, list[str]]:
+    """Return the frozen comparable family contract for configured markets."""
+
+    families: dict[str, list[str]] = {}
+    if Market.SPOT in settings.binance.markets:
+        families[Market.SPOT.value] = [SignalFamily.BREAKOUT_LONG.value]
+    if Market.FUTURES in settings.binance.markets:
+        families[Market.FUTURES.value] = [SignalFamily.BREAKDOWN_SHORT.value]
+    return families
 
 
 class ShadowObserver:
@@ -95,24 +139,62 @@ class ShadowObserver:
         engine: SignalRuleEngine,
         repository: SqlRepository,
         *,
-        campaign_id: str,
-        created_at_ms: int,
+        clock: Clock,
     ) -> None:
         if not settings.shadow.observation_enabled:
             raise ValueError("shadow observer requires observation_enabled")
+        campaign_id = settings.shadow.campaign_id
+        source_identity = settings.shadow.source_identity
+        campaign_created_at_ms = settings.shadow.campaign_created_at_ms
+        if campaign_id is None or source_identity is None or campaign_created_at_ms is None:
+            raise ValueError("shadow observer requires explicit campaign provenance")
         self.settings = settings
         self.engine = engine
         self.repository = repository
+        self.clock = clock
         self.campaign_id = campaign_id
-        self.created_at_ms = created_at_ms
+        self.activation_ms = settings.shadow.activation_ms
         self.policy_sha256 = shadow_policy_identity(
             settings.shadow, settings.signals
         )
         self.config_sha256 = shadow_config_sha256(settings)
         self.schema_version = settings.shadow.observation_schema_version
+        self.repository.register_shadow_campaign(
+            campaign_schema_version=settings.shadow.campaign_schema_version,
+            campaign_id=self.campaign_id,
+            campaign_mode=settings.shadow.campaign_mode,
+            source_identity=source_identity,
+            rule_version=settings.rule_version,
+            policy_name="shadow_er_context",
+            policy_version=settings.shadow.policy_version,
+            policy_sha256=self.policy_sha256,
+            config_sha256=self.config_sha256,
+            observation_schema_version=self.schema_version,
+            primary_interval=settings.binance.primary_interval,
+            markets=[market.value for market in settings.binance.markets],
+            families=shadow_campaign_families(settings),
+            activation_ms=self.activation_ms,
+            created_at_ms=campaign_created_at_ms,
+            status="REGISTERED",
+        )
+        campaign = self.repository.get_shadow_campaign(self.campaign_id)
+        if campaign is None:
+            raise RuntimeError("registered shadow campaign could not be reloaded")
+        manifest_sha256 = campaign.get("manifest_sha256")
+        if not isinstance(manifest_sha256, str) or not manifest_sha256:
+            raise RuntimeError("registered shadow campaign is missing manifest_sha256")
+        self.campaign_manifest_sha256 = manifest_sha256
         # (market, decision_close_ms) -> mutable cell counters
         self._pending: dict[tuple[str, int], dict[str, Any]] = defaultdict(dict)
         self._finalized: set[tuple[str, int]] = set()
+        # On construction, audit and close any provisional OPEN coverage cells
+        # a previous process left behind: an abrupt restart must mark them
+        # INCOMPLETE rather than silently losing or falsely completing them.
+        self.repository.seal_stale_open_cells(
+            self.campaign_id,
+            campaign_manifest_sha256=self.campaign_manifest_sha256,
+            sealed_at_ms=self.clock.now_ms(),
+        )
 
     def observe(
         self,
@@ -120,7 +202,19 @@ class ShadowObserver:
         contexts: Mapping[str, FeatureSnapshot],
         tradable_symbols: frozenset[str],
     ) -> ComparatorCandidate | None:
-        candidate = self.engine.evaluate_comparator(feature, contexts)
+        if self.activation_ms is not None and feature.event_time_ms < self.activation_ms:
+            return None
+
+        # Comparable evaluation is side-effect-free and cannot fail persistence.
+        try:
+            candidate = self.engine.evaluate_comparator(feature, contexts)
+        except Exception as exc:
+            LOGGER.error(
+                "shadow comparator evaluation failed; no evidence recorded",
+                exc_info=exc,
+                extra={"market": feature.market.value, "symbol": feature.symbol},
+            )
+            return None
         if candidate is None:
             return None
 
@@ -131,19 +225,58 @@ class ShadowObserver:
         cell = self._pending[key]
 
         mature = cell.setdefault("mature", 0)
-        cell["mature"] = mature + 1
-        if {"15m", "1h"}.issubset(contexts):
+        seen_symbols = cell.setdefault("seen_symbols", set())
+        first_seen = candidate.symbol not in seen_symbols
+        if first_seen:
+            cell["mature"] = mature + 1
+            seen_symbols.add(candidate.symbol)
+        if first_seen and {"15m", "1h"}.issubset(contexts):
             cell["htf_ready"] = cell.get("htf_ready", 0) + 1
-        if feature.spread_bps is not None and (
-            feature.book_age_ms is None
-            or feature.book_age_ms <= self.settings.signals.book_maximum_age_ms
-        ):
+        bbo = evaluate_bbo_execution_evidence(
+            feature, candidate.direction, self.settings.signals
+        )
+        if first_seen and bbo.eligible:
             cell["fresh_bbo"] = cell.get("fresh_bbo", 0) + 1
 
-        if candidate.raw_c0_triggered:
-            self._persist_observation(candidate, feature, contexts)
+        if first_seen and candidate.raw_c0_triggered:
+            # Count the causal raw opportunity independently of persistence.
+            # A storage failure must never erase the denominator. Idempotent
+            # persistence (False) still proves that the durable row exists.
             cell["raw_c0"] = cell.get("raw_c0", 0) + 1
-            cell["comparator_rows"] = cell.get("comparator_rows", 0) + 1
+            try:
+                self._persist_observation(candidate, feature, contexts)
+                cell["comparator_rows"] = cell.get("comparator_rows", 0) + 1
+            except Exception as exc:
+                # Evidence persistence is failure-isolated: a write/conflict
+                # failure marks the coverage cell incomplete without ever
+                # propagating into production R2 evaluation.
+                cell["evidence_failures"] = cell.get("evidence_failures", 0) + 1
+                cell["missing"] = [
+                    *cell.get("missing", []),
+                    f"shadow evidence persistence failed: {type(exc).__name__}",
+                ]
+
+        # Durably persist in-progress coverage for this OPEN cell after every
+        # observed symbol, so an abrupt crash preserves how far the cell got
+        # (seen symbols, maturity, BBO readiness, raw C0 count) rather than only
+        # proving that it was interrupted. Failure to persist progress never
+        # affects production and is recorded as a coverage failure.
+        try:
+            self._persist_progress(key)
+        except Exception as exc:
+            cell["evidence_failures"] = cell.get("evidence_failures", 0) + 1
+            cell["missing"] = [
+                *cell.get("missing", []),
+                f"shadow coverage progress persist failed: {type(exc).__name__}",
+            ]
+            LOGGER.error(
+                "shadow coverage progress persist failed",
+                exc_info=exc,
+                extra={
+                    "market": feature.market.value,
+                    "symbol": candidate.symbol,
+                },
+            )
 
         self._finalize_older_cells(key)
         return candidate
@@ -173,8 +306,20 @@ class ShadowObserver:
                 "fresh_bbo": 0,
                 "raw_c0": 0,
                 "comparator_rows": 0,
+                "evidence_failures": 0,
                 "missing": [],
+                "seen_symbols": set(),
             }
+        )
+        self.repository.begin_shadow_coverage(
+            campaign_id=self.campaign_id,
+            campaign_manifest_sha256=self.campaign_manifest_sha256,
+            market=feature.market.value,
+            decision_close_ms=candidate.decision_time_ms,
+            primary_interval=feature.interval,
+            expected_tradable_count=len(tradable_symbols),
+            tradable_universe_hash=universe_hash,
+            first_seen_ms=self.clock.now_ms(),
         )
 
     def _finalize_older_cells(self, this_key: tuple[str, int]) -> None:
@@ -213,6 +358,7 @@ class ShadowObserver:
         return self.repository.save_shadow_observation(
             observation_id=observation_id,
             campaign_id=self.campaign_id,
+            campaign_manifest_sha256=self.campaign_manifest_sha256,
             opportunity_id=opportunity_id,
             market=candidate.market.value,
             symbol=candidate.symbol,
@@ -222,7 +368,26 @@ class ShadowObserver:
             primary_interval=candidate.primary_interval,
             payload=payload,
             policy_sha256=self.policy_sha256,
-            created_at_ms=self.created_at_ms,
+            created_at_ms=self.clock.now_ms(),
+        )
+
+    def _persist_progress(self, key: tuple[str, int]) -> None:
+        """Mirror the in-memory cell counters into the durable OPEN row."""
+
+        cell = self._pending[key]
+        self.repository.update_shadow_coverage_progress(
+            campaign_id=self.campaign_id,
+            campaign_manifest_sha256=self.campaign_manifest_sha256,
+            market=cell["market"],
+            decision_close_ms=cell["decision_close_ms"],
+            primary_interval=cell["primary_interval"],
+            mature_count=cell.get("mature", 0),
+            htf_ready_count=cell.get("htf_ready", 0),
+            fresh_bbo_count=cell.get("fresh_bbo", 0),
+            raw_c0_count=cell.get("raw_c0", 0),
+            comparator_rows=cell.get("comparator_rows", 0),
+            evidence_failures=cell.get("evidence_failures", 0),
+            seen_symbols=sorted(cell.get("seen_symbols", set())),
         )
 
     def _write_coverage(self, key: tuple[str, int]) -> None:
@@ -234,16 +399,26 @@ class ShadowObserver:
         comparator_rows = cell.get("comparator_rows", 0)
         mature = cell.get("mature", 0)
         expected = cell.get("expected", 0)
-        complete = mature == expected and raw_c0 == comparator_rows
-        missing = ["some tradable symbols did not yield a mature 5m close"] if (
-            mature < expected
-        ) else []
+        evidence_failures = cell.get("evidence_failures", 0)
+        complete = (
+            mature == expected
+            and raw_c0 == comparator_rows
+            and evidence_failures == 0
+        )
+        missing = list(cell.get("missing", []))
+        if mature < expected:
+            missing.append("some tradable symbols did not yield a mature 5m close")
         if raw_c0 != comparator_rows:
             missing.append(
                 "raw C0 opportunity count does not match comparator rows persisted"
             )
+        if evidence_failures:
+            missing.append(
+                f"{evidence_failures} shadow evidence persistence failure(s)"
+            )
         self.repository.save_shadow_coverage(
             campaign_id=self.campaign_id,
+            campaign_manifest_sha256=self.campaign_manifest_sha256,
             market=cell["market"],
             decision_close_ms=cell["decision_close_ms"],
             primary_interval=cell["primary_interval"],
@@ -254,9 +429,12 @@ class ShadowObserver:
             fresh_bbo_count=cell.get("fresh_bbo", 0),
             raw_c0_count=raw_c0,
             comparator_rows=comparator_rows,
+            evidence_failures=evidence_failures,
+            seen_symbols=sorted(cell.get("seen_symbols", set())),
             complete=complete,
             failures=missing,
-            created_at_ms=self.created_at_ms,
+            sealed_at_ms=self.clock.now_ms(),
+            created_at_ms=self.clock.now_ms(),
         )
 
     def flush(self) -> None:
@@ -281,12 +459,16 @@ def build_observation_payload(
     c15 = contexts.get("15m")
     c1 = contexts.get("1h")
     signals = observer.settings.signals
-    execution_available = feature.spread_bps is not None and (
-        feature.book_age_ms is None
-        or feature.book_age_ms <= signals.book_maximum_age_ms
+    bbo = evaluate_bbo_execution_evidence(
+        feature, candidate.direction, signals
     )
     return {
         "provenance": {
+            "campaign_id": observer.campaign_id,
+            "campaign_mode": observer.settings.shadow.campaign_mode,
+            "campaign_manifest_sha256": observer.campaign_manifest_sha256,
+            "source_identity": observer.settings.shadow.source_identity,
+            "activation_ms": observer.activation_ms,
             "policy_name": "shadow_er_context",
             "policy_version": observer.settings.shadow.policy_version,
             "policy_sha256": observer.policy_sha256,
@@ -329,7 +511,8 @@ def build_observation_payload(
             "book_age_ms": feature.book_age_ms,
             "bid_quote_capacity": feature.bid_quote_capacity,
             "ask_quote_capacity": feature.ask_quote_capacity,
-            "execution_available": execution_available,
+            "execution_available": bbo.eligible,
+            "bbo_failures": list(bbo.failures),
         },
         "incumbent_r2": {
             "raw_c0_triggered": candidate.raw_c0_triggered,

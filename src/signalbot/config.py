@@ -90,22 +90,56 @@ class ShadowPolicySettings(StrictModel):
     round_trip_cost_bps: float = Field(default=26.0, gt=0, le=200)
     cost_headroom_multiple: float = Field(default=2.0, ge=1, le=20)
     require_btc_context_aligned: bool = True
-    # Separate observer control. When enabled, production continues to use the
-    # frozen R2 entry_policy while the shadow successor is evaluated and its
-    # evidence persisted. This is the prospective observation path; selecting
-    # entry_policy="shadow_er_context_v1" is a legacy standalone mode that must
-    # not be used for a prospective campaign.
     observation_enabled: bool = False
     observation_schema_version: str = "shadow_observation_v1"
+    campaign_schema_version: Literal["shadow_campaign_v1"] = "shadow_campaign_v1"
+    campaign_mode: Literal["smoke", "prospective"] = "smoke"
+    campaign_id: str | None = None
+    activation_ms: int | None = None
+    source_identity: str | None = None
+    campaign_created_at_ms: int | None = None
 
     @model_validator(mode="after")
-    def freeze_observation_clock(self) -> ShadowPolicySettings:
+    def freeze_observation_contract(self) -> ShadowPolicySettings:
         if not self.observation_enabled:
             return self
         if self.observation_schema_version != "shadow_observation_v1":
             raise ValueError("shadow observation schema version is frozen")
         if self.policy_version != "er_context_v1":
             raise ValueError("shadow policy version is frozen for observation")
+        if not self.campaign_id:
+            raise ValueError("shadow observation requires an explicit campaign_id")
+        if not self.source_identity or not self.source_identity.strip():
+            raise ValueError("shadow observation requires source_identity")
+        if self.campaign_created_at_ms is None:
+            raise ValueError("shadow observation requires campaign_created_at_ms")
+        if self.campaign_mode == "prospective":
+            if not self.campaign_id:
+                raise ValueError(
+                    "prospective shadow campaign requires an explicit campaign_id"
+                )
+            if self.campaign_id.lower().startswith("smoke-"):
+                raise ValueError(
+                    "prospective campaign_id must not use the smoke namespace"
+                )
+            if self.activation_ms is None:
+                raise ValueError(
+                    "prospective shadow campaign requires activation_ms"
+                )
+            if not self.source_identity or not self.source_identity.strip():
+                raise ValueError(
+                    "prospective shadow campaign requires source_identity"
+                )
+            if self.campaign_created_at_ms is None:
+                raise ValueError(
+                    "prospective shadow campaign requires campaign_created_at_ms"
+                )
+            if self.activation_ms < self.campaign_created_at_ms:
+                raise ValueError(
+                    "prospective activation_ms must be >= campaign_created_at_ms"
+                )
+        elif self.campaign_id and not self.campaign_id.lower().startswith("smoke-"):
+            raise ValueError("smoke campaign_id must use the smoke- namespace")
         return self
 
 
@@ -141,9 +175,11 @@ class SignalSettings(StrictModel):
     gate_use_participation: bool = True
     gate_use_crowding: bool = True
     gate_use_higher_timeframes: bool = True
-    entry_policy: Literal[
-        "legacy_gates", "r2_pit_htf_exec", "shadow_er_context_v1"
-    ] = "legacy_gates"
+    # ``shadow_er_context_v1`` is intentionally NOT a selectable production
+    # entry policy. The shadow successor may never replace R2 as the production
+    # decision path; it is evaluated only through the separate prospective
+    # observer (``shadow.observation_enabled``) alongside the frozen R2.
+    entry_policy: Literal["legacy_gates", "r2_pit_htf_exec"] = "legacy_gates"
     execution_notional_usdt: float = Field(default=100.0, gt=0, le=1_000_000)
     confirmation_mode: Literal["score", "explicit_trigger"] = "explicit_trigger"
     volume_feature_set: Literal[
@@ -271,16 +307,6 @@ class Settings(StrictModel):
                     "r2_pit_htf_exec requires subscribed intervals: "
                     + ", ".join(missing)
                 )
-        if self.signals.entry_policy == "shadow_er_context_v1":
-            required_intervals = {"5m", "15m", "1h"}
-            missing = sorted(
-                required_intervals.difference(self.binance.intervals)
-            )
-            if missing:
-                raise ValueError(
-                    "shadow_er_context_v1 requires subscribed intervals: "
-                    + ", ".join(missing)
-                )
         if self.shadow.observation_enabled:
             # A prospective campaign observes ONE causal 5m clock while R2 stays
             # the production path. A silent non-5m clock would corrupt the frozen
@@ -293,6 +319,12 @@ class Settings(StrictModel):
                 raise ValueError("shadow observation requires primary_interval=5m")
             if not self.signals.gate_enabled:
                 raise ValueError("shadow observation requires gate_enabled")
+            if not self.shadow.campaign_id:
+                raise ValueError("shadow observation requires an explicit campaign_id")
+            if not self.shadow.source_identity or not self.shadow.source_identity.strip():
+                raise ValueError("shadow observation requires source_identity")
+            if self.shadow.campaign_created_at_ms is None:
+                raise ValueError("shadow observation requires campaign_created_at_ms")
             required_intervals = {"5m", "15m", "1h"}
             missing = sorted(
                 required_intervals.difference(self.binance.intervals)

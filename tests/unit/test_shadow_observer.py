@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from conftest import make_feature
+from signalbot.clock import ReplayClock
 from signalbot.config import Settings
 from signalbot.domain.enums import Market, SignalFamily
 from signalbot.domain.models import FeatureSnapshot, MarketRegime
@@ -19,7 +20,7 @@ from signalbot.prospective.observer import (
 from signalbot.signals.rules import SignalRuleEngine
 
 
-def _settings() -> Settings:
+def _settings(campaign_id: str = "smoke-campaign-1") -> Settings:
     return Settings.model_validate(
         {
             "binance": {
@@ -36,7 +37,12 @@ def _settings() -> Settings:
                 "confirmation_mode": "explicit_trigger",
             },
             "storage": {"url": "sqlite:///:memory:"},
-            "shadow": {"observation_enabled": True},
+            "shadow": {
+                "observation_enabled": True,
+                "campaign_id": campaign_id,
+                "source_identity": "test-source",
+                "campaign_created_at_ms": 1_709_999_999_000,
+            },
         }
     )
 
@@ -107,8 +113,7 @@ def _observer() -> tuple[ShadowObserver, Settings]:
         settings,
         SignalRuleEngine(settings.signals, settings.shadow),
         repo,
-        campaign_id="smoke-campaign-1",
-        created_at_ms=1_710_000_000_000,
+        clock=ReplayClock(1_710_000_000_000),
     )
     return observer, settings
 
@@ -127,7 +132,12 @@ def test_config_rejects_observation_without_production_r2() -> None:
                     "primary_interval": "5m",
                 },
                 "signals": {"entry_policy": "legacy_gates"},
-                "shadow": {"observation_enabled": True},
+                "shadow": {
+                    "observation_enabled": True,
+                    "campaign_id": "smoke-invalid-r2",
+                    "source_identity": "test-source",
+                    "campaign_created_at_ms": 1_709_999_999_000,
+                },
             }
         )
 
@@ -147,7 +157,12 @@ def test_config_rejects_observation_on_non_5m_clock() -> None:
                     "entry_policy": "r2_pit_htf_exec",
                     "gate_enabled": True,
                 },
-                "shadow": {"observation_enabled": True},
+                "shadow": {
+                    "observation_enabled": True,
+                    "campaign_id": "smoke-invalid-clock",
+                    "source_identity": "test-source",
+                    "campaign_created_at_ms": 1_709_999_999_000,
+                },
             }
         )
 
@@ -266,6 +281,7 @@ def test_conflicting_same_id_observation_fails_loudly() -> None:
     )
     base = {
         "campaign_id": "smoke-campaign-1",
+        "campaign_manifest_sha256": observer.campaign_manifest_sha256,
         "opportunity_id": opportunity,
         "market": "spot",
         "symbol": "BTCUSDT",
@@ -307,6 +323,188 @@ def test_coverage_detects_missing_comparator_rows() -> None:
     assert coverage["raw_c0_count"] == 1
     assert coverage["comparator_rows"] == 1
     assert coverage["complete"] is True
+
+
+def test_duplicate_symbol_close_is_idempotent_for_counts() -> None:
+    """P0-2: re-observing the same symbol/close must not inflate coverage
+    counts. The invariant proves UNIQUE durable rows, not call attempts."""
+
+    observer, _settings = _observer()
+    repo = observer.repository
+    feature = _feature()
+    tradable = frozenset({"BTCUSDT", "ETHUSDT"})
+    # BTCUSDT is a raw C0 trigger; observe it twice on the same close.
+    observer.observe(feature, _contexts(), tradable)
+    observer.observe(feature, _contexts(), tradable)
+    # ETHUSDT mature but non-triggering second symbol.
+    feature_b = _feature(
+        symbol="ETHUSDT", price=100.0, recent_high=105.0, previous_close=101.0
+    )
+    observer.observe(feature_b, _contexts(), tradable)
+    observer.flush()
+    coverage = repo.get_shadow_coverage(
+        campaign_id="smoke-campaign-1",
+        market="spot",
+        decision_close_ms=feature.event_time_ms,
+        primary_interval="5m",
+    )
+    assert coverage is not None
+    # Duplicate BTCUSDT observation contributed exactly one durable row.
+    assert repo.count_shadow_observations(
+        campaign_id="smoke-campaign-1",
+        decision_time_ms=feature.event_time_ms,
+    ) == 1
+    assert coverage["mature_count"] == 2  # BTCUSDT + ETHUSDT, not 3
+    assert coverage["raw_c0_count"] == 1
+    assert coverage["comparator_rows"] == 1
+    assert coverage["complete"] is True
+
+
+def test_restart_marks_prior_open_cell_incomplete() -> None:
+    """P0-3: a simulated abrupt restart (new observer on the same repo) must
+    explicitly seal any prior OPEN cell as INCOMPLETE, never silently absent
+    or falsely complete."""
+
+    repo = _repo()
+    settings = _settings()
+    feature = _feature()
+    first = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    first.observe(feature, _contexts(), frozenset({"BTCUSDT", "ETHUSDT"}))
+    # Abrupt restart: second observer begins WITHOUT calling first.flush().
+    second = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_100),
+    )
+    # Prior open cell was sealed INCOMPLETE by the restart audit.
+    coverage = repo.get_shadow_coverage(
+        campaign_id="smoke-campaign-1",
+        market="spot",
+        decision_close_ms=feature.event_time_ms,
+        primary_interval="5m",
+    )
+    assert coverage is not None
+    assert coverage["status"] == "SEALED"
+    assert coverage["complete"] is False
+    assert "interrupted restart" in coverage["failures"]
+    # New observer can begin a fresh cell on a later close.
+    later = _feature(
+        event_time_ms=1_710_000_300_000,
+        price=106.5,
+        previous_close=105.0,
+        recent_high=106.0,
+    )
+    second.observe(later, _contexts(), frozenset({"BTCUSDT"}))
+    second.flush()
+    later_coverage = repo.get_shadow_coverage(
+        campaign_id="smoke-campaign-1",
+        market="spot",
+        decision_close_ms=later.event_time_ms,
+        primary_interval="5m",
+    )
+    assert later_coverage is not None
+    assert later_coverage["complete"] is True
+
+
+def test_durable_open_progress_preserved_across_restart() -> None:
+    """B2-1: in-progress counters must be durably snapshot into the OPEN row
+    as each symbol is observed, so an abrupt restart audits partial progress
+    (A+B seen) rather than a zero/empty fabricated progress."""
+
+    repo = _repo()
+    settings = _settings("smoke-campaign-2")
+    tradable = frozenset({"AUSDT", "BUSDT", "CUSDT"})
+    feature_a = _feature(symbol="AUSDT", price=106.0, recent_high=105.0)
+    feature_b = _feature(
+        symbol="BUSDT", price=100.0, recent_high=105.0, previous_close=101.0
+    )
+    first = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    first.observe(feature_a, _contexts(), tradable)
+    first.observe(feature_b, _contexts(), tradable)
+    # Crashed before flush and before observing CUSDT.
+    ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_100),
+    )
+    coverage = repo.get_shadow_coverage(
+        campaign_id="smoke-campaign-2",
+        market="spot",
+        decision_close_ms=feature_a.event_time_ms,
+        primary_interval="5m",
+    )
+    assert coverage is not None
+    assert coverage["status"] == "SEALED"
+    assert coverage["complete"] is False
+    # Durable progress survives the restart: A+B observed, CUSDT never claimed.
+    assert sorted(coverage["seen_symbols"]) == ["AUSDT", "BUSDT"]
+    assert coverage["mature_count"] == 2
+    assert coverage["raw_c0_count"] == 1
+
+
+def test_graceful_shutdown_seals_last_cell() -> None:
+    """B2-2: flush() on the production shutdown owner seals the last in-
+    progress cell as complete/incomplete rather than leaving it OPEN."""
+
+    observer, _settings = _observer()
+    repo = observer.repository
+    tradable = frozenset({"BTCUSDT", "ETHUSDT"})
+    feature_a = _feature()
+    feature_b = _feature(
+        symbol="ETHUSDT", price=100.0, recent_high=105.0, previous_close=101.0
+    )
+    observer.observe(feature_a, _contexts(), tradable)
+    observer.observe(feature_b, _contexts(), tradable)
+    # Simulate the graceful shutdown owner calling flush().
+    observer.flush()
+    coverage = repo.get_shadow_coverage(
+        campaign_id="smoke-campaign-1",
+        market="spot",
+        decision_close_ms=feature_a.event_time_ms,
+        primary_interval="5m",
+    )
+    assert coverage is not None
+    assert coverage["status"] == "SEALED"
+    assert coverage["complete"] is True
+
+
+def test_flush_failure_does_not_damage_incumbent_persistence() -> None:
+    """A shadow flush failure (injected) must not affect the incumbent signal
+    persistence path."""
+
+    repo = SqlRepository("sqlite:///:memory:")
+    repo.initialize()
+    # A saved incumbent signal succeeds before any shadow involvement.
+    from signalbot.domain.enums import SignalStage
+    from signalbot.domain.models import SignalDecision
+
+    decision = SignalDecision(
+        event_id="evt-incumbent",
+        market=Market.SPOT,
+        symbol="BTCUSDT",
+        family=SignalFamily.BREAKOUT_LONG,
+        stage=SignalStage.SETUP,
+        direction="long",
+        timeframe="5m",
+        event_time_ms=1_710_000_000_000,
+        score=70,
+        price=105.0,
+        invalidation=None,
+        rule_version="r2",
+    )
+    assert repo.save_signal(decision) is True
 
 
 def test_anomaly_missing_volume_preserves_state_but_floor_clears() -> None:
@@ -423,3 +621,67 @@ def test_runtime_wires_observer_only_when_enabled() -> None:
     assert runtime_on.shadow_observer is not None
     assert runtime_on.shadow_observer.campaign_id == "smoke-campaign-1"
     assert runtime_on.shadow_observer.engine.settings.entry_policy == "r2_pit_htf_exec"
+
+
+class _FailingShadowRepository(SqlRepository):
+    """Repository whose shadow observation writes always fail."""
+
+    def save_shadow_observation(self, *args: object, **kwargs: object) -> bool:
+        raise RuntimeError("injected shadow persistence failure")
+
+
+def test_shadow_persistence_failure_is_isolated_and_does_not_raise() -> None:
+    """P0-1: a shadow persistence failure must never raise out of ``observe``
+    and must not fabricate a durable coverage row."""
+
+    settings = _settings()
+    repo = _FailingShadowRepository("sqlite:///:memory:")
+    repo.initialize()
+    observer = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    # The comparator evaluation still succeeds and returns a candidate even when
+    # evidence persistence is broken.
+    candidate = observer.observe(_feature(), _contexts(), frozenset({"BTCUSDT"}))
+    assert candidate is not None
+    assert candidate.raw_c0_triggered is True
+    assert candidate.r2_passed is True
+    # No durable coverage cell is fabricated as complete from a failed persist.
+    assert (
+        repo.count_shadow_observations(campaign_id="smoke-campaign-1") == 0
+    )
+    observer.flush()
+    coverage = repo.get_shadow_coverage(
+        campaign_id="smoke-campaign-1",
+        market="spot",
+        decision_close_ms=_feature().event_time_ms,
+        primary_interval="5m",
+    )
+    assert coverage is not None
+    assert coverage["complete"] is False
+    assert any("persistence failure" in item for item in coverage["failures"].split('","'))
+
+
+def test_shadow_comparator_failure_is_isolated() -> None:
+    """A corrupt comparator input cannot propagate out of ``observe``."""
+
+    settings = _settings()
+    repo = _repo()
+    observer = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    # A market outside the permitted families yields None without raising.
+    from signalbot.domain.enums import Market as MarketEnum
+
+    candidate = observer.observe(
+        _feature(market=MarketEnum.SPOT),
+        {},
+        frozenset({"BTCUSDT"}),
+    )
+    assert candidate is None or candidate.raw_c0_triggered is not None

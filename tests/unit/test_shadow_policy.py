@@ -7,15 +7,12 @@ from signalbot.config import Settings, ShadowPolicySettings, SignalSettings
 from signalbot.domain.enums import Market, SignalFamily, SignalStage
 from signalbot.domain.models import FeatureSnapshot, MarketRegime
 from signalbot.signals.rules import SignalRuleEngine
+from signalbot.signals.shadow_policy import SHADOW_POLICY_METADATA_KEY
 from signalbot.signals.state_machine import SignalStateMachine
 
 
 def _settings() -> SignalSettings:
-    return SignalSettings(
-        entry_policy="shadow_er_context_v1",
-        gate_enabled=True,
-        confirmation_mode="explicit_trigger",
-    )
+    return SignalSettings(gate_enabled=True, confirmation_mode="explicit_trigger")
 
 
 def _feature(*, market: Market = Market.SPOT, **updates: object) -> FeatureSnapshot:
@@ -68,13 +65,13 @@ def _contexts() -> dict[str, FeatureSnapshot]:
 def test_shadow_policy_is_informational_only_and_never_confirms() -> None:
     settings = _settings()
     engine = SignalRuleEngine(settings, ShadowPolicySettings())
-    evaluations = engine.evaluate(_feature(), _contexts())
+    evaluations = engine.evaluate_research_shadow(_feature(), _contexts())
 
     assert len(evaluations) == 8
     breakout = next(item for item in evaluations if item.family is SignalFamily.BREAKOUT_LONG)
     assert breakout.metadata["informational_only"] is True
     assert breakout.eligible is False
-    assert breakout.metadata["shadow_policy"] == "er_context_v1"
+    assert breakout.metadata[SHADOW_POLICY_METADATA_KEY] == "er_context_v1"
     assert breakout.triggered is True
 
     machine = SignalStateMachine(settings, "shadow-test")
@@ -87,11 +84,11 @@ def test_shadow_policy_is_informational_only_and_never_confirms() -> None:
 
 def test_shadow_policy_restricts_family_to_spot_long_and_futures_short() -> None:
     engine = SignalRuleEngine(_settings(), ShadowPolicySettings())
-    spot = engine.evaluate(_feature(market=Market.SPOT), _contexts())
+    spot = engine.evaluate_research_shadow(_feature(market=Market.SPOT), _contexts())
     breakdown = next(item for item in spot if item.family is SignalFamily.BREAKDOWN_SHORT)
     assert "inactive under shadow_er_context_v1" in breakdown.reasons
 
-    futures = engine.evaluate(_feature(market=Market.FUTURES), _contexts())
+    futures = engine.evaluate_research_shadow(_feature(market=Market.FUTURES), _contexts())
     breakout = next(item for item in futures if item.family is SignalFamily.BREAKOUT_LONG)
     assert "inactive under shadow_er_context_v1" in breakout.reasons
 
@@ -100,7 +97,7 @@ def test_shadow_policy_fails_closed_on_missing_efficiency_ratio() -> None:
     settings = _settings()
     engine = SignalRuleEngine(settings, ShadowPolicySettings())
     feature = _feature(efficiency_ratio_20=None)
-    evaluations = engine.evaluate(feature, _contexts())
+    evaluations = engine.evaluate_research_shadow(feature, _contexts())
     breakout = next(item for item in evaluations if item.family is SignalFamily.BREAKOUT_LONG)
     assert breakout.triggered is False
     assert breakout.eligible is False
@@ -109,15 +106,17 @@ def test_shadow_policy_fails_closed_on_missing_efficiency_ratio() -> None:
     assert any("efficiency ratio" in item for item in gate["failures"])
 
 
-def test_shadow_policy_config_requires_subscribed_intervals() -> None:
-    with pytest.raises(ValueError, match="shadow_er_context_v1 requires subscribed intervals"):
+def test_shadow_er_context_v1_is_not_a_selectable_production_policy() -> None:
+    # The standalone shadow successor must never be selectable as a production
+    # entry policy. Pydantic's Literal rejects the legacy value at load time.
+    with pytest.raises(ValueError, match="entry_policy"):
         Settings.model_validate(
             {
                 "binance": {
                     "markets": ["spot"],
                     "top_n": 1,
                     "surveillance_n": 2,
-                    "intervals": ["5m", "15m"],
+                    "intervals": ["5m", "15m", "1h"],
                     "primary_interval": "5m",
                 },
                 "signals": {"entry_policy": "shadow_er_context_v1"},

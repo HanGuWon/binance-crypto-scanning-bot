@@ -54,6 +54,11 @@ class MarketScanner:
         runtime.gap_recoverer = self._recover_gap
 
     async def close(self) -> None:
+        # Finalize any open shadow coverage cells before the repository is
+        # closed, so a graceful stop seals the last in-progress close as
+        # COMPLETE/INCOMPLETE rather than leaving it OPEN. A shadow flush
+        # failure never affects the incumbent shutdown.
+        self.runtime.flush_shadow()
         await self.rest.close()
 
     async def prepare(self) -> Universe:
