@@ -53,12 +53,14 @@ def evaluate_bbo_execution_evidence(
 
     spread = feature.spread_bps
     spread_present = spread is not None
-    spread_within_limit = spread_present and spread <= settings.maximum_spread_bps
+    spread_within_limit = spread is not None and spread <= settings.maximum_spread_bps
     proxy = bool(feature.spread_is_proxy)
-    age_present = feature.book_age_ms is not None
-    age_non_negative = age_present and feature.book_age_ms >= 0
-    age_within_limit = age_non_negative and (
-        feature.book_age_ms <= settings.book_maximum_age_ms
+    book_age_ms = feature.book_age_ms
+    age_present = book_age_ms is not None
+    age_non_negative = book_age_ms is not None and book_age_ms >= 0
+    age_within_limit = (
+        book_age_ms is not None
+        and 0 <= book_age_ms <= settings.book_maximum_age_ms
     )
     capacity = (
         feature.ask_quote_capacity
@@ -66,9 +68,7 @@ def evaluate_bbo_execution_evidence(
         else feature.bid_quote_capacity
     )
     capacity_present = capacity is not None
-    capacity_sufficient = capacity_present and (
-        capacity >= settings.execution_notional_usdt
-    )
+    capacity_sufficient = capacity is not None and capacity >= settings.execution_notional_usdt
 
     failures: list[str] = []
     if not spread_present or not spread_within_limit:
@@ -248,9 +248,10 @@ def evaluate_fresh_bbo_execution(
     evidence = evaluate_bbo_execution_evidence(feature, direction, settings)
     if not evidence.eligible:
         return 0, list(evidence.failures)
-    return (
-        100 if feature.spread_bps <= settings.maximum_spread_bps / 2 else 75
-    ), []
+    spread_bps = feature.spread_bps
+    if spread_bps is None:
+        return 0, ["fresh decision-time BBO spread unavailable"]
+    return (100 if spread_bps <= settings.maximum_spread_bps / 2 else 75), []
 
 
 def _volume_policy_score(

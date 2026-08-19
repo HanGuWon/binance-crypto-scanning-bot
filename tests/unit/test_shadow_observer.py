@@ -7,7 +7,7 @@ import pytest
 from conftest import make_feature
 from signalbot.clock import ReplayClock
 from signalbot.config import Settings
-from signalbot.domain.enums import Market, SignalFamily
+from signalbot.domain.enums import Direction, Market, SignalFamily
 from signalbot.domain.models import FeatureSnapshot, MarketRegime
 from signalbot.persistence.repository import EventIdConflictError, SqlRepository
 from signalbot.prospective.observer import (
@@ -212,6 +212,7 @@ def test_shadow_never_confirms_via_state_machine() -> None:
     # The observer only ever holds an informational-only candidate; it has no
     # path into the SignalStateMachine, so a CONFIRMED shadow decision is
     # impossible by construction.
+    assert candidate is not None
     assert candidate.informational_only is True
 
 
@@ -496,11 +497,11 @@ def test_flush_failure_does_not_damage_incumbent_persistence() -> None:
         symbol="BTCUSDT",
         family=SignalFamily.BREAKOUT_LONG,
         stage=SignalStage.SETUP,
-        direction="long",
+        direction=Direction.LONG,
         timeframe="5m",
         event_time_ms=1_710_000_000_000,
         score=70,
-        price=105.0,
+        price=Decimal("105.0"),
         invalidation=None,
         rule_version="r2",
     )
