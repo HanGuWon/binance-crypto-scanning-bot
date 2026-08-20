@@ -97,3 +97,44 @@ def test_anomaly_history_is_pruned_on_surveillance_rotation() -> None:
     evaluations = detector.update(ticker(2, 100), allowed, MarketRegime())
     assert len(evaluations) == 2
     assert all(item.score == 0 for item in evaluations)
+
+
+def test_anomaly_liquidity_floor_suppresses_below_floor_symbols() -> None:
+    settings = SignalSettings(
+        anomaly_min_points=5,
+        anomaly_history_points=50,
+        anomaly_min_quote_volume_usdt=1000,
+    )
+    detector = AnomalyDetector(settings)
+    allowed = frozenset({"TESTUSDT"})
+
+    below = MiniTicker(
+        market=Market.SPOT,
+        symbol="TESTUSDT",
+        event_time_ms=1_000,
+        close=Decimal("100"),
+        quote_volume=Decimal("500"),
+    )
+    evaluations = detector.update(below, allowed, MarketRegime())
+    assert len(evaluations) == 2
+    assert all(item.score == 0 and not item.triggered for item in evaluations)
+    assert all("below anomaly liquidity floor" in item.reasons[0] for item in evaluations)
+
+    missing = MiniTicker(
+        market=Market.SPOT,
+        symbol="TESTUSDT",
+        event_time_ms=2_000,
+        close=Decimal("100"),
+    )
+    assert detector.update(missing, allowed, MarketRegime()) == ()
+
+    above = MiniTicker(
+        market=Market.SPOT,
+        symbol="TESTUSDT",
+        event_time_ms=3_000,
+        close=Decimal("100"),
+        quote_volume=Decimal("2000"),
+    )
+    resumed = detector.update(above, allowed, MarketRegime())
+    assert len(resumed) == 2
+    assert all(item.score == 0 for item in resumed)

@@ -276,6 +276,7 @@ class FeatureSnapshot(FrozenModel):
     previous_low: float | None = None
     previous_ema20: float | None = None
     ema20_distance_atr: float | None = None
+    efficiency_ratio_20: float | None = None
     chart_structure: ChartStructureSnapshot = ChartStructureSnapshot()
     data_completeness: float = Field(default=1.0, ge=0.0, le=1.0)
     regime: MarketRegime
@@ -310,6 +311,31 @@ class DirectionalDiagnostics(FrozenModel):
 
 
 DIRECTIONAL_DIAGNOSTICS_METADATA_KEY = "directional_diagnostics_v1"
+
+
+class ComparatorCandidate(FrozenModel):
+    """One deterministic common-opportunity comparator view for a raw C0 close.
+
+    Built from a single causal ``FeatureSnapshot`` and strictly-prior contexts so
+    the incumbent R2 and the shadow policy are evaluated on exactly the same
+    input through the same cutoff. ``informational_only`` is locked True; this
+    is a prospective research observation, never an entry recommendation.
+    """
+
+    market: Market
+    symbol: str
+    family: SignalFamily
+    direction: Direction
+    decision_time_ms: int
+    primary_interval: str
+    raw_c0_triggered: bool
+    raw_score: int
+    r2_passed: bool
+    r2_failures: tuple[str, ...] = ()
+    shadow_passed: bool
+    shadow_failures: tuple[str, ...] = ()
+    shadow_gate: dict = Field(default_factory=dict)
+    informational_only: Literal[True] = True
 
 
 class RuleEvaluation(FrozenModel):

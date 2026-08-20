@@ -43,6 +43,8 @@ class MarketScanner:
         self.selector = UniverseSelector(settings.binance, clock)
         self.consumer = WebSocketConsumer(settings.binance.max_connection_age_seconds)
         self.universe: Universe | None = None
+        self._pending_universe_signature: tuple[frozenset[str], frozenset[str]] | None = None
+        self._pending_universe_confirmations = 0
         self.raw_recorder = None
         if settings.runtime.record_raw_events:
             self.raw_recorder = raw_recorder or RawEventRecorder(
@@ -52,6 +54,11 @@ class MarketScanner:
         runtime.gap_recoverer = self._recover_gap
 
     async def close(self) -> None:
+        # Finalize any open shadow coverage cells before the repository is
+        # closed, so a graceful stop seals the last in-progress close as
+        # COMPLETE/INCOMPLETE rather than leaving it OPEN. A shadow flush
+        # failure never affects the incumbent shutdown.
+        self.runtime.flush_shadow()
         await self.rest.close()
 
     async def prepare(self) -> Universe:
@@ -59,44 +66,234 @@ class MarketScanner:
         if not universe.tradable:
             raise RuntimeError(f"no tradable symbols selected for {self.market.value}")
         self.universe = universe
+        market_data_symbols = sorted(
+            set(universe.tradable_symbols) | set(universe.context_symbols)
+        )
         self.runtime.set_active_symbols(
             frozenset(universe.tradable_symbols),
             universe.surveillance_symbols,
+            universe.context_symbols,
         )
         if self.market is Market.FUTURES:
             await self._refresh_funding(universe.tradable_symbols, bootstrap=True)
-        await self._bootstrap(universe.tradable_symbols)
+        await self._bootstrap(market_data_symbols)
         LOGGER.info("market scanner prepared", extra={"market": self.market.value})
         return universe
 
-    async def run(self) -> None:
-        universe = self.universe or await self.prepare()
+    @staticmethod
+    def _market_data_symbols(universe: Universe) -> list[str]:
+        return sorted(set(universe.tradable_symbols) | set(universe.context_symbols))
+
+    @staticmethod
+    def _universe_signature(
+        universe: Universe,
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        return frozenset(universe.tradable_symbols), universe.context_symbols
+
+    def _paper_continuation_symbols(self) -> frozenset[str]:
+        paper_positions = getattr(self.runtime, "paper_positions", None)
+        if paper_positions is None:
+            return frozenset()
+        return frozenset(paper_positions.continuation_symbols)
+
+    def _start_websocket_tasks(self, universe: Universe) -> list[asyncio.Task[None]]:
+        context_only = universe.context_symbols - frozenset(universe.tradable_symbols)
         plans = build_websocket_plans(
             self.market,
-            universe.tradable_symbols,
+            self._market_data_symbols(universe),
             self.settings.binance.intervals,
             self.settings.binance.websocket_batch_size,
+            candle_only_symbols=context_only,
         )
-        tasks = [
+        return [
             asyncio.create_task(
                 self.consumer.consume_forever(plan, self._handle_payload, self.stop_event),
                 name=plan.name,
             )
             for plan in plans
         ]
-        if self.market is Market.FUTURES:
-            tasks.append(
-                asyncio.create_task(
-                    self._funding_refresh_loop(universe.tradable_symbols),
-                    name="futures-funding-refresh",
-                )
-            )
+
+    @staticmethod
+    async def _cancel_tasks(tasks: list[asyncio.Task[None]]) -> None:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    @staticmethod
+    def _raise_unexpected_task_exit(task: asyncio.Task[Any], label: str) -> None:
+        if task.cancelled():
+            raise asyncio.CancelledError
+        error = task.exception()
+        if error is not None:
+            raise error
+        raise RuntimeError(f"{label} exited unexpectedly")
+
+    async def _poll_universe_candidate(self) -> Universe | None:
+        current = self.universe
+        if current is None:
+            return None
         try:
-            await asyncio.gather(*tasks)
+            candidate = await self.selector.select(self.rest)
+        except BinanceRestError as exc:
+            LOGGER.warning(
+                "universe refresh failed; retaining current membership",
+                extra={"market": self.market.value},
+                exc_info=exc,
+            )
+            return None
+        if not candidate.tradable:
+            LOGGER.warning(
+                "universe refresh returned no tradable symbols; retaining current membership",
+                extra={"market": self.market.value},
+            )
+            return None
+
+        current_signature = self._universe_signature(current)
+        candidate_signature = self._universe_signature(candidate)
+        if candidate_signature == current_signature:
+            self._pending_universe_signature = None
+            self._pending_universe_confirmations = 0
+            if candidate.surveillance_symbols != current.surveillance_symbols:
+                self.runtime.set_active_symbols(
+                    frozenset(candidate.tradable_symbols),
+                    candidate.surveillance_symbols,
+                    candidate.context_symbols,
+                )
+                self.universe = candidate
+            return None
+
+        outgoing = frozenset(current.tradable_symbols) - frozenset(
+            candidate.tradable_symbols
+        )
+        protected = self._paper_continuation_symbols() & outgoing
+        if protected:
+            self._pending_universe_signature = None
+            self._pending_universe_confirmations = 0
+            LOGGER.info(
+                "deferring universe rotation while PAPER lifecycle is active",
+                extra={
+                    "market": self.market.value,
+                    "protected_symbols": sorted(protected),
+                },
+            )
+            return None
+
+        if candidate_signature == self._pending_universe_signature:
+            self._pending_universe_confirmations += 1
+        else:
+            self._pending_universe_signature = candidate_signature
+            self._pending_universe_confirmations = 1
+        required = self.settings.binance.universe_change_confirmations
+        LOGGER.info(
+            "observed candidate universe change",
+            extra={
+                "market": self.market.value,
+                "confirmations": self._pending_universe_confirmations,
+                "required_confirmations": required,
+            },
+        )
+        return candidate if self._pending_universe_confirmations >= required else None
+
+    async def _activate_universe(self, candidate: Universe) -> None:
+        previous = self.universe
+        previous_market_data = (
+            set() if previous is None else set(self._market_data_symbols(previous))
+        )
+        previous_tradable = (
+            set() if previous is None else set(previous.tradable_symbols)
+        )
+        candidate_market_data = set(self._market_data_symbols(candidate))
+        added_market_data = sorted(candidate_market_data - previous_market_data)
+        added_tradable = sorted(set(candidate.tradable_symbols) - previous_tradable)
+
+        self.runtime.set_active_symbols(
+            frozenset(candidate.tradable_symbols),
+            candidate.surveillance_symbols,
+            candidate.context_symbols,
+        )
+        if self.market is Market.FUTURES and added_tradable:
+            await self._refresh_funding(added_tradable, bootstrap=True)
+        if added_market_data:
+            await self._bootstrap(added_market_data)
+        self.universe = candidate
+        self._pending_universe_signature = None
+        self._pending_universe_confirmations = 0
+        LOGGER.info(
+            "activated confirmed universe rotation",
+            extra={
+                "market": self.market.value,
+                "tradable_symbols": len(candidate.tradable_symbols),
+                "surveillance_symbols": len(candidate.surveillance_symbols),
+                "added_market_data_symbols": len(added_market_data),
+            },
+        )
+
+    async def run(self) -> None:
+        universe = self.universe or await self.prepare()
+        websocket_tasks = self._start_websocket_tasks(universe)
+        if self.market is Market.FUTURES:
+            funding_task = asyncio.create_task(
+                self._funding_refresh_loop(),
+                name="futures-funding-refresh",
+            )
+        else:
+            funding_task = None
+        stop_waiter = asyncio.create_task(
+            self.stop_event.wait(), name=f"{self.market.value}-scanner-stop"
+        )
+        refresh_task = asyncio.create_task(
+            asyncio.sleep(self.settings.binance.universe_refresh_seconds),
+            name=f"{self.market.value}-universe-refresh",
+        )
+        try:
+            while not self.stop_event.is_set():
+                monitored: set[asyncio.Task[Any]] = {
+                    *websocket_tasks,
+                    stop_waiter,
+                    refresh_task,
+                }
+                if funding_task is not None:
+                    monitored.add(funding_task)
+                done, _ = await asyncio.wait(
+                    monitored,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if stop_waiter in done:
+                    break
+                if funding_task is not None and funding_task in done:
+                    self._raise_unexpected_task_exit(
+                        funding_task, "funding refresh loop"
+                    )
+                completed_websockets = [
+                    task for task in websocket_tasks if task in done
+                ]
+                for task in completed_websockets:
+                    self._raise_unexpected_task_exit(
+                        task, "Binance WebSocket consumer"
+                    )
+                if refresh_task in done:
+                    replacement = await self._poll_universe_candidate()
+                    if replacement is not None:
+                        await self._cancel_tasks(websocket_tasks)
+                        await self._activate_universe(replacement)
+                        universe = self.universe or replacement
+                        websocket_tasks = self._start_websocket_tasks(universe)
+                    refresh_task = asyncio.create_task(
+                        asyncio.sleep(self.settings.binance.universe_refresh_seconds),
+                        name=f"{self.market.value}-universe-refresh",
+                    )
         finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            stop_waiter.cancel()
+            refresh_task.cancel()
+            await self._cancel_tasks(websocket_tasks)
+            if funding_task is not None:
+                funding_task.cancel()
+            await asyncio.gather(
+                stop_waiter,
+                refresh_task,
+                *(() if funding_task is None else (funding_task,)),
+                return_exceptions=True,
+            )
 
     async def _handle_payload(self, payload: Any) -> None:
         if self.raw_recorder is not None:
@@ -114,7 +311,7 @@ class MarketScanner:
                 return
         await self.runtime.handle_payload(payload)
 
-    async def _funding_refresh_loop(self, symbols: list[str]) -> None:
+    async def _funding_refresh_loop(self) -> None:
         """Refresh settled public funding until cancellation or the shared stop event."""
         while not self.stop_event.is_set():
             try:
@@ -123,7 +320,9 @@ class MarketScanner:
                     timeout=self.settings.binance.funding_refresh_seconds,
                 )
             except TimeoutError:
-                await self._refresh_funding(symbols, bootstrap=False)
+                universe = self.universe
+                if universe is not None:
+                    await self._refresh_funding(universe.tradable_symbols, bootstrap=False)
 
     async def _refresh_funding(self, symbols: list[str], *, bootstrap: bool) -> None:
         semaphore = asyncio.Semaphore(self.settings.binance.rest_concurrency)

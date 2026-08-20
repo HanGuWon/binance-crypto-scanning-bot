@@ -231,6 +231,18 @@ class PaperPositionLifecycle:
     def pending_entry_count(self) -> int:
         return sum(state.pending_entry is not None for state in self._states.values())
 
+    @property
+    def continuation_symbols(self) -> frozenset[str]:
+        """Symbols that must keep receiving primary candles to finish PAPER state."""
+
+        return frozenset(
+            symbol
+            for symbol, state in self._states.items()
+            if state.position is not None
+            or state.pending_entry is not None
+            or state.pending_exit is not None
+        )
+
     def checkpoint_symbol(self, symbol: str) -> PaperLifecycleCheckpoint:
         """Snapshot only one bounded symbol state before attempting persistence."""
 

@@ -19,6 +19,8 @@ binance:
   request_timeout_seconds: 15
   funding_history_points: 256
   funding_refresh_seconds: 300
+  universe_refresh_seconds: 900
+  universe_change_confirmations: 2
   blacklist: []
   excluded_base_assets: [USDC, FDUSD, USDP, TUSD, DAI, EUR, TRY, BRL]
 signals:
@@ -37,6 +39,9 @@ signals:
   anomaly_robust_zscore: 4.0
   anomaly_min_points: 20
   anomaly_history_points: 600
+  # Intrabar rapid-move warnings are suppressed for symbols whose rolling
+  # 24h quote volume is below this floor. 0 keeps the historical behavior.
+  anomaly_min_quote_volume_usdt: 10000000
   # Frozen R2 candidate: raw C0 plus strict-prior HTF and observed BBO execution.
   gate_enabled: true
   entry_policy: r2_pit_htf_exec
@@ -86,6 +91,25 @@ signals:
     max_holding_bars: 72
   # Reversal families remain disabled until a causal HTF implementation is validated.
   reversal_intervals: []
+shadow:
+  # Shadow successor policy. For a PROSPECTIVE campaign keep
+  # signals.entry_policy: r2_pit_htf_exec (production unchanged) and set
+  # observation_enabled: true so the shadow is evaluated as a simultaneous
+  # observer on the SAME 5m causal snapshot and its evidence is persisted
+  # only. It can never reach CONFIRMED, enter the production state machine,
+  # create a PAPER position, or cause a Discord recommendation.
+  #
+  # Selecting entry_policy: shadow_er_context_v1 is a legacy standalone mode
+  # that runs the shadow INSTEAD of R2 and must never be used to start a
+  # prospective campaign.
+  policy_version: er_context_v1
+  efficiency_ratio_min: 0.40
+  breakout_max_distance_atr: 0.50
+  round_trip_cost_bps: 26.0
+  cost_headroom_multiple: 2.0
+  require_btc_context_aligned: true
+  observation_enabled: false
+  observation_schema_version: shadow_observation_v1
 storage:
   url: sqlite:///./var/signalbot.db
   echo_sql: false

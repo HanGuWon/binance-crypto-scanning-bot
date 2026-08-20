@@ -3,16 +3,21 @@ from __future__ import annotations
 from collections.abc import Mapping
 from decimal import Decimal
 
-from signalbot.config import SignalSettings
+from signalbot.config import ShadowPolicySettings, SignalSettings
 from signalbot.domain.enums import Direction, SignalFamily
 from signalbot.domain.models import (
     DIRECTIONAL_DIAGNOSTICS_METADATA_KEY,
+    ComparatorCandidate,
     DirectionalDiagnostics,
     DirectionalSetupScore,
     FeatureSnapshot,
     RuleEvaluation,
 )
 from signalbot.signals.gates import evaluate_entry_gates
+from signalbot.signals.shadow_policy import (
+    SHADOW_GATE_METADATA_KEY,
+    evaluate_shadow_gate,
+)
 
 
 def _decimal(value: float) -> Decimal:
@@ -24,8 +29,13 @@ def _bounded(score: float) -> int:
 
 
 class SignalRuleEngine:
-    def __init__(self, settings: SignalSettings) -> None:
+    def __init__(
+        self,
+        settings: SignalSettings,
+        shadow: ShadowPolicySettings | None = None,
+    ) -> None:
         self.settings = settings
+        self.shadow = shadow or ShadowPolicySettings()
 
     def evaluate(
         self, feature: FeatureSnapshot, contexts: Mapping[str, FeatureSnapshot] | None = None
@@ -57,6 +67,117 @@ class SignalRuleEngine:
             evaluated = [self._apply_context(item, context_values) for item in values]
         else:
             evaluated = [self._apply_gate(item, feature, context_values) for item in values]
+        evaluated = [self._lock_informational_only(item) for item in evaluated]
+        return self._with_directional_diagnostics(feature, evaluated)
+
+    def evaluate_comparator(
+        self,
+        feature: FeatureSnapshot,
+        contexts: Mapping[str, FeatureSnapshot] | None = None,
+    ) -> ComparatorCandidate | None:
+        """Build one deterministic common-opportunity comparator view.
+
+        The candidate family is locked by market (Spot BREAKOUT_LONG / Futures
+        BREAKDOWN_SHORT), mirroring the frozen R2 family. Both the incumbent R2
+        gate and the shadow successor gate are evaluated on the exact same raw
+        C0 candidate and the same strictly-prior context cutoff. ``None`` is
+        returned only for markets outside the permitted families (never for an
+        ordinary Spot/Futures Close).
+        """
+
+        context_values = contexts or {}
+        if feature.market.value == "spot":
+            raw = self._breakout(feature)
+        elif feature.market.value == "futures":
+            raw = self._breakdown(feature)
+        else:
+            return None
+
+        gate = evaluate_entry_gates(
+            feature, raw.direction, context_values, self.settings
+        )
+        r2_passed = gate.passed and raw.metadata.get("informational_only") is not True
+
+        shadow_evaluation = evaluate_shadow_gate(
+            raw, feature, context_values, self.settings, self.shadow
+        )
+        shadow_gate = shadow_evaluation.metadata.get(
+            SHADOW_GATE_METADATA_KEY, {}
+        ) if isinstance(
+            shadow_evaluation.metadata.get(SHADOW_GATE_METADATA_KEY), dict
+        ) else {}
+
+        return ComparatorCandidate(
+            market=feature.market,
+            symbol=feature.symbol,
+            family=raw.family,
+            direction=raw.direction,
+            decision_time_ms=feature.event_time_ms,
+            primary_interval=feature.interval,
+            raw_c0_triggered=raw.triggered,
+            raw_score=raw.score,
+            r2_passed=r2_passed,
+            r2_failures=tuple(gate.failures),
+            shadow_passed=shadow_evaluation.triggered,
+            shadow_failures=tuple(
+                shadow_gate.get("failures", []) if isinstance(shadow_gate, dict) else []
+            ),
+            shadow_gate=shadow_gate,
+        )
+
+    def evaluate_research_shadow(
+        self,
+        feature: FeatureSnapshot,
+        contexts: Mapping[str, FeatureSnapshot],
+    ) -> list[RuleEvaluation]:
+        """Research-only standalone shadow successor evaluation (never selectable
+        as a production entry policy). The live ``SignalSettings.entry_policy``
+        cannot target this path; it exists only for offline research/parity.
+
+        Only Spot BREAKOUT_LONG and Futures BREAKDOWN_SHORT participate,
+        mirroring the frozen R2 market/direction family. Every shadow
+        evaluation is informational-only and can never reach CONFIRMED.
+        """
+
+        values = [
+            self._squeeze(feature, Direction.LONG),
+            self._squeeze(feature, Direction.SHORT),
+            self._breakout(feature),
+            self._breakdown(feature),
+            self._pullback(feature, Direction.LONG),
+            self._pullback(feature, Direction.SHORT),
+            self._exhaustion(feature),
+            self._capitulation(feature),
+        ]
+        evaluated: list[RuleEvaluation] = []
+        for item in values:
+            allowed = (
+                item.family is SignalFamily.BREAKOUT_LONG
+                and feature.market.value == "spot"
+            ) or (
+                item.family is SignalFamily.BREAKDOWN_SHORT
+                and feature.market.value == "futures"
+            )
+            if not allowed:
+                evaluated.append(
+                    item.model_copy(
+                        update={
+                            "score": 0,
+                            "eligible": False,
+                            "triggered": False,
+                            "reasons": (
+                                *item.reasons,
+                                "inactive under shadow_er_context_v1",
+                            ),
+                        }
+                    )
+                )
+                continue
+            evaluated.append(
+                evaluate_shadow_gate(
+                    item, feature, contexts, self.settings, self.shadow
+                )
+            )
         evaluated = [self._lock_informational_only(item) for item in evaluated]
         return self._with_directional_diagnostics(feature, evaluated)
 

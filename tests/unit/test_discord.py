@@ -80,8 +80,68 @@ def test_embed_contains_evidence_but_no_mass_mentions() -> None:
     payload = build_discord_payload(make_decision(), "Test Bot")
     assert payload["allowed_mentions"] == {"parse": []}
     embed = payload["embeds"][0]  # type: ignore[index]
-    assert "85/100" in embed["description"]  # type: ignore[index]
-    assert "not a probability" in embed["description"]  # type: ignore[index]
+    assert "🟢 추천: 상승 예상 · LONG 후보" in embed["title"]  # type: ignore[index]
+    assert "근거 강도: 85/100" in embed["description"]  # type: ignore[index]
+    assert "not a probability" not in embed["description"]  # type: ignore[index]
+
+
+def test_confirmed_futures_short_is_a_direct_downside_recommendation() -> None:
+    payload = build_discord_payload(
+        make_decision(
+            family=SignalFamily.BREAKDOWN_SHORT,
+            direction=Direction.SHORT,
+        ),
+        "Test Bot",
+    )
+    embed = payload["embeds"][0]  # type: ignore[index]
+
+    assert "🔴 추천: 하락 예상 · SHORT 후보" in embed["title"]  # type: ignore[index]
+    assert "상태: CONFIRMED" in embed["description"]  # type: ignore[index]
+    assert embed["color"] == 0xE74C3C
+
+
+def test_spot_short_is_a_bearish_hold_not_a_short_candidate() -> None:
+    payload = build_discord_payload(
+        make_decision(
+            market=Market.SPOT,
+            family=SignalFamily.BREAKDOWN_SHORT,
+            direction=Direction.SHORT,
+            metadata=directional_metadata(Market.SPOT),
+        ),
+        "Test Bot",
+    )
+    embed = payload["embeds"][0]  # type: ignore[index]
+
+    assert "🔴 추천: 하락 예상 · 신규 매수 보류" in embed["title"]  # type: ignore[index]
+    assert "SHORT 후보" not in embed["title"]  # type: ignore[index]
+
+
+def test_risk_and_invalidated_events_remain_no_entry_recommendations() -> None:
+    risk_payload = build_discord_payload(
+        make_decision(
+            family=SignalFamily.PUMP_RISK,
+            direction=Direction.RISK_UP,
+            stage=SignalStage.WATCH,
+        ),
+        "Test Bot",
+    )
+    invalidated_payload = build_discord_payload(
+        make_decision(
+            family=SignalFamily.PULLBACK_LONG,
+            direction=Direction.LONG,
+            stage=SignalStage.INVALIDATED,
+            metadata={"informational_only": True},
+        ),
+        "Test Bot",
+    )
+
+    risk_embed = risk_payload["embeds"][0]  # type: ignore[index]
+    invalidated_embed = invalidated_payload["embeds"][0]  # type: ignore[index]
+    assert "⚠️ 추천: 진입 보류 · 단기 급등 위험" in risk_embed["title"]  # type: ignore[index]
+    assert risk_embed["color"] == 0xF39C12
+    assert "⏸️ 추천: 진입 보류 · 직전 진입 조건 무효화" in invalidated_embed[  # type: ignore[index]
+        "title"
+    ]
 
 
 def test_embed_reports_directional_scores_and_closed_candle_indicator_values() -> None:
@@ -91,13 +151,11 @@ def test_embed_reports_directional_scores_and_closed_candle_indicator_values() -
     embed = payload["embeds"][0]  # type: ignore[index]
     fields = {item["name"]: item["value"] for item in embed["fields"]}  # type: ignore[index]
 
-    scores = fields["방향별 최고 설정 점수 · 확률 아님"]
+    scores = fields["상승·하락 근거 강도"]
     assert "LONG 근거 74/100" in scores
     assert "SHORT 근거 31/100" in scores
-    assert "우세 +43" not in scores
-    assert "방향 우세량으로 계산하지 않습니다" in scores
     assert "게이트 반영 80/100" in scores
-    assert "합산값이나 확률이 아닙니다" in scores
+    assert "진입 여부는 추천 요약과 게이트 상태를 따릅니다" in scores
 
     trend = fields["추세·모멘텀 실제값"]
     assert "EMA9/20/50/200 104 / 102 / 100 / 95" in trend
@@ -225,7 +283,7 @@ def test_spot_embed_does_not_present_bearish_evidence_as_a_short_order() -> None
     )
     embed = payload["embeds"][0]  # type: ignore[index]
     fields = {item["name"]: item["value"] for item in embed["fields"]}  # type: ignore[index]
-    scores = fields["방향별 최고 설정 점수 · 확률 아님"]
+    scores = fields["상승·하락 근거 강도"]
 
     assert "매수·상승 근거" in scores
     assert "하락·신규매수 보류 근거" in scores
@@ -312,11 +370,12 @@ def test_informational_pullback_embed_cannot_be_mistaken_for_entry_approval() ->
     )
     embed = payload["embeds"][0]  # type: ignore[index]
 
+    title = embed["title"]  # type: ignore[index]
     description = embed["description"]  # type: ignore[index]
-    assert "INFORMATION_ONLY · SETUP" in description
-    assert "정보용 SETUP · 진입 승인 아님" in description
-    assert "FUTURES_LONG" not in description
-    assert "not a probability" in description
+    assert "⏸️ 추천: 진입 보류 · 상승 조건 관찰 중" in title
+    assert "상태: SETUP · 근거 강도: 100/100" in description
+    assert "FUTURES_LONG" not in title
+    assert "not a probability" not in description
     assert embed["color"] == 0x3498DB
     assert decision.action_label == "INFORMATION_ONLY"
 
@@ -352,7 +411,8 @@ def test_paper_exit_embed_separates_fill_and_closed_candle_observation() -> None
     description = embed["description"]  # type: ignore[index]
     fields = {item["name"]: item["value"] for item in embed["fields"]}  # type: ignore[index]
 
-    assert "PAPER ONLY · NO ORDER PLACED" in description
+    assert "🟠 추천: 기존 LONG 정리 검토 · 신규 진입 보류" in embed["title"]  # type: ignore[index]
+    assert "PAPER 포지션 종료 추적" in description
     assert "Rule strength" not in description
     assert "no exchange order was placed" in fields["Execution scope"]
     assert "not restored after restart" in fields["Execution scope"]
