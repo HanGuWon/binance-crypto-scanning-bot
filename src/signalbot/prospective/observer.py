@@ -15,6 +15,10 @@ from signalbot.domain.models import (
     FeatureSnapshot,
 )
 from signalbot.persistence.repository import SqlRepository
+from signalbot.prospective.research_context import (
+    RESEARCH_CONTEXT_VERSION,
+    build_research_context,
+)
 from signalbot.signals.gates import evaluate_bbo_execution_evidence
 from signalbot.signals.rules import SignalRuleEngine
 from signalbot.signals.shadow_policy import shadow_policy_identity
@@ -71,6 +75,7 @@ def shadow_config_sha256(settings: Settings) -> str:
         "markets": sorted(item.value for item in bins.markets),
         "intervals": sorted(bins.intervals),
         "confirmation_mode": settings.signals.confirmation_mode,
+        "research_context_version": RESEARCH_CONTEXT_VERSION,
         # Universe selection: every parameter that can change the opportunity
         # denominator is bound so the config identity tracks the population.
         "universe": {
@@ -81,6 +86,8 @@ def shadow_config_sha256(settings: Settings) -> str:
             "quote_asset": bins.quote_asset,
             "blacklist": sorted(bins.blacklist),
             "excluded_base_assets": sorted(bins.excluded_base_assets),
+            "universe_refresh_seconds": bins.universe_refresh_seconds,
+            "universe_change_confirmations": bins.universe_change_confirmations,
         },
         # Raw C0 (breakout/breakdown) contract and shared signal inputs that
         # determine the causal trigger population.
@@ -416,6 +423,7 @@ class ShadowObserver:
             missing.append(
                 f"{evidence_failures} shadow evidence persistence failure(s)"
             )
+        sealed_at_ms = self.clock.now_ms()
         self.repository.save_shadow_coverage(
             campaign_id=self.campaign_id,
             campaign_manifest_sha256=self.campaign_manifest_sha256,
@@ -433,8 +441,8 @@ class ShadowObserver:
             seen_symbols=sorted(cell.get("seen_symbols", set())),
             complete=complete,
             failures=missing,
-            sealed_at_ms=self.clock.now_ms(),
-            created_at_ms=self.clock.now_ms(),
+            sealed_at_ms=sealed_at_ms,
+            created_at_ms=sealed_at_ms,
         )
 
     def flush(self) -> None:
@@ -475,6 +483,7 @@ def build_observation_payload(
             "rule_version": observer.settings.rule_version,
             "config_sha256": observer.config_sha256,
             "observation_schema_version": observer.schema_version,
+            "research_context_version": RESEARCH_CONTEXT_VERSION,
         },
         "common_causal_input": {
             "event_time_ms": feature.event_time_ms,
@@ -495,6 +504,11 @@ def build_observation_payload(
             "breadth_ratio": feature.regime.breadth_ratio,
             "data_completeness": feature.data_completeness,
         },
+        "research_context": build_research_context(
+            feature,
+            contexts,
+            execution_available=bbo.eligible,
+        ),
         "strict_prior_context": {
             "15m_event_time_ms": c15.event_time_ms if c15 is not None else None,
             "15m_close": c15.price if c15 is not None else None,
