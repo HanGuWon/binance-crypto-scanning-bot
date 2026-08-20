@@ -18,6 +18,8 @@ from signalbot.persistence.models import (
     Base,
     CandleRow,
     OutcomeRow,
+    RetestLifecycleRow,
+    RetestTransitionRow,
     ShadowCampaignRow,
     ShadowCoverageRow,
     ShadowObservationRow,
@@ -31,6 +33,12 @@ class EventIdConflictError(RuntimeError):
 
 class OutboxCapacityError(RuntimeError):
     """Raised before persisting a signal when active delivery intent is full."""
+
+
+_RETEST_STAGES = frozenset(
+    {"RAW_C0", "ARMED", "RETEST_TOUCH", "READY", "INVALID", "TIMEOUT", "CENSORED"}
+)
+_RETEST_TERMINAL_STAGES = frozenset({"READY", "INVALID", "TIMEOUT", "CENSORED"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +180,77 @@ def _coverage_content_sha256(
     return hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
 
 
+def _coverage_shape_errors(
+    *,
+    mature_count: int,
+    htf_ready_count: int,
+    fresh_bbo_count: int,
+    raw_c0_count: int,
+    comparator_rows: int,
+    evidence_failures: int,
+    seen_symbols: list[str],
+) -> list[str]:
+    """Return coverage counter-shape violations (empty when the shape is valid)."""
+
+    errors: list[str] = []
+    if min(
+        mature_count,
+        htf_ready_count,
+        fresh_bbo_count,
+        raw_c0_count,
+        comparator_rows,
+        evidence_failures,
+    ) < 0:
+        errors.append("counters cannot be negative")
+    seen_count = len(sorted(set(seen_symbols)))
+    if mature_count != seen_count:
+        errors.append("mature_count must equal unique seen-symbol count")
+    if htf_ready_count > mature_count or fresh_bbo_count > mature_count:
+        errors.append("readiness counters cannot exceed mature_count")
+    if raw_c0_count > mature_count:
+        errors.append("raw_c0_count cannot exceed mature_count")
+    if comparator_rows > raw_c0_count:
+        errors.append("comparator_rows cannot exceed raw_c0_count")
+    return errors
+
+
+def _coverage_regression_errors(
+    *,
+    prev_mature: int,
+    new_mature: int,
+    prev_htf: int,
+    new_htf: int,
+    prev_bbo: int,
+    new_bbo: int,
+    prev_raw: int,
+    new_raw: int,
+    prev_comparator: int,
+    new_comparator: int,
+    prev_failures: int,
+    new_failures: int,
+    prev_seen: set[str],
+    new_seen: set[str],
+) -> list[str]:
+    """Return monotonic-progress violations (empty when OPEN progresses runtime-only)."""
+
+    errors: list[str] = []
+    if new_mature < prev_mature:
+        errors.append("mature_count regression")
+    if new_htf < prev_htf:
+        errors.append("htf_ready_count regression")
+    if new_bbo < prev_bbo:
+        errors.append("fresh_bbo_count regression")
+    if new_raw < prev_raw:
+        errors.append("raw_c0_count regression")
+    if new_comparator < prev_comparator:
+        errors.append("comparator_rows regression")
+    if new_failures < prev_failures:
+        errors.append("evidence_failures regression")
+    if not prev_seen.issubset(new_seen):
+        errors.append("seen-symbol set regression")
+    return errors
+
+
 def _migrate_sqlite_shadow_schema(engine: Engine) -> None:
     """Add supported shadow-evidence columns without deleting existing rows."""
 
@@ -215,6 +294,15 @@ def _migrate_sqlite_shadow_schema(engine: Engine) -> None:
                 connection.exec_driver_sql(
                     f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {column_ddl}'
                 )
+        if "shadow_coverage" in tables:
+            # Contract B7 (path A): a legacy blank-provenance coverage row must
+            # never become an OPEN prospective cell. Mark such rows with a
+            # distinct non-OPEN status so restart-sealing and campaign queries
+            # can never adopt them.
+            connection.exec_driver_sql(
+                "UPDATE shadow_coverage SET status = 'LEGACY_UNVERIFIED' "
+                "WHERE campaign_manifest_sha256 = '' AND status = 'OPEN'"
+            )
 
 
 def _require_shadow_campaign(
@@ -235,6 +323,41 @@ def _require_shadow_campaign(
             f"shadow evidence campaign manifest mismatch for {campaign_id}"
         )
     return row
+
+
+def _retest_transition_payload_sha256(
+    *,
+    transition_id: str,
+    campaign_id: str,
+    campaign_manifest_sha256: str,
+    opportunity_id: str,
+    protocol_version: str,
+    from_stage: str,
+    to_stage: str,
+    decision_time_ms: int,
+    bar_close_ms: int,
+    persisted_at_ms: int,
+    lifecycle_sha256: str,
+) -> str:
+    """Canonical SHA-256 binding one immutable causal-retest transition."""
+
+    canonical = {
+        "transition_id": transition_id,
+        "campaign_id": campaign_id,
+        "campaign_manifest_sha256": campaign_manifest_sha256,
+        "opportunity_id": opportunity_id,
+        "protocol_version": protocol_version,
+        "from_stage": from_stage,
+        "to_stage": to_stage,
+        "decision_time_ms": decision_time_ms,
+        "bar_close_ms": bar_close_ms,
+        "persisted_at_ms": persisted_at_ms,
+        "lifecycle_sha256": lifecycle_sha256,
+    }
+    payload = json.dumps(
+        canonical, separators=(",", ":"), sort_keys=True, ensure_ascii=False
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _upsert_candle(session: Session, candle: Candle) -> bool:
@@ -352,6 +475,37 @@ class SqlRepository:
             created_at_ms=created_at_ms,
         )
         with Session(self.engine) as session:
+            # Contract B7 (path B): never let a new prospective campaign adopt
+            # legacy blank-provenance evidence. If any coverage/observation row
+            # already references this campaign_id with no manifest, the id is
+            # rejected so those unverifiable rows can never contaminate the
+            # prospective denominator.
+            legacy_coverage = int(
+                session.scalar(
+                    select(func.count()).select_from(ShadowCoverageRow).where(
+                        ShadowCoverageRow.campaign_id == campaign_id,
+                        ShadowCoverageRow.campaign_manifest_sha256 == "",
+                    )
+                )
+                or 0
+            )
+            legacy_observations = int(
+                session.scalar(
+                    select(func.count()).select_from(ShadowObservationRow).where(
+                        ShadowObservationRow.campaign_id == campaign_id,
+                        ShadowObservationRow.campaign_manifest_sha256 == "",
+                    )
+                )
+                or 0
+            )
+            if legacy_coverage or legacy_observations:
+                raise EventIdConflictError(
+                    "refusing to register campaign "
+                    + campaign_id
+                    + ": legacy blank-provenance evidence already references this "
+                    "id; it would be adopted and contaminate the prospective "
+                    "denominator"
+                )
             existing = session.get(ShadowCampaignRow, campaign_id)
             if existing is not None:
                 if existing.manifest_sha256 != manifest_sha256:
@@ -393,6 +547,247 @@ class SqlRepository:
                     manifest_sha256=manifest_sha256,
                 )
             )
+            session.commit()
+            return True
+
+    def load_retest_lifecycle(
+        self,
+        *,
+        campaign_id: str,
+        opportunity_id: str,
+    ) -> dict | None:
+        """Restore the durable current lifecycle state, or None when absent."""
+
+        with Session(self.engine) as session:
+            row = session.get(
+                RetestLifecycleRow, (campaign_id, opportunity_id)
+            )
+            if row is None:
+                return None
+            return {
+                "campaign_id": row.campaign_id,
+                "opportunity_id": row.opportunity_id,
+                "campaign_manifest_sha256": row.campaign_manifest_sha256,
+                "protocol_version": row.protocol_version,
+                "stage": row.stage,
+                "lifecycle": json.loads(row.lifecycle_json),
+                "lifecycle_sha256": row.lifecycle_sha256,
+                "updated_at_ms": row.updated_at_ms,
+            }
+
+    def list_retest_transitions(
+        self,
+        *,
+        campaign_id: str,
+        opportunity_id: str,
+    ) -> list[dict]:
+        """Return the append-only transition history for one lifecycle."""
+
+        with Session(self.engine) as session:
+            rows = session.scalars(
+                select(RetestTransitionRow)
+                .where(
+                    RetestTransitionRow.campaign_id == campaign_id,
+                    RetestTransitionRow.opportunity_id == opportunity_id,
+                )
+                .order_by(
+                    RetestTransitionRow.persisted_at_ms,
+                    RetestTransitionRow.transition_id,
+                )
+            ).all()
+            return [
+                {
+                    "transition_id": row.transition_id,
+                    "campaign_id": row.campaign_id,
+                    "opportunity_id": row.opportunity_id,
+                    "protocol_version": row.protocol_version,
+                    "from_stage": row.from_stage,
+                    "to_stage": row.to_stage,
+                    "decision_time_ms": row.decision_time_ms,
+                    "bar_close_ms": row.bar_close_ms,
+                    "campaign_manifest_sha256": row.campaign_manifest_sha256,
+                    "payload_sha256": row.payload_sha256,
+                    "persisted_at_ms": row.persisted_at_ms,
+                }
+                for row in rows
+            ]
+
+    def retest_lifecycle_counts(
+        self,
+        *,
+        campaign_id: str,
+        campaign_manifest_sha256: str,
+    ) -> dict[str, int]:
+        """Return an auditable lifecycle denominator by current stage.
+
+        ``active`` and ``touched`` are non-terminal observations. Every
+        admitted opportunity is represented by exactly one current row; a
+        terminal row is immutable because ``transition_retest`` rejects later
+        transitions. The manifest gate prevents another campaign's rows from
+        contaminating this denominator.
+        """
+
+        with Session(self.engine) as session:
+            _require_shadow_campaign(
+                session,
+                campaign_id=campaign_id,
+                campaign_manifest_sha256=campaign_manifest_sha256,
+            )
+            rows = session.execute(
+                select(RetestLifecycleRow.stage, func.count())
+                .where(
+                    RetestLifecycleRow.campaign_id == campaign_id,
+                    RetestLifecycleRow.campaign_manifest_sha256
+                    == campaign_manifest_sha256,
+                )
+                .group_by(RetestLifecycleRow.stage)
+            ).all()
+        counts = {
+            "active": 0,
+            "touched": 0,
+            "READY": 0,
+            "INVALID": 0,
+            "TIMEOUT": 0,
+            "CENSORED": 0,
+        }
+        for stage, count in rows:
+            if stage == "ARMED":
+                counts["active"] = int(count)
+            elif stage == "RETEST_TOUCH":
+                counts["touched"] = int(count)
+            elif stage in counts:
+                counts[stage] = int(count)
+            else:
+                raise EventIdConflictError(
+                    "unknown retest lifecycle stage in denominator: " + str(stage)
+                )
+        counts["admitted"] = sum(
+            counts[key]
+            for key in ("active", "touched", "READY", "INVALID", "TIMEOUT", "CENSORED")
+        )
+        counts["terminal"] = sum(
+            counts[key] for key in ("READY", "INVALID", "TIMEOUT", "CENSORED")
+        )
+        return counts
+
+    def transition_retest(
+        self,
+        *,
+        transition_id: str,
+        campaign_id: str,
+        campaign_manifest_sha256: str,
+        opportunity_id: str,
+        protocol_version: str,
+        from_stage: str,
+        to_stage: str,
+        decision_time_ms: int,
+        bar_close_ms: int,
+        lifecycle: dict,
+        persisted_at_ms: int,
+    ) -> bool:
+        """Atomically append one immutable transition and advance the lifecycle.
+
+        Returns True when a new transition row was appended and the lifecycle
+        was advanced in the same transaction. Replaying the same
+        transition_id with byte-identical canonical content is an
+        idempotent no-op; reusing the ID for different content raises
+        EventIdConflictError so history can never be silently rewritten.
+        """
+
+        if not transition_id or not campaign_id or not campaign_manifest_sha256:
+            raise ValueError("retest transition requires non-empty identities")
+        if not opportunity_id or not protocol_version:
+            raise ValueError("retest transition requires opportunity/protocol")
+        if from_stage == to_stage:
+            raise ValueError("retest transition must change stage")
+        if from_stage not in _RETEST_STAGES or to_stage not in _RETEST_STAGES:
+            raise ValueError("unsupported retest transition stage")
+        if lifecycle.get("stage") != to_stage:
+            raise EventIdConflictError(
+                "retest lifecycle payload stage does not match transition destination"
+            )
+        lifecycle_json = json.dumps(
+            lifecycle, separators=(",", ":"), sort_keys=True, ensure_ascii=False
+        )
+        lifecycle_sha256 = hashlib.sha256(lifecycle_json.encode("utf-8")).hexdigest()
+        payload_sha256 = _retest_transition_payload_sha256(
+            transition_id=transition_id,
+            campaign_id=campaign_id,
+            campaign_manifest_sha256=campaign_manifest_sha256,
+            opportunity_id=opportunity_id,
+            protocol_version=protocol_version,
+            from_stage=from_stage,
+            to_stage=to_stage,
+            decision_time_ms=decision_time_ms,
+            bar_close_ms=bar_close_ms,
+            persisted_at_ms=persisted_at_ms,
+            lifecycle_sha256=lifecycle_sha256,
+        )
+        with Session(self.engine) as session:
+            _require_shadow_campaign(
+                session,
+                campaign_id=campaign_id,
+                campaign_manifest_sha256=campaign_manifest_sha256,
+            )
+            current = session.get(
+                RetestLifecycleRow, (campaign_id, opportunity_id)
+            )
+            if current is None:
+                raise EventIdConflictError(
+                    "retest lifecycle missing before transition "
+                    + transition_id
+                    + " (begin_retest_lifecycle first)"
+                )
+            existing = session.get(RetestTransitionRow, transition_id)
+            if existing is not None:
+                if existing.payload_sha256 != payload_sha256:
+                    raise EventIdConflictError(
+                        "retest transition "
+                        + transition_id
+                        + " maps to conflicting payloads"
+                    )
+                return False
+            if current.campaign_manifest_sha256 != campaign_manifest_sha256:
+                raise EventIdConflictError(
+                    "retest lifecycle campaign manifest mismatch for "
+                    + campaign_id
+                    + "/"
+                    + opportunity_id
+                )
+            if current.protocol_version != protocol_version:
+                raise EventIdConflictError(
+                    "retest lifecycle protocol mismatch for "
+                    + campaign_id
+                    + "/"
+                    + opportunity_id
+                )
+            if current.stage != from_stage:
+                raise EventIdConflictError(
+                    "retest transition source stage does not match durable current stage"
+                )
+            if current.stage in _RETEST_TERMINAL_STAGES:
+                raise EventIdConflictError(
+                    "terminal retest lifecycle cannot receive another transition"
+                )
+            session.add(
+                RetestTransitionRow(
+                    transition_id=transition_id,
+                    campaign_id=campaign_id,
+                    campaign_manifest_sha256=campaign_manifest_sha256,
+                    opportunity_id=opportunity_id,
+                    protocol_version=protocol_version,
+                    from_stage=from_stage,
+                    to_stage=to_stage,
+                    decision_time_ms=decision_time_ms,
+                    bar_close_ms=bar_close_ms,
+                    payload_sha256=payload_sha256,
+                    persisted_at_ms=persisted_at_ms,
+                )
+            )
+            current.stage = to_stage
+            current.lifecycle_json = lifecycle_json
+            current.lifecycle_sha256 = lifecycle_sha256
+            current.updated_at_ms = persisted_at_ms
             session.commit()
             return True
 
@@ -1080,6 +1475,53 @@ class SqlRepository:
                         + "/"
                         + str(decision_close_ms)
                     )
+                # Contract B8: OPEN -> SEALED must be shape-valid and strictly
+                # monotonic (never rewrite scientific history backwards).
+                seal_shape = _coverage_shape_errors(
+                    mature_count=mature_count,
+                    htf_ready_count=htf_ready_count,
+                    fresh_bbo_count=fresh_bbo_count,
+                    raw_c0_count=raw_c0_count,
+                    comparator_rows=comparator_rows,
+                    evidence_failures=evidence_failures,
+                    seen_symbols=seen,
+                )
+                if seal_shape:
+                    raise EventIdConflictError(
+                        "invalid shadow coverage seal shape for "
+                        + campaign_id
+                        + "/"
+                        + market
+                        + ": "
+                        + "; ".join(seal_shape)
+                    )
+                seal_regression = _coverage_regression_errors(
+                    prev_mature=existing.mature_count,
+                    new_mature=mature_count,
+                    prev_htf=existing.htf_ready_count,
+                    new_htf=htf_ready_count,
+                    prev_bbo=existing.fresh_bbo_count,
+                    new_bbo=fresh_bbo_count,
+                    prev_raw=existing.raw_c0_count,
+                    new_raw=raw_c0_count,
+                    prev_comparator=existing.comparator_rows,
+                    new_comparator=comparator_rows,
+                    prev_failures=existing.evidence_failures,
+                    new_failures=evidence_failures,
+                    prev_seen=set(_json_loads(existing.seen_symbols_json)),
+                    new_seen=set(seen),
+                )
+                if seal_regression:
+                    raise EventIdConflictError(
+                        "shadow coverage sealed counter regression for "
+                        + campaign_id
+                        + "/"
+                        + market
+                        + "/"
+                        + str(decision_close_ms)
+                        + ": "
+                        + "; ".join(seal_regression)
+                    )
                 existing.mature_count = mature_count
                 existing.htf_ready_count = htf_ready_count
                 existing.fresh_bbo_count = fresh_bbo_count
@@ -1137,36 +1579,23 @@ class SqlRepository:
         """
 
         seen = sorted(set(seen_symbols))
-        if min(
-            mature_count,
-            htf_ready_count,
-            fresh_bbo_count,
-            raw_c0_count,
-            comparator_rows,
-            evidence_failures,
-        ) < 0:
-            raise EventIdConflictError("shadow coverage counters cannot be negative")
-        if mature_count != len(seen):
+        shape_errors = _coverage_shape_errors(
+            mature_count=mature_count,
+            htf_ready_count=htf_ready_count,
+            fresh_bbo_count=fresh_bbo_count,
+            raw_c0_count=raw_c0_count,
+            comparator_rows=comparator_rows,
+            evidence_failures=evidence_failures,
+            seen_symbols=seen,
+        )
+        if shape_errors:
             raise EventIdConflictError(
-                "shadow coverage mature_count must equal unique seen-symbol count"
-            )
-        if htf_ready_count > mature_count or fresh_bbo_count > mature_count:
-            raise EventIdConflictError(
-                "shadow coverage readiness counters cannot exceed mature_count"
-            )
-        if comparator_rows > raw_c0_count:
-            raise EventIdConflictError(
-                "shadow coverage comparator_rows cannot exceed raw_c0_count for "
+                "invalid shadow coverage shape for "
                 + campaign_id
                 + "/"
                 + market
-            )
-        if raw_c0_count > mature_count:
-            raise EventIdConflictError(
-                "shadow coverage raw_c0_count cannot exceed mature_count for "
-                + campaign_id
-                + "/"
-                + market
+                + ": "
+                + "; ".join(shape_errors)
             )
         with Session(self.engine) as session:
             _require_shadow_campaign(
@@ -1208,31 +1637,33 @@ class SqlRepository:
             prev_raw = existing.raw_c0_count
             prev_comparator = existing.comparator_rows
             prev_evidence_failures = existing.evidence_failures
-            if (
-                mature_count < prev_mature
-                or htf_ready_count < prev_htf_ready
-                or fresh_bbo_count < prev_fresh_bbo
-                or raw_c0_count < prev_raw
-                or comparator_rows < prev_comparator
-                or evidence_failures < prev_evidence_failures
-            ):
-                raise EventIdConflictError(
-                    "shadow coverage counter regression for "
-                    + campaign_id
-                    + "/"
-                    + market
-                    + "/"
-                    + str(decision_close_ms)
-                )
             prev_seen = set(_json_loads(existing.seen_symbols_json))
-            if not prev_seen.issubset(seen):
+            regression_errors = _coverage_regression_errors(
+                prev_mature=prev_mature,
+                new_mature=mature_count,
+                prev_htf=prev_htf_ready,
+                new_htf=htf_ready_count,
+                prev_bbo=prev_fresh_bbo,
+                new_bbo=fresh_bbo_count,
+                prev_raw=prev_raw,
+                new_raw=raw_c0_count,
+                prev_comparator=prev_comparator,
+                new_comparator=comparator_rows,
+                prev_failures=prev_evidence_failures,
+                new_failures=evidence_failures,
+                prev_seen=prev_seen,
+                new_seen=set(seen),
+            )
+            if regression_errors:
                 raise EventIdConflictError(
-                    "shadow coverage seen-symbol set regression for "
+                    "shadow coverage progress regression for "
                     + campaign_id
                     + "/"
                     + market
                     + "/"
                     + str(decision_close_ms)
+                    + ": "
+                    + "; ".join(regression_errors)
                 )
             existing.mature_count = mature_count
             existing.htf_ready_count = htf_ready_count
@@ -1314,3 +1745,77 @@ class SqlRepository:
                 sealed += 1
             session.commit()
         return sealed
+
+    def begin_retest_lifecycle(
+        self,
+        *,
+        campaign_id: str,
+        campaign_manifest_sha256: str,
+        opportunity_id: str,
+        protocol_version: str,
+        stage: str,
+        lifecycle: dict,
+        updated_at_ms: int,
+    ) -> bool:
+        """Insert the durable current row for a causal-retest lifecycle.
+
+        Returns True when a new lifecycle row was created. Re-beginning the
+        same (campaign_id, opportunity_id) with byte-identical canonical
+        lifecycle content is an idempotent no-op; reusing the key with
+        different content raises EventIdConflictError so a restarted process
+        can never silently adopt a different lifecycle definition.
+        """
+
+        if not campaign_id or not campaign_manifest_sha256 or not opportunity_id:
+            raise ValueError("retest lifecycle requires non-empty identities")
+        if not protocol_version or not stage:
+            raise ValueError("retest lifecycle requires protocol/stage")
+        if stage not in _RETEST_STAGES:
+            raise ValueError("unsupported retest lifecycle stage")
+        if lifecycle.get("stage") != stage:
+            raise EventIdConflictError(
+                "retest lifecycle payload stage does not match durable stage"
+            )
+        lifecycle_json = json.dumps(
+            lifecycle, separators=(",", ":"), sort_keys=True, ensure_ascii=False
+        )
+        lifecycle_sha256 = hashlib.sha256(lifecycle_json.encode("utf-8")).hexdigest()
+        with Session(self.engine) as session:
+            _require_shadow_campaign(
+                session,
+                campaign_id=campaign_id,
+                campaign_manifest_sha256=campaign_manifest_sha256,
+            )
+            existing = session.get(
+                RetestLifecycleRow, (campaign_id, opportunity_id)
+            )
+            if existing is not None:
+                if (
+                    existing.campaign_manifest_sha256 != campaign_manifest_sha256
+                    or existing.protocol_version != protocol_version
+                    or existing.stage != stage
+                    or existing.lifecycle_sha256 != lifecycle_sha256
+                    or existing.lifecycle_json != lifecycle_json
+                ):
+                    raise EventIdConflictError(
+                        "retest lifecycle "
+                        + campaign_id
+                        + "/"
+                        + opportunity_id
+                        + " maps to different lifecycle content"
+                    )
+                return False
+            session.add(
+                RetestLifecycleRow(
+                    campaign_id=campaign_id,
+                    opportunity_id=opportunity_id,
+                    campaign_manifest_sha256=campaign_manifest_sha256,
+                    protocol_version=protocol_version,
+                    stage=stage,
+                    lifecycle_json=lifecycle_json,
+                    lifecycle_sha256=lifecycle_sha256,
+                    updated_at_ms=updated_at_ms,
+                )
+            )
+            session.commit()
+            return True

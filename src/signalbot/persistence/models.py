@@ -185,3 +185,37 @@ class ShadowCoverageRow(Base):
     seen_symbols_json: Mapped[str] = mapped_column(Text, default="[]")
     first_seen_ms: Mapped[int] = mapped_column(BigInteger, default=0)
     sealed_at_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class RetestTransitionRow(Base):
+    __tablename__ = "retest_transitions"
+    transition_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(String(64), index=True)
+    campaign_manifest_sha256: Mapped[str] = mapped_column(String(64))
+    opportunity_id: Mapped[str] = mapped_column(String(64), index=True)
+    protocol_version: Mapped[str] = mapped_column(String(32))
+    from_stage: Mapped[str] = mapped_column(String(24))
+    to_stage: Mapped[str] = mapped_column(String(24))
+    decision_time_ms: Mapped[int] = mapped_column(BigInteger)
+    bar_close_ms: Mapped[int] = mapped_column(BigInteger)
+    payload_sha256: Mapped[str] = mapped_column(String(64))
+    persisted_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
+class RetestLifecycleRow(Base):
+    __tablename__ = "retest_lifecycles"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "opportunity_id",
+            name="uq_retest_lifecycle_opportunity",
+        ),
+    )
+    campaign_id: Mapped[str] = mapped_column(String(64), index=True, primary_key=True)
+    opportunity_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    campaign_manifest_sha256: Mapped[str] = mapped_column(String(64))
+    protocol_version: Mapped[str] = mapped_column(String(32))
+    stage: Mapped[str] = mapped_column(String(24))
+    lifecycle_json: Mapped[str] = mapped_column(Text)
+    lifecycle_sha256: Mapped[str] = mapped_column(String(64))
+    updated_at_ms: Mapped[int] = mapped_column(BigInteger)
