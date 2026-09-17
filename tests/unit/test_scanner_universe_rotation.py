@@ -144,3 +144,70 @@ async def test_activate_universe_bootstraps_only_new_detailed_symbols(
     assert scanner.universe is candidate
     assert scanner._pending_universe_signature is None
     assert scanner._pending_universe_confirmations == 0
+
+
+@pytest.mark.asyncio
+async def test_confirmed_rotation_censors_only_outgoing_retest_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = _universe(("ETHUSDT", "BTCUSDT"), surveillance=("ETHUSDT", "BTCUSDT"))
+    candidate = _universe(("SOLUSDT", "BTCUSDT"), surveillance=("SOLUSDT", "BTCUSDT"))
+    censor_calls: list[tuple[set[str], int]] = []
+    scanner = object.__new__(MarketScanner)
+    scanner.market = Market.SPOT
+    scanner.clock = cast(Any, SimpleNamespace(now_ms=lambda: 1_710_000_123_000))
+    scanner.runtime = cast(
+        Any,
+        SimpleNamespace(
+            shadow_observer=SimpleNamespace(
+                censor_universe_exit=lambda symbols, *, decision_time_ms: censor_calls.append(
+                    (set(symbols), decision_time_ms)
+                )
+            ),
+            set_active_symbols=lambda *args: None,
+        ),
+    )
+    scanner.universe = current
+    scanner._pending_universe_signature = MarketScanner._universe_signature(candidate)
+    scanner._pending_universe_confirmations = 2
+
+    async def bootstrap(_symbols: list[str]) -> None:
+        return None
+
+    monkeypatch.setattr(scanner, "_bootstrap", bootstrap)
+    await scanner._activate_universe(candidate)
+
+    assert censor_calls == [({"ETHUSDT"}, 1_710_000_123_000)]
+
+
+@pytest.mark.asyncio
+async def test_retest_censor_failure_does_not_block_confirmed_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = _universe(("ETHUSDT",), surveillance=("ETHUSDT", "BTCUSDT"))
+    candidate = _universe(("SOLUSDT",), surveillance=("SOLUSDT", "BTCUSDT"))
+    scanner = object.__new__(MarketScanner)
+    scanner.market = Market.SPOT
+    scanner.clock = cast(Any, SimpleNamespace(now_ms=lambda: 1_710_000_123_000))
+    scanner.runtime = cast(
+        Any,
+        SimpleNamespace(
+            shadow_observer=SimpleNamespace(
+                censor_universe_exit=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    RuntimeError("research store unavailable")
+                )
+            ),
+            set_active_symbols=lambda *args: None,
+        ),
+    )
+    scanner.universe = current
+    scanner._pending_universe_signature = MarketScanner._universe_signature(candidate)
+    scanner._pending_universe_confirmations = 2
+
+    async def bootstrap(_symbols: list[str]) -> None:
+        return None
+
+    monkeypatch.setattr(scanner, "_bootstrap", bootstrap)
+    await scanner._activate_universe(candidate)
+
+    assert scanner.universe is candidate

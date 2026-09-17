@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -11,6 +12,7 @@ from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from signalbot.domain.enums import Market
 from signalbot.domain.models import Candle, SignalDecision
 from signalbot.persistence.models import (
     AlertOutboxRow,
@@ -39,6 +41,7 @@ _RETEST_STAGES = frozenset(
     {"RAW_C0", "ARMED", "RETEST_TOUCH", "READY", "INVALID", "TIMEOUT", "CENSORED"}
 )
 _RETEST_TERMINAL_STAGES = frozenset({"READY", "INVALID", "TIMEOUT", "CENSORED"})
+_SQLITE_BUSY_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +281,17 @@ def _migrate_sqlite_shadow_schema(engine: Engine) -> None:
             "manifest_json": "TEXT NOT NULL DEFAULT ''",
             "manifest_sha256": "VARCHAR(64) NOT NULL DEFAULT ''",
         },
+        "retest_transitions": {
+            "logical_transition_id": "VARCHAR(128) NOT NULL DEFAULT ''",
+            "retest_policy_sha256": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "transition_time_ms": "BIGINT NOT NULL DEFAULT 0",
+            "decision_time_ms": "BIGINT",
+            "bar_close_ms": "BIGINT",
+            "payload_json": "TEXT NOT NULL DEFAULT ''",
+        },
+        "retest_lifecycles": {
+            "retest_policy_sha256": "VARCHAR(64) NOT NULL DEFAULT ''",
+        },
     }
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
@@ -325,39 +339,83 @@ def _require_shadow_campaign(
     return row
 
 
-def _retest_transition_payload_sha256(
+def _lifecycle_policy_sha256(lifecycle: dict) -> str:
+    arm = lifecycle.get("arm")
+    if not isinstance(arm, dict) or not arm.get("retest_policy_sha256"):
+        raise ValueError("retest lifecycle requires policy provenance in arm")
+    return str(arm["retest_policy_sha256"])
+
+
+def _retest_logical_transition_id(
     *,
-    transition_id: str,
     campaign_id: str,
     campaign_manifest_sha256: str,
     opportunity_id: str,
+    retest_policy_sha256: str,
     protocol_version: str,
     from_stage: str,
     to_stage: str,
-    decision_time_ms: int,
-    bar_close_ms: int,
-    persisted_at_ms: int,
-    lifecycle_sha256: str,
+    transition_time_ms: int,
+    decision_time_ms: int | None,
+    bar_close_ms: int | None,
 ) -> str:
-    """Canonical SHA-256 binding one immutable causal-retest transition."""
+    """Deterministic logical identity independent of payload/persistence time."""
 
     canonical = {
-        "transition_id": transition_id,
         "campaign_id": campaign_id,
         "campaign_manifest_sha256": campaign_manifest_sha256,
         "opportunity_id": opportunity_id,
+        "retest_policy_sha256": retest_policy_sha256,
         "protocol_version": protocol_version,
         "from_stage": from_stage,
         "to_stage": to_stage,
+        "transition_time_ms": transition_time_ms,
         "decision_time_ms": decision_time_ms,
         "bar_close_ms": bar_close_ms,
-        "persisted_at_ms": persisted_at_ms,
-        "lifecycle_sha256": lifecycle_sha256,
     }
     payload = json.dumps(
         canonical, separators=(",", ":"), sort_keys=True, ensure_ascii=False
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _retest_transition_payload(
+    *,
+    logical_transition_id: str,
+    campaign_id: str,
+    campaign_manifest_sha256: str,
+    opportunity_id: str,
+    retest_policy_sha256: str,
+    protocol_version: str,
+    from_stage: str,
+    to_stage: str,
+    transition_time_ms: int,
+    decision_time_ms: int | None,
+    bar_close_ms: int | None,
+    lifecycle_json: str,
+    lifecycle_sha256: str,
+) -> tuple[str, str]:
+    """Return immutable canonical transition JSON and its content hash."""
+
+    payload = {
+        "logical_transition_id": logical_transition_id,
+        "campaign_id": campaign_id,
+        "campaign_manifest_sha256": campaign_manifest_sha256,
+        "opportunity_id": opportunity_id,
+        "retest_policy_sha256": retest_policy_sha256,
+        "protocol_version": protocol_version,
+        "from_stage": from_stage,
+        "to_stage": to_stage,
+        "transition_time_ms": transition_time_ms,
+        "decision_time_ms": decision_time_ms,
+        "bar_close_ms": bar_close_ms,
+        "lifecycle_json": lifecycle_json,
+        "lifecycle_sha256": lifecycle_sha256,
+    }
+    payload_json = json.dumps(
+        payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False
+    )
+    return payload_json, hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
 
 
 def _upsert_candle(session: Session, candle: Candle) -> bool:
@@ -415,8 +473,12 @@ class SqlRepository:
         if self.url.startswith("sqlite:///") and not self.url.endswith(":memory:"):
             Path(self.url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
         kwargs: dict[str, Any] = {"echo": self.echo, "pool_pre_ping": True}
-        if self.url.endswith(":memory:"):
-            kwargs.update(connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        if self.url.startswith("sqlite:///"):
+            connect_args: dict[str, Any] = {"timeout": _SQLITE_BUSY_TIMEOUT_SECONDS}
+            if self.url.endswith(":memory:"):
+                connect_args["check_same_thread"] = False
+                kwargs["poolclass"] = StaticPool
+            kwargs["connect_args"] = connect_args
         self._engine = create_engine(self.url, **kwargs)
         Base.metadata.create_all(self._engine)
         _migrate_sqlite_shadow_schema(self._engine)
@@ -564,13 +626,54 @@ class SqlRepository:
             )
             if row is None:
                 return None
+            try:
+                lifecycle = json.loads(row.lifecycle_json)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise EventIdConflictError(
+                    "corrupt retest lifecycle JSON for "
+                    + campaign_id
+                    + "/"
+                    + opportunity_id
+                ) from exc
+            if not isinstance(lifecycle, dict):
+                raise EventIdConflictError("retest lifecycle payload must be an object")
+            canonical_json = json.dumps(
+                lifecycle, separators=(",", ":"), sort_keys=True, ensure_ascii=False
+            )
+            computed_sha256 = hashlib.sha256(
+                canonical_json.encode("utf-8")
+            ).hexdigest()
+            if computed_sha256 != row.lifecycle_sha256:
+                raise EventIdConflictError(
+                    "retest lifecycle content hash mismatch for "
+                    + campaign_id
+                    + "/"
+                    + opportunity_id
+                )
+            if lifecycle.get("stage") != row.stage:
+                raise EventIdConflictError("durable retest stage does not match payload")
+            arm = lifecycle.get("arm")
+            if isinstance(arm, dict):
+                if arm.get("opportunity_id") not in {None, opportunity_id}:
+                    raise EventIdConflictError("durable retest arm opportunity mismatch")
+                if arm.get("campaign_id") not in {None, campaign_id}:
+                    raise EventIdConflictError("durable retest arm campaign mismatch")
+                policy_sha256 = arm.get("retest_policy_sha256")
+                if row.retest_policy_sha256 and policy_sha256 != row.retest_policy_sha256:
+                    raise EventIdConflictError("durable retest policy mismatch")
+                if row.protocol_version and arm.get("protocol_version") not in {
+                    None,
+                    row.protocol_version,
+                }:
+                    raise EventIdConflictError("durable retest protocol mismatch")
             return {
                 "campaign_id": row.campaign_id,
                 "opportunity_id": row.opportunity_id,
                 "campaign_manifest_sha256": row.campaign_manifest_sha256,
                 "protocol_version": row.protocol_version,
                 "stage": row.stage,
-                "lifecycle": json.loads(row.lifecycle_json),
+                "retest_policy_sha256": row.retest_policy_sha256,
+                "lifecycle": lifecycle,
                 "lifecycle_sha256": row.lifecycle_sha256,
                 "updated_at_ms": row.updated_at_ms,
             }
@@ -591,6 +694,7 @@ class SqlRepository:
                     RetestTransitionRow.opportunity_id == opportunity_id,
                 )
                 .order_by(
+                    RetestTransitionRow.transition_time_ms,
                     RetestTransitionRow.persisted_at_ms,
                     RetestTransitionRow.transition_id,
                 )
@@ -598,19 +702,85 @@ class SqlRepository:
             return [
                 {
                     "transition_id": row.transition_id,
+                    "logical_transition_id": row.logical_transition_id,
                     "campaign_id": row.campaign_id,
                     "opportunity_id": row.opportunity_id,
                     "protocol_version": row.protocol_version,
+                    "retest_policy_sha256": row.retest_policy_sha256,
                     "from_stage": row.from_stage,
                     "to_stage": row.to_stage,
+                    "transition_time_ms": row.transition_time_ms,
                     "decision_time_ms": row.decision_time_ms,
                     "bar_close_ms": row.bar_close_ms,
                     "campaign_manifest_sha256": row.campaign_manifest_sha256,
+                    "payload_json": row.payload_json,
                     "payload_sha256": row.payload_sha256,
                     "persisted_at_ms": row.persisted_at_ms,
                 }
                 for row in rows
             ]
+
+    def list_retest_lifecycles(
+        self,
+        *,
+        campaign_id: str,
+        campaign_manifest_sha256: str,
+        retest_policy_sha256: str,
+        active_only: bool = True,
+    ) -> list[dict]:
+        """Load current retest snapshots for one exact campaign/policy identity."""
+
+        with Session(self.engine) as session:
+            _require_shadow_campaign(
+                session,
+                campaign_id=campaign_id,
+                campaign_manifest_sha256=campaign_manifest_sha256,
+            )
+            statement = select(RetestLifecycleRow).where(
+                RetestLifecycleRow.campaign_id == campaign_id,
+                RetestLifecycleRow.campaign_manifest_sha256
+                == campaign_manifest_sha256,
+                RetestLifecycleRow.retest_policy_sha256 == retest_policy_sha256,
+            )
+            if active_only:
+                statement = statement.where(
+                    RetestLifecycleRow.stage.in_(("ARMED", "RETEST_TOUCH"))
+                )
+            rows = session.scalars(statement).all()
+            result: list[dict] = []
+            for row in rows:
+                try:
+                    lifecycle = json.loads(row.lifecycle_json)
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise EventIdConflictError(
+                        "corrupt retest lifecycle JSON during active restore"
+                    ) from exc
+                canonical_json = json.dumps(
+                    lifecycle,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
+                if hashlib.sha256(
+                    canonical_json.encode("utf-8")
+                ).hexdigest() != row.lifecycle_sha256:
+                    raise EventIdConflictError(
+                        "retest lifecycle content hash mismatch during active restore"
+                    )
+                result.append(
+                    {
+                        "campaign_id": row.campaign_id,
+                        "opportunity_id": row.opportunity_id,
+                        "campaign_manifest_sha256": row.campaign_manifest_sha256,
+                        "protocol_version": row.protocol_version,
+                        "retest_policy_sha256": row.retest_policy_sha256,
+                        "stage": row.stage,
+                        "lifecycle": lifecycle,
+                        "lifecycle_sha256": row.lifecycle_sha256,
+                        "updated_at_ms": row.updated_at_ms,
+                    }
+                )
+            return result
 
     def retest_lifecycle_counts(
         self,
@@ -673,17 +843,20 @@ class SqlRepository:
     def transition_retest(
         self,
         *,
-        transition_id: str,
         campaign_id: str,
         campaign_manifest_sha256: str,
         opportunity_id: str,
         protocol_version: str,
         from_stage: str,
         to_stage: str,
-        decision_time_ms: int,
-        bar_close_ms: int,
         lifecycle: dict,
         persisted_at_ms: int,
+        decision_time_ms: int | None,
+        bar_close_ms: int | None,
+        transition_time_ms: int | None = None,
+        expected_previous_lifecycle_sha256: str | None = None,
+        retest_policy_sha256: str | None = None,
+        transition_id: str | None = None,
     ) -> bool:
         """Atomically append one immutable transition and advance the lifecycle.
 
@@ -694,14 +867,14 @@ class SqlRepository:
         EventIdConflictError so history can never be silently rewritten.
         """
 
-        if not transition_id or not campaign_id or not campaign_manifest_sha256:
+        if not campaign_id or not campaign_manifest_sha256:
             raise ValueError("retest transition requires non-empty identities")
         if not opportunity_id or not protocol_version:
             raise ValueError("retest transition requires opportunity/protocol")
-        if from_stage == to_stage:
-            raise ValueError("retest transition must change stage")
         if from_stage not in _RETEST_STAGES or to_stage not in _RETEST_STAGES:
             raise ValueError("unsupported retest transition stage")
+        if from_stage == to_stage and from_stage in _RETEST_TERMINAL_STAGES:
+            raise ValueError("terminal retest transition cannot repeat its stage")
         if lifecycle.get("stage") != to_stage:
             raise EventIdConflictError(
                 "retest lifecycle payload stage does not match transition destination"
@@ -710,19 +883,25 @@ class SqlRepository:
             lifecycle, separators=(",", ":"), sort_keys=True, ensure_ascii=False
         )
         lifecycle_sha256 = hashlib.sha256(lifecycle_json.encode("utf-8")).hexdigest()
-        payload_sha256 = _retest_transition_payload_sha256(
-            transition_id=transition_id,
+        policy_sha256 = retest_policy_sha256 or _lifecycle_policy_sha256(lifecycle)
+        logical_time_ms = transition_time_ms
+        if logical_time_ms is None:
+            logical_time_ms = decision_time_ms if decision_time_ms is not None else bar_close_ms
+        if logical_time_ms is None:
+            logical_time_ms = persisted_at_ms
+        logical_id = _retest_logical_transition_id(
             campaign_id=campaign_id,
             campaign_manifest_sha256=campaign_manifest_sha256,
             opportunity_id=opportunity_id,
+            retest_policy_sha256=policy_sha256,
             protocol_version=protocol_version,
             from_stage=from_stage,
             to_stage=to_stage,
+            transition_time_ms=logical_time_ms,
             decision_time_ms=decision_time_ms,
             bar_close_ms=bar_close_ms,
-            persisted_at_ms=persisted_at_ms,
-            lifecycle_sha256=lifecycle_sha256,
         )
+        storage_id = transition_id or logical_id
         with Session(self.engine) as session:
             _require_shadow_campaign(
                 session,
@@ -735,18 +914,9 @@ class SqlRepository:
             if current is None:
                 raise EventIdConflictError(
                     "retest lifecycle missing before transition "
-                    + transition_id
+                    + storage_id
                     + " (begin_retest_lifecycle first)"
                 )
-            existing = session.get(RetestTransitionRow, transition_id)
-            if existing is not None:
-                if existing.payload_sha256 != payload_sha256:
-                    raise EventIdConflictError(
-                        "retest transition "
-                        + transition_id
-                        + " maps to conflicting payloads"
-                    )
-                return False
             if current.campaign_manifest_sha256 != campaign_manifest_sha256:
                 raise EventIdConflictError(
                     "retest lifecycle campaign manifest mismatch for "
@@ -761,6 +931,41 @@ class SqlRepository:
                     + "/"
                     + opportunity_id
                 )
+            if current.retest_policy_sha256 != policy_sha256:
+                raise EventIdConflictError(
+                    "retest lifecycle policy mismatch for "
+                    + campaign_id
+                    + "/"
+                    + opportunity_id
+                )
+            payload_json, payload_sha256 = _retest_transition_payload(
+                logical_transition_id=logical_id,
+                campaign_id=campaign_id,
+                campaign_manifest_sha256=campaign_manifest_sha256,
+                opportunity_id=opportunity_id,
+                retest_policy_sha256=policy_sha256,
+                protocol_version=protocol_version,
+                from_stage=from_stage,
+                to_stage=to_stage,
+                transition_time_ms=logical_time_ms,
+                decision_time_ms=decision_time_ms,
+                bar_close_ms=bar_close_ms,
+                lifecycle_json=lifecycle_json,
+                lifecycle_sha256=lifecycle_sha256,
+            )
+            existing = session.get(RetestTransitionRow, storage_id)
+            logical_existing = session.scalar(
+                select(RetestTransitionRow).where(
+                    RetestTransitionRow.logical_transition_id == logical_id
+                )
+            )
+            for prior in (existing, logical_existing):
+                if prior is not None:
+                    if prior.payload_sha256 != payload_sha256:
+                        raise EventIdConflictError(
+                            "retest logical transition maps to conflicting payloads"
+                        )
+                    return False
             if current.stage != from_stage:
                 raise EventIdConflictError(
                     "retest transition source stage does not match durable current stage"
@@ -769,22 +974,32 @@ class SqlRepository:
                 raise EventIdConflictError(
                     "terminal retest lifecycle cannot receive another transition"
                 )
+            expected_sha256 = expected_previous_lifecycle_sha256 or current.lifecycle_sha256
+            if current.lifecycle_sha256 != expected_sha256:
+                raise EventIdConflictError(
+                    "stale retest lifecycle snapshot; expected previous SHA does not match"
+                )
             session.add(
                 RetestTransitionRow(
-                    transition_id=transition_id,
+                    transition_id=storage_id,
+                    logical_transition_id=logical_id,
                     campaign_id=campaign_id,
                     campaign_manifest_sha256=campaign_manifest_sha256,
                     opportunity_id=opportunity_id,
                     protocol_version=protocol_version,
+                    retest_policy_sha256=policy_sha256,
                     from_stage=from_stage,
                     to_stage=to_stage,
+                    transition_time_ms=logical_time_ms,
                     decision_time_ms=decision_time_ms,
                     bar_close_ms=bar_close_ms,
+                    payload_json=payload_json,
                     payload_sha256=payload_sha256,
                     persisted_at_ms=persisted_at_ms,
                 )
             )
             current.stage = to_stage
+            current.retest_policy_sha256 = policy_sha256
             current.lifecycle_json = lifecycle_json
             current.lifecycle_sha256 = lifecycle_sha256
             current.updated_at_ms = persisted_at_ms
@@ -1148,11 +1363,14 @@ class SqlRepository:
                 is not None
             )
 
-    def recent_signals(self, limit: int = 100) -> list[SignalDecision]:
+    def recent_signals(
+        self, limit: int = 100, *, market: Market | None = None
+    ) -> list[SignalDecision]:
+        statement = select(SignalRow).order_by(desc(SignalRow.event_time_ms)).limit(limit)
+        if market is not None:
+            statement = statement.where(SignalRow.market == market.value)
         with Session(self.engine) as session:
-            rows = session.scalars(
-                select(SignalRow).order_by(desc(SignalRow.event_time_ms)).limit(limit)
-            ).all()
+            rows = session.scalars(statement).all()
         return [SignalDecision.model_validate(json.loads(row.payload_json)) for row in rows]
 
     def save_outcome(
@@ -1267,6 +1485,254 @@ class SqlRepository:
                     ShadowObservationRow.decision_time_ms == decision_time_ms
                 )
             return int(session.scalar(statement) or 0)
+
+    def has_shadow_observation(
+        self,
+        *,
+        campaign_id: str,
+        campaign_manifest_sha256: str,
+        opportunity_id: str,
+    ) -> bool:
+        """Return whether one exact campaign opportunity is durably admitted."""
+
+        with Session(self.engine) as session:
+            _require_shadow_campaign(
+                session,
+                campaign_id=campaign_id,
+                campaign_manifest_sha256=campaign_manifest_sha256,
+            )
+            return (
+                session.scalar(
+                    select(ShadowObservationRow.observation_id).where(
+                        ShadowObservationRow.campaign_id == campaign_id,
+                        ShadowObservationRow.campaign_manifest_sha256
+                        == campaign_manifest_sha256,
+                        ShadowObservationRow.opportunity_id == opportunity_id,
+                    )
+                )
+                is not None
+            )
+
+    def audit_retest_denominator(
+        self,
+        *,
+        campaign_id: str,
+        campaign_manifest_sha256: str,
+        retest_policy_sha256: str,
+    ) -> dict[str, Any]:
+        """Compare durable base opportunities with exact-policy lifecycles."""
+
+        with Session(self.engine) as session:
+            _require_shadow_campaign(
+                session,
+                campaign_id=campaign_id,
+                campaign_manifest_sha256=campaign_manifest_sha256,
+            )
+            expected_rows = session.scalars(
+                select(ShadowObservationRow.opportunity_id).where(
+                    ShadowObservationRow.campaign_id == campaign_id,
+                    ShadowObservationRow.campaign_manifest_sha256
+                    == campaign_manifest_sha256,
+                )
+            ).all()
+            lifecycle_rows = session.scalars(
+                select(RetestLifecycleRow).where(
+                    RetestLifecycleRow.campaign_id == campaign_id,
+                    RetestLifecycleRow.campaign_manifest_sha256
+                    == campaign_manifest_sha256,
+                    RetestLifecycleRow.retest_policy_sha256 == retest_policy_sha256,
+                )
+            ).all()
+
+        expected_counts = Counter(expected_rows)
+        lifecycle_counts = Counter(row.opportunity_id for row in lifecycle_rows)
+        expected_ids = set(expected_counts)
+        lifecycle_ids = set(lifecycle_counts)
+        counts = {
+            "active": 0,
+            "touched": 0,
+            "READY": 0,
+            "INVALID": 0,
+            "TIMEOUT": 0,
+            "CENSORED": 0,
+        }
+        for row in lifecycle_rows:
+            if row.stage == "ARMED":
+                counts["active"] += 1
+            elif row.stage == "RETEST_TOUCH":
+                counts["touched"] += 1
+            elif row.stage in counts:
+                counts[row.stage] += 1
+            else:
+                raise EventIdConflictError(
+                    "unknown retest lifecycle stage in denominator audit: "
+                    + str(row.stage)
+                )
+        return {
+            "expected": len(expected_ids),
+            "lifecycle_rows": len(lifecycle_rows),
+            **counts,
+            "missing_opportunity_ids": sorted(expected_ids - lifecycle_ids),
+            "unexpected_opportunity_ids": sorted(lifecycle_ids - expected_ids),
+            "duplicate_expected_ids": sorted(
+                key for key, count in expected_counts.items() if count > 1
+            ),
+            "duplicate_lifecycle_ids": sorted(
+                key for key, count in lifecycle_counts.items() if count > 1
+            ),
+        }
+
+    def list_shadow_observations(
+        self,
+        *,
+        campaign_id: str,
+        campaign_manifest_sha256: str,
+    ) -> list[dict[str, Any]]:
+        """Read exact campaign-bound shadow observations for audit owners."""
+
+        with Session(self.engine) as session:
+            _require_shadow_campaign(
+                session,
+                campaign_id=campaign_id,
+                campaign_manifest_sha256=campaign_manifest_sha256,
+            )
+            rows = session.scalars(
+                select(ShadowObservationRow)
+                .where(
+                    ShadowObservationRow.campaign_id == campaign_id,
+                    ShadowObservationRow.campaign_manifest_sha256
+                    == campaign_manifest_sha256,
+                )
+                .order_by(
+                    ShadowObservationRow.decision_time_ms,
+                    ShadowObservationRow.observation_id,
+                )
+            ).all()
+            return [
+                {
+                    "observation_id": row.observation_id,
+                    "campaign_id": row.campaign_id,
+                    "opportunity_id": row.opportunity_id,
+                    "market": row.market,
+                    "symbol": row.symbol,
+                    "family": row.family,
+                    "direction": row.direction,
+                    "decision_time_ms": row.decision_time_ms,
+                    "primary_interval": row.primary_interval,
+                    "payload_json": row.payload_json,
+                    "payload_sha256": row.payload_sha256,
+                    "policy_sha256": row.policy_sha256,
+                    "campaign_manifest_sha256": row.campaign_manifest_sha256,
+                    "created_at_ms": row.created_at_ms,
+                }
+                for row in rows
+            ]
+
+    def list_shadow_coverage(
+        self,
+        *,
+        campaign_id: str,
+        campaign_manifest_sha256: str | None,
+    ) -> list[dict[str, Any]]:
+        """Read campaign coverage cells without mutation.
+
+        Passing a manifest reads only exact evidence. ``None`` is reserved for
+        an audit that must also account for legacy blank-provenance rows.
+        """
+
+        with Session(self.engine) as session:
+            statement = select(ShadowCoverageRow).where(
+                ShadowCoverageRow.campaign_id == campaign_id
+            )
+            if campaign_manifest_sha256 is not None:
+                _require_shadow_campaign(
+                    session,
+                    campaign_id=campaign_id,
+                    campaign_manifest_sha256=campaign_manifest_sha256,
+                )
+                statement = statement.where(
+                    ShadowCoverageRow.campaign_manifest_sha256
+                    == campaign_manifest_sha256
+                )
+            rows = session.scalars(
+                statement.order_by(
+                    ShadowCoverageRow.decision_close_ms,
+                    ShadowCoverageRow.market,
+                )
+            ).all()
+            return [
+                {
+                    "campaign_id": row.campaign_id,
+                    "campaign_manifest_sha256": row.campaign_manifest_sha256,
+                    "market": row.market,
+                    "decision_close_ms": row.decision_close_ms,
+                    "primary_interval": row.primary_interval,
+                    "expected_tradable_count": row.expected_tradable_count,
+                    "tradable_universe_hash": row.tradable_universe_hash,
+                    "mature_count": row.mature_count,
+                    "htf_ready_count": row.htf_ready_count,
+                    "fresh_bbo_count": row.fresh_bbo_count,
+                    "raw_c0_count": row.raw_c0_count,
+                    "comparator_rows": row.comparator_rows,
+                    "evidence_failures": row.evidence_failures,
+                    "complete": row.complete,
+                    "failures_json": row.failures_json,
+                    "content_sha256": row.content_sha256,
+                    "status": row.status,
+                    "seen_symbols_json": row.seen_symbols_json,
+                    "first_seen_ms": row.first_seen_ms,
+                    "sealed_at_ms": row.sealed_at_ms,
+                }
+                for row in rows
+            ]
+
+    def list_candles(
+        self,
+        *,
+        market: str | None = None,
+        symbols: set[str] | frozenset[str] | None = None,
+        interval: str = "5m",
+    ) -> list[Candle]:
+        """Read closed candle evidence for deterministic research audits."""
+
+        with Session(self.engine) as session:
+            statement = select(CandleRow).where(
+                CandleRow.interval == interval,
+                CandleRow.is_closed.is_(True),
+            )
+            if market is not None:
+                statement = statement.where(CandleRow.market == market)
+            if symbols:
+                statement = statement.where(CandleRow.symbol.in_(sorted(symbols)))
+            rows = session.scalars(
+                statement.order_by(
+                    CandleRow.market,
+                    CandleRow.symbol,
+                    CandleRow.open_time_ms,
+                )
+            ).all()
+            return [
+                Candle.model_validate(
+                    {
+                        "market": row.market,
+                        "symbol": row.symbol,
+                        "interval": row.interval,
+                        "open_time_ms": row.open_time_ms,
+                        "close_time_ms": row.close_time_ms,
+                        "open": row.open,
+                        "high": row.high,
+                        "low": row.low,
+                        "close": row.close,
+                        "volume": row.volume,
+                        "quote_volume": row.quote_volume,
+                        "trade_count": row.trade_count,
+                        "taker_buy_base_volume": row.taker_buy_base_volume,
+                        "taker_buy_quote_volume": row.taker_buy_quote_volume,
+                        "is_closed": row.is_closed,
+                    }
+                )
+                for row in rows
+            ]
 
     def get_shadow_coverage(
         self,
@@ -1756,6 +2222,7 @@ class SqlRepository:
         stage: str,
         lifecycle: dict,
         updated_at_ms: int,
+        retest_policy_sha256: str | None = None,
     ) -> bool:
         """Insert the durable current row for a causal-retest lifecycle.
 
@@ -1780,6 +2247,7 @@ class SqlRepository:
             lifecycle, separators=(",", ":"), sort_keys=True, ensure_ascii=False
         )
         lifecycle_sha256 = hashlib.sha256(lifecycle_json.encode("utf-8")).hexdigest()
+        policy_sha256 = retest_policy_sha256 or _lifecycle_policy_sha256(lifecycle)
         with Session(self.engine) as session:
             _require_shadow_campaign(
                 session,
@@ -1793,6 +2261,7 @@ class SqlRepository:
                 if (
                     existing.campaign_manifest_sha256 != campaign_manifest_sha256
                     or existing.protocol_version != protocol_version
+                    or existing.retest_policy_sha256 != policy_sha256
                     or existing.stage != stage
                     or existing.lifecycle_sha256 != lifecycle_sha256
                     or existing.lifecycle_json != lifecycle_json
@@ -1811,6 +2280,7 @@ class SqlRepository:
                     opportunity_id=opportunity_id,
                     campaign_manifest_sha256=campaign_manifest_sha256,
                     protocol_version=protocol_version,
+                    retest_policy_sha256=policy_sha256,
                     stage=stage,
                     lifecycle_json=lifecycle_json,
                     lifecycle_sha256=lifecycle_sha256,

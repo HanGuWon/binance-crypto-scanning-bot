@@ -1,7 +1,7 @@
 import pytest
 
 from conftest import make_candle
-from signalbot.data.candles import CandleStore, interval_to_milliseconds
+from signalbot.data.candles import CandleConflictError, CandleStore, interval_to_milliseconds
 from signalbot.domain.enums import Market
 
 
@@ -21,8 +21,9 @@ def test_store_rejects_open_candles_and_deduplicates() -> None:
     assert store.add(first) is True
     assert store.add(first) is False
     changed = make_candle(0, close=101)
-    assert store.add(changed) is True
-    assert store.latest(Market.SPOT, "btcusdt", "5m") == changed
+    with pytest.raises(CandleConflictError):
+        store.add(changed)
+    assert store.latest(Market.SPOT, "btcusdt", "5m") == first
 
 
 def test_store_orders_and_bounds_history() -> None:
@@ -33,6 +34,18 @@ def test_store_orders_and_bounds_history() -> None:
         600_000,
         900_000,
     ]
+
+
+def test_validate_series_rejects_gaps_and_off_grid_rows() -> None:
+    CandleStore.validate_series([make_candle(0), make_candle(0)])
+    with pytest.raises(ValueError, match="not contiguous"):
+        CandleStore.validate_series([make_candle(0), make_candle(2)])
+    with pytest.raises(CandleConflictError):
+        CandleStore.validate_series([make_candle(0), make_candle(0, close=101)])
+    with pytest.raises(ValueError, match="off the exchange time grid"):
+        CandleStore.validate_series(
+            [make_candle(0), make_candle(1).model_copy(update={"open_time_ms": 1})]
+        )
 
 
 def test_gap_is_computed_between_latest_and_incoming_candle() -> None:

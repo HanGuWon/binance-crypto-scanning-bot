@@ -33,6 +33,15 @@ def _integer(payload: dict[str, Any], key: str, default: int | None = None) -> i
         raise PayloadError(f"invalid integer field {key}: {value!r}") from exc
 
 
+def _boolean(payload: dict[str, Any], key: str) -> bool:
+    """Read an exchange boolean without applying Python truthiness coercion."""
+
+    value = payload.get(key)
+    if type(value) is not bool:
+        raise PayloadError(f"invalid boolean field {key}: {value!r}")
+    return value
+
+
 def _unwrap(payload: Any) -> Any:
     if isinstance(payload, dict) and "data" in payload and "stream" in payload:
         return payload["data"]
@@ -92,7 +101,7 @@ def _parse_kline(market: Market, payload: dict[str, Any]) -> Candle:
         trade_count=_integer(kline, "n"),
         taker_buy_base_volume=_decimal(kline, "V"),
         taker_buy_quote_volume=_decimal(kline, "Q"),
-        is_closed=bool(kline.get("x", False)),
+        is_closed=_boolean(kline, "x"),
     )
 
 
@@ -104,7 +113,7 @@ def _parse_agg_trade(market: Market, payload: dict[str, Any]) -> AggTrade:
         trade_time_ms=int(payload.get("T") or payload.get("E") or 0),
         price=_decimal(payload, "p"),
         quantity=_decimal(payload, "q"),
-        is_buyer_maker=bool(payload["m"]),
+        is_buyer_maker=_boolean(payload, "m"),
         aggregate_trade_id=_integer(payload, "a") if payload.get("a") is not None else None,
     )
 

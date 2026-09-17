@@ -15,6 +15,8 @@ from signalbot.scanner import MarketScanner
 async def test_raw_event_recorder_writes_replayable_jsonl(tmp_path) -> None:
     recorder = RawEventRecorder(tmp_path)
     await recorder.append(Market.SPOT, {"e": "test", "value": 1}, 1_710_000_000_000)
+    await recorder.wait_drained()
+    await recorder.close()
     files = list(tmp_path.rglob("*.jsonl"))
     assert len(files) == 1
     record = json.loads(files[0].read_text(encoding="utf-8"))
@@ -30,6 +32,7 @@ async def test_raw_event_recorder_fails_before_exceeding_hard_quota(tmp_path) ->
     recorder = RawEventRecorder(tmp_path, maximum_total_bytes=1)
     with pytest.raises(RawEventCapacityError, match="hard byte quota"):
         await recorder.append(Market.SPOT, {"e": "test"}, 1)
+    await recorder.close()
     assert list(tmp_path.rglob("*.jsonl")) == []
 
 
@@ -50,12 +53,14 @@ async def test_raw_event_recorder_honors_exact_byte_boundary(tmp_path) -> None:
     recorder = RawEventRecorder(tmp_path, maximum_total_bytes=expected_size)
 
     await recorder.append(Market.SPOT, {"e": "test"}, 1)
+    assert await recorder.wait_drained()
 
     files = list(tmp_path.rglob("*.jsonl"))
     assert len(files) == 1
     assert files[0].stat().st_size == expected_size
     with pytest.raises(RawEventCapacityError, match="hard byte quota"):
         await recorder.append(Market.SPOT, {"e": "test"}, 1)
+    await recorder.close()
 
 
 def test_market_scanners_share_one_global_raw_event_quota(tmp_path) -> None:

@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import event
 
 from conftest import make_candle, make_decision
+from signalbot.domain.enums import Market
 from signalbot.persistence.repository import (
     EventIdConflictError,
     OutboxCapacityError,
@@ -31,6 +32,19 @@ def test_repository_round_trip_and_idempotency() -> None:
     finally:
         repository.close()
 
+
+def test_recent_signals_can_be_filtered_by_market() -> None:
+    repository = SqlRepository("sqlite:///:memory:")
+    repository.initialize()
+    try:
+        futures = make_decision(event_id="futures")
+        spot = make_decision(event_id="spot", market=Market.SPOT)
+        assert repository.save_signal(futures) is True
+        assert repository.save_signal(spot) is True
+        assert repository.recent_signals(market=Market.FUTURES) == [futures]
+        assert repository.recent_signals(market=Market.SPOT) == [spot]
+    finally:
+        repository.close()
 
 def test_repository_candle_batch_matches_single_row_idempotency() -> None:
     repository = SqlRepository("sqlite:///:memory:")

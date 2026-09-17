@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -17,10 +18,20 @@ from signalbot.prospective.observer import (
     shadow_opportunity_id,
     shadow_policy_identity,
 )
+from signalbot.prospective.source_freeze import freeze_source
 from signalbot.signals.rules import SignalRuleEngine
 
 
-def _settings(campaign_id: str = "smoke-campaign-1") -> Settings:
+def _settings(
+    campaign_id: str = "smoke-campaign-1",
+    *,
+    retest_observation_enabled: bool = False,
+) -> Settings:
+    source_identity = (
+        freeze_source(Path(__file__).parents[2]).source_identity
+        if retest_observation_enabled
+        else "test-source"
+    )
     return Settings.model_validate(
         {
             "binance": {
@@ -36,12 +47,22 @@ def _settings(campaign_id: str = "smoke-campaign-1") -> Settings:
                 "gate_enabled": True,
                 "confirmation_mode": "explicit_trigger",
             },
-            "storage": {"url": "sqlite:///:memory:"},
-            "shadow": {
+                "storage": {"url": "sqlite:///:memory:"},
+                "runtime": {
+                    "persist_candles": True,
+                    "record_raw_events": retest_observation_enabled,
+                },
+                "shadow": {
                 "observation_enabled": True,
+                "observation_schema_version": (
+                    "shadow_observation_v2"
+                    if retest_observation_enabled
+                    else "shadow_observation_v1"
+                ),
                 "campaign_id": campaign_id,
-                "source_identity": "test-source",
+                "source_identity": source_identity,
                 "campaign_created_at_ms": 1_709_999_999_000,
+                "retest_observation_enabled": retest_observation_enabled,
             },
         }
     )
@@ -138,6 +159,29 @@ def test_config_rejects_observation_without_production_r2() -> None:
                     "source_identity": "test-source",
                     "campaign_created_at_ms": 1_709_999_999_000,
                 },
+            }
+        )
+
+
+def test_config_rejects_retest_without_shadow_observation() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"retest observation_enabled|retest_observation_enabled",
+    ):
+        Settings.model_validate(
+            {
+                "binance": {
+                    "markets": ["spot"],
+                    "top_n": 1,
+                    "surveillance_n": 2,
+                    "intervals": ["5m", "15m", "1h"],
+                    "primary_interval": "5m",
+                },
+                "signals": {
+                    "entry_policy": "r2_pit_htf_exec",
+                    "gate_enabled": True,
+                },
+                "shadow": {"retest_observation_enabled": True},
             }
         )
 
@@ -263,6 +307,272 @@ def test_one_raw_c0_opportunity_produces_exactly_one_row() -> None:
     # Duplicate replay of the identical opportunity is idempotent.
     observer.observe(feature, _contexts(), frozenset({"BTCUSDT"}))
     assert repo.count_shadow_observations(campaign_id="smoke-campaign-1") == after
+
+
+def test_retest_observation_arms_same_raw_c0_once_when_enabled() -> None:
+    settings = _settings(
+        "smoke-retest-campaign", retest_observation_enabled=True
+    )
+    repo = _repo()
+    observer = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    feature = _feature()
+    contexts = _contexts()
+    candidate = observer.observe(feature, contexts, frozenset({"BTCUSDT"}))
+    assert candidate is not None and candidate.raw_c0_triggered
+    opportunity = shadow_opportunity_id(
+        campaign_id=settings.shadow.campaign_id or "",
+        market="spot",
+        symbol="BTCUSDT",
+        decision_time_ms=feature.event_time_ms,
+        primary_interval="5m",
+    )
+    retest_observer = observer.retest_observer
+    assert retest_observer is not None
+    rows = repo.list_retest_lifecycles(
+        campaign_id=settings.shadow.campaign_id or "",
+        campaign_manifest_sha256=observer.campaign_manifest_sha256,
+        retest_policy_sha256=retest_observer.policy_sha256,
+    )
+    assert [row["opportunity_id"] for row in rows] == [opportunity]
+    observer.observe(feature, contexts, frozenset({"BTCUSDT"}))
+    assert len(
+        repo.list_retest_transitions(
+            campaign_id=settings.shadow.campaign_id or "",
+            opportunity_id=opportunity,
+        )
+    ) == 0
+
+
+def test_retest_observation_advances_only_on_later_completed_primary_bars() -> None:
+    settings = _settings(
+        "smoke-retest-advance", retest_observation_enabled=True
+    )
+    repo = _repo()
+    observer = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    first = _feature(event_time_ms=1_710_000_000_000, price=106.0)
+    contexts = {
+        key: value.model_copy(update={"symbol": "BTCUSDT"})
+        for key, value in _contexts().items()
+    }
+    candidate = observer.observe(first, contexts, frozenset({"BTCUSDT"}))
+    assert candidate is not None and candidate.raw_c0_triggered
+    opportunity = shadow_opportunity_id(
+        campaign_id="smoke-retest-advance",
+        market="spot",
+        symbol="BTCUSDT",
+        decision_time_ms=first.event_time_ms,
+        primary_interval="5m",
+    )
+    touch = _feature(
+        event_time_ms=first.event_time_ms + 300_000,
+        price=104.0,
+        previous_close=106.0,
+    )
+    observer.observe(touch, contexts, frozenset({"BTCUSDT"}))
+    current = repo.load_retest_lifecycle(
+        campaign_id="smoke-retest-advance", opportunity_id=opportunity
+    )
+    assert current is not None and current["stage"] == "RETEST_TOUCH"
+    recover = _feature(
+        event_time_ms=first.event_time_ms + 600_000,
+        price=106.0,
+        previous_close=104.0,
+    )
+    observer.observe(recover, contexts, frozenset({"BTCUSDT"}))
+    current = repo.load_retest_lifecycle(
+        campaign_id="smoke-retest-advance", opportunity_id=opportunity
+    )
+    assert current is not None and current["stage"] == "READY"
+    history = repo.list_retest_transitions(
+        campaign_id="smoke-retest-advance", opportunity_id=opportunity
+    )
+    assert [(item["from_stage"], item["to_stage"]) for item in history] == [
+        ("ARMED", "RETEST_TOUCH"),
+        ("RETEST_TOUCH", "READY"),
+    ]
+
+
+def test_duplicate_raw_c0_after_advance_does_not_rearm_or_fail() -> None:
+    settings = _settings("smoke-retest-duplicate-after-touch", retest_observation_enabled=True)
+    repo = _repo()
+    observer = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    first = _feature(event_time_ms=1_710_000_000_000, price=106.0)
+    contexts = _contexts()
+    candidate = observer.observe(first, contexts, frozenset({"BTCUSDT"}))
+    assert candidate is not None
+    touch = _feature(
+        event_time_ms=first.event_time_ms + 300_000,
+        price=104.0,
+        previous_close=106.0,
+    )
+    observer.observe(touch, contexts, frozenset({"BTCUSDT"}))
+    opportunity = shadow_opportunity_id(
+        campaign_id=settings.shadow.campaign_id or "",
+        market="spot",
+        symbol="BTCUSDT",
+        decision_time_ms=first.event_time_ms,
+        primary_interval="5m",
+    )
+    before = repo.list_retest_transitions(
+        campaign_id=settings.shadow.campaign_id or "", opportunity_id=opportunity
+    )
+    observer.observe(first, contexts, frozenset({"BTCUSDT"}))
+    current = repo.load_retest_lifecycle(
+        campaign_id=settings.shadow.campaign_id or "", opportunity_id=opportunity
+    )
+    assert current is not None and current["stage"] == "RETEST_TOUCH"
+    assert repo.list_retest_transitions(
+        campaign_id=settings.shadow.campaign_id or "", opportunity_id=opportunity
+    ) == before
+    coverage = repo.get_shadow_coverage(
+        campaign_id=settings.shadow.campaign_id or "",
+        market="spot",
+        decision_close_ms=first.event_time_ms,
+        primary_interval="5m",
+    )
+    assert coverage is not None and coverage["evidence_failures"] == 0
+
+
+def test_base_observation_failure_cannot_create_retest_lifecycle() -> None:
+    settings = _settings("smoke-retest-base-failure", retest_observation_enabled=True)
+    repo = _FailingShadowRepository("sqlite:///:memory:")
+    repo.initialize()
+    observer = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    candidate = observer.observe(_feature(), _contexts(), frozenset({"BTCUSDT"}))
+    assert candidate is not None and candidate.raw_c0_triggered
+    assert repo.count_shadow_observations(campaign_id=settings.shadow.campaign_id or "") == 0
+    assert observer.retest_observer is not None
+    assert repo.list_retest_lifecycles(
+        campaign_id=settings.shadow.campaign_id or "",
+        campaign_manifest_sha256=observer.campaign_manifest_sha256,
+        retest_policy_sha256=observer.retest_observer.policy_sha256,
+    ) == []
+    observer.flush()
+    coverage = repo.get_shadow_coverage(
+        campaign_id=settings.shadow.campaign_id or "",
+        market="spot",
+        decision_close_ms=_feature().event_time_ms,
+        primary_interval="5m",
+    )
+    assert coverage is not None
+    assert coverage["complete"] is False
+    assert coverage["evidence_failures"] >= 1
+
+
+def test_retest_restart_without_proven_continuity_is_durably_censored() -> None:
+    settings = _settings("smoke-retest-restart", retest_observation_enabled=True)
+    repo = _repo()
+    first = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    feature = _feature()
+    contexts = {
+        key: value.model_copy(update={"symbol": "BTCUSDT"})
+        for key, value in _contexts().items()
+    }
+    first.observe(feature, contexts, frozenset({"BTCUSDT"}))
+    opportunity = shadow_opportunity_id(
+        campaign_id="smoke-retest-restart",
+        market="spot",
+        symbol="BTCUSDT",
+        decision_time_ms=feature.event_time_ms,
+        primary_interval="5m",
+    )
+    ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(feature.event_time_ms + 300_000),
+    )
+    current = repo.load_retest_lifecycle(
+        campaign_id="smoke-retest-restart", opportunity_id=opportunity
+    )
+    assert current is not None and current["stage"] == "CENSORED"
+    history = repo.list_retest_transitions(
+        campaign_id="smoke-retest-restart", opportunity_id=opportunity
+    )
+    assert history[-1]["bar_close_ms"] is None
+
+
+def test_confirmed_universe_exit_censors_active_only_and_keeps_retained_symbol() -> None:
+    settings = _settings("smoke-retest-universe-exit", retest_observation_enabled=True)
+    repo = _repo()
+    observer = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    contexts = _contexts()
+    first = _feature(symbol="BTCUSDT")
+    second = _feature(symbol="ETHUSDT")
+    observer.observe(first, contexts, frozenset({"BTCUSDT", "ETHUSDT"}))
+    observer.observe(second, contexts, frozenset({"BTCUSDT", "ETHUSDT"}))
+    observer.censor_universe_exit({"BTCUSDT"}, decision_time_ms=first.event_time_ms + 1)
+    assert observer.retest_observer is not None
+    policy = observer.retest_observer.policy_sha256
+    rows = repo.list_retest_lifecycles(
+        campaign_id=settings.shadow.campaign_id or "",
+        campaign_manifest_sha256=observer.campaign_manifest_sha256,
+        retest_policy_sha256=policy,
+        active_only=False,
+    )
+    by_symbol = {
+        row["lifecycle"]["arm"]["symbol"]: row["stage"] for row in rows
+    }
+    assert by_symbol["BTCUSDT"] == "CENSORED"
+    assert by_symbol["ETHUSDT"] == "ARMED"
+    history = repo.list_retest_transitions(
+        campaign_id=settings.shadow.campaign_id or "",
+        opportunity_id=next(
+            row["opportunity_id"]
+            for row in rows
+            if row["lifecycle"]["arm"]["symbol"] == "BTCUSDT"
+        ),
+    )
+    assert history[-1]["bar_close_ms"] is None
+
+
+def test_active_lookup_is_bounded_by_market_and_symbol() -> None:
+    settings = _settings("smoke-retest-index", retest_observation_enabled=True)
+    repo = _repo()
+    observer = ShadowObserver(
+        settings,
+        SignalRuleEngine(settings.signals, settings.shadow),
+        repo,
+        clock=ReplayClock(1_710_000_000_000),
+    )
+    contexts = _contexts()
+    observer.observe(_feature(symbol="BTCUSDT"), contexts, frozenset({"BTCUSDT"}))
+    observer.observe(_feature(symbol="ETHUSDT"), contexts, frozenset({"BTCUSDT", "ETHUSDT"}))
+    assert observer.retest_observer is not None
+    index = observer.retest_observer._active_by_symbol
+    assert set(index) == {("spot", "BTCUSDT"), ("spot", "ETHUSDT")}
+    assert len(index[("spot", "BTCUSDT")]) == 1
+    assert len(index[("spot", "ETHUSDT")]) == 1
 
 
 def test_conflicting_same_id_observation_fails_loudly() -> None:

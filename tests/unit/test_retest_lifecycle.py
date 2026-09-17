@@ -21,6 +21,8 @@ from signalbot.prospective.retest import (
     build_ready_snapshot,
     censor_lifecycle,
     on_completed_bar,
+    retest_policy_for_horizon,
+    serialize_lifecycle,
 )
 
 MANIFEST = "m" * 64
@@ -247,6 +249,18 @@ def test_authoritative_factory_requires_raw_c0():
         )
 
 
+def test_retest_policy_identity_binds_horizon_and_semantics():
+    first = retest_policy_for_horizon(12)
+    second = retest_policy_for_horizon(13)
+    assert first.sha256 != second.sha256
+    assert first.canonical_payload()["protocol_version"] == "causal_retest_v1"
+
+
+def test_arm_persists_canonical_policy_identity():
+    lifecycle = arm_from_raw_c0(_arm(horizon=12))
+    assert lifecycle.arm.retest_policy_sha256 == retest_policy_for_horizon(12).sha256
+
+
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, 0.0, -1.0])
 def test_arm_rejects_nonfinite_or_nonpositive_scientific_values(value):
     with pytest.raises(ValueError):
@@ -262,6 +276,24 @@ def test_original_c0_bar_cannot_self_confirm_retest():
             bar_close_ms=ARM_TIME,
             close=104.0,
         )
+
+
+@pytest.mark.parametrize("close", [math.nan, 0.0])
+def test_old_invalid_bar_cannot_mutate_before_arm_ordering(close):
+    lifecycle = arm_from_raw_c0(_arm())
+    before = serialize_lifecycle(lifecycle)
+    with pytest.raises(RetestOutOfOrderError):
+        _bar(lifecycle, index=0, close=close)
+    assert serialize_lifecycle(lifecycle) == before
+
+
+def test_older_invalid_bar_cannot_mutate_after_valid_bar():
+    lifecycle = arm_from_raw_c0(_arm())
+    _bar(lifecycle, index=1, close=106.0)
+    before = serialize_lifecycle(lifecycle)
+    with pytest.raises(RetestOutOfOrderError):
+        _bar(lifecycle, index=0, close=0.0)
+    assert serialize_lifecycle(lifecycle) == before
 
 
 def test_frozen_breakout_level_does_not_drift():
@@ -401,6 +433,46 @@ def test_ready_snapshot_uses_ready_time_bbo_not_arm_time_bbo():
         bar_close_ms=feature.event_time_ms,
     )
     assert snapshot.bbo.eligible is False
+
+
+@pytest.mark.parametrize("interval", ["15m", "1h"])
+@pytest.mark.parametrize("offset", [0, 1])
+def test_ready_snapshot_requires_strictly_prior_htf_context(interval, offset):
+    settings = _settings()
+    lifecycle = arm_from_raw_c0(_arm())
+    _bar(lifecycle, index=1, close=104.0)
+    feature = _ready_feature(price=106.0, event_time_ms=ARM_TIME + STEP * 2)
+    contexts = _contexts(feature)
+    contexts[interval] = contexts[interval].model_copy(
+        update={"event_time_ms": feature.event_time_ms + offset}
+    )
+    with pytest.raises(RetestOutOfOrderError):
+        build_ready_snapshot(
+            lifecycle,
+            feature,
+            contexts,
+            settings,
+            bar_close_ms=feature.event_time_ms,
+        )
+
+
+@pytest.mark.parametrize("field", ["symbol", "market"])
+def test_ready_snapshot_rejects_htf_identity_mismatch(field):
+    settings = _settings()
+    lifecycle = arm_from_raw_c0(_arm())
+    _bar(lifecycle, index=1, close=104.0)
+    feature = _ready_feature(price=106.0, event_time_ms=ARM_TIME + STEP * 2)
+    contexts = _contexts(feature)
+    update = {field: "ETHUSDT"} if field == "symbol" else {field: Market.FUTURES}
+    contexts["15m"] = contexts["15m"].model_copy(update=update)
+    with pytest.raises(ValueError, match=r"context (symbol|market) mismatch"):
+        build_ready_snapshot(
+            lifecycle,
+            feature,
+            contexts,
+            settings,
+            bar_close_ms=feature.event_time_ms,
+        )
 
 
 def test_ready_snapshot_must_match_recovery_bar_identity():

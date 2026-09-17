@@ -19,6 +19,8 @@ from signalbot.prospective.research_context import (
     RESEARCH_CONTEXT_VERSION,
     build_research_context,
 )
+from signalbot.prospective.retest_observer import CausalRetestObserver
+from signalbot.prospective.source_freeze import default_source_root, freeze_source
 from signalbot.signals.gates import evaluate_bbo_execution_evidence
 from signalbot.signals.rules import SignalRuleEngine
 from signalbot.signals.shadow_policy import shadow_policy_identity
@@ -102,7 +104,10 @@ def shadow_config_sha256(settings: Settings) -> str:
                 "round_trip_cost_bps",
                 "cost_headroom_multiple",
                 "require_btc_context_aligned",
-            }
+                "retest_observation_enabled",
+            "retest_horizon_bars",
+            "observation_schema_version",
+        }
         },
         "shared": {
             "relative_volume_threshold": settings.signals.relative_volume_threshold,
@@ -155,6 +160,13 @@ class ShadowObserver:
         campaign_created_at_ms = settings.shadow.campaign_created_at_ms
         if campaign_id is None or source_identity is None or campaign_created_at_ms is None:
             raise ValueError("shadow observer requires explicit campaign provenance")
+        if settings.shadow.retest_observation_enabled:
+            running_freeze = freeze_source(default_source_root())
+            if running_freeze.source_identity != source_identity:
+                raise RuntimeError(
+                    "causal retest source freeze mismatch: configured "
+                    "source_identity does not match the running source tree"
+                )
         self.settings = settings
         self.engine = engine
         self.repository = repository
@@ -191,6 +203,15 @@ class ShadowObserver:
         if not isinstance(manifest_sha256, str) or not manifest_sha256:
             raise RuntimeError("registered shadow campaign is missing manifest_sha256")
         self.campaign_manifest_sha256 = manifest_sha256
+        self.retest_observer: CausalRetestObserver | None = None
+        if settings.shadow.retest_observation_enabled:
+            self.retest_observer = CausalRetestObserver(
+                settings,
+                repository,
+                campaign_id=self.campaign_id,
+                campaign_manifest_sha256=self.campaign_manifest_sha256,
+                clock=clock,
+            )
         # (market, decision_close_ms) -> mutable cell counters
         self._pending: dict[tuple[str, int], dict[str, Any]] = defaultdict(dict)
         self._finalized: set[tuple[str, int]] = set()
@@ -245,6 +266,7 @@ class ShadowObserver:
         if first_seen and bbo.eligible:
             cell["fresh_bbo"] = cell.get("fresh_bbo", 0) + 1
 
+        base_observation_durable = False
         if first_seen and candidate.raw_c0_triggered:
             # Count the causal raw opportunity independently of persistence.
             # A storage failure must never erase the denominator. Idempotent
@@ -252,6 +274,7 @@ class ShadowObserver:
             cell["raw_c0"] = cell.get("raw_c0", 0) + 1
             try:
                 self._persist_observation(candidate, feature, contexts)
+                base_observation_durable = True
                 cell["comparator_rows"] = cell.get("comparator_rows", 0) + 1
             except Exception as exc:
                 # Evidence persistence is failure-isolated: a write/conflict
@@ -262,6 +285,34 @@ class ShadowObserver:
                     *cell.get("missing", []),
                     f"shadow evidence persistence failed: {type(exc).__name__}",
                 ]
+
+        if self.retest_observer is not None:
+            opportunity_id = shadow_opportunity_id(
+                campaign_id=self.campaign_id,
+                market=candidate.market.value,
+                symbol=candidate.symbol,
+                decision_time_ms=candidate.decision_time_ms,
+                primary_interval=candidate.primary_interval,
+            )
+            try:
+                self.retest_observer.advance(feature, contexts)
+                if first_seen and candidate.raw_c0_triggered and base_observation_durable:
+                    self.retest_observer.arm(
+                        candidate,
+                        feature,
+                        opportunity_id=opportunity_id,
+                    )
+            except Exception as exc:
+                cell["evidence_failures"] = cell.get("evidence_failures", 0) + 1
+                cell["missing"] = [
+                    *cell.get("missing", []),
+                    f"causal retest persistence failed: {type(exc).__name__}",
+                ]
+                LOGGER.error(
+                    "causal retest observation failed; incumbent unchanged",
+                    exc_info=exc,
+                    extra={"market": feature.market.value, "symbol": candidate.symbol},
+                )
 
         # Durably persist in-progress coverage for this OPEN cell after every
         # observed symbol, so an abrupt crash preserves how far the cell got
@@ -448,10 +499,33 @@ class ShadowObserver:
     def flush(self) -> None:
         """Finalize any remaining coverage cells (safe on graceful shutdown)."""
 
+        if self.retest_observer is not None:
+            try:
+                self.retest_observer.flush(decision_time_ms=self.clock.now_ms())
+            except Exception as exc:
+                LOGGER.error(
+                    "causal retest shutdown censor failed; incumbent unchanged",
+                    exc_info=exc,
+                )
         for key in list(self._pending):
             if key in self._finalized:
                 continue
             self._write_coverage(key)
+
+    def censor_universe_exit(
+        self,
+        outgoing_symbols: set[str] | frozenset[str],
+        *,
+        decision_time_ms: int,
+    ) -> None:
+        """Censor retest evidence after the scanner confirms membership loss."""
+
+        if self.retest_observer is None or not outgoing_symbols:
+            return
+        self.retest_observer.censor_symbols(
+            outgoing_symbols,
+            decision_time_ms=decision_time_ms,
+        )
 
 
 def build_observation_payload(
@@ -470,6 +544,36 @@ def build_observation_payload(
     bbo = evaluate_bbo_execution_evidence(
         feature, candidate.direction, signals
     )
+    execution_evidence: dict[str, Any] = {
+        "spread_bps": feature.spread_bps,
+        "spread_is_proxy": feature.spread_is_proxy,
+        "book_age_ms": feature.book_age_ms,
+        "bid_quote_capacity": feature.bid_quote_capacity,
+        "ask_quote_capacity": feature.ask_quote_capacity,
+        "execution_available": bbo.eligible,
+        "bbo_failures": list(bbo.failures),
+    }
+    if observer.schema_version == "shadow_observation_v2":
+        execution_evidence.update(
+            {
+                "decision_bbo_schema": "decision_bbo_v1",
+                "observed_bbo": (
+                    None
+                    if feature.observed_bbo is None
+                    else feature.observed_bbo.model_dump(mode="json")
+                ),
+                "decision_close_price": feature.price,
+                "executable_bbo_reference_price": (
+                    None
+                    if feature.observed_bbo is None
+                    else (
+                        float(feature.observed_bbo.ask_price)
+                        if candidate.direction.value.upper() == "LONG"
+                        else float(feature.observed_bbo.bid_price)
+                    )
+                ),
+            }
+        )
     return {
         "provenance": {
             "campaign_id": observer.campaign_id,
@@ -486,6 +590,8 @@ def build_observation_payload(
             "research_context_version": RESEARCH_CONTEXT_VERSION,
         },
         "common_causal_input": {
+            "market": feature.market.value,
+            "symbol": feature.symbol,
             "event_time_ms": feature.event_time_ms,
             "price": feature.price,
             "previous_close": feature.previous_close,
@@ -519,15 +625,7 @@ def build_observation_payload(
             "1h_ema20": c1.ema20 if c1 is not None else None,
             "1h_ema50": c1.ema50 if c1 is not None else None,
         },
-        "execution_evidence": {
-            "spread_bps": feature.spread_bps,
-            "spread_is_proxy": feature.spread_is_proxy,
-            "book_age_ms": feature.book_age_ms,
-            "bid_quote_capacity": feature.bid_quote_capacity,
-            "ask_quote_capacity": feature.ask_quote_capacity,
-            "execution_available": bbo.eligible,
-            "bbo_failures": list(bbo.failures),
-        },
+        "execution_evidence": execution_evidence,
         "incumbent_r2": {
             "raw_c0_triggered": candidate.raw_c0_triggered,
             "raw_score": candidate.raw_score,
@@ -539,5 +637,6 @@ def build_observation_payload(
             "failures": list(candidate.shadow_failures),
             "informational_only": True,
             "opportunity_id": opportunity_id,
+            "direction": candidate.direction.value,
         },
     }

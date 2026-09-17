@@ -104,6 +104,14 @@ class MarketRuntime:
         self.decision_count = 0
         self.parse_error_count = 0
 
+    def restore_persisted_state(self) -> None:
+        """Restore alert cooldowns from durable signal rows after restart."""
+
+        self.state_machine.restore_from_decisions(
+            self.repository.recent_signals(limit=10_000, market=self.market)
+        )
+
+
     def flush_shadow(self) -> None:
         """Finalize any open shadow coverage cells on graceful shutdown.
 
@@ -178,6 +186,11 @@ class MarketRuntime:
             and candle.symbol in (self.tradable_symbols | self.context_symbols)
             and candle.interval in self.settings.binance.intervals
         ]
+        grouped: dict[tuple[str, str], list[Candle]] = {}
+        for candle in accepted:
+            grouped.setdefault((candle.symbol, candle.interval), []).append(candle)
+        for series in grouped.values():
+            CandleStore.validate_series(series)
         inserted = self.candles.add_many(accepted)
         if rebuild and inserted:
             self.rebuild_derived_state()
@@ -224,7 +237,12 @@ class MarketRuntime:
                 feature_count += 1
         return feature_count
 
-    async def handle_payload(self, payload: Any) -> None:
+    async def handle_payload(
+        self,
+        payload: Any,
+        *,
+        received_at_ms: int | None = None,
+    ) -> None:
         try:
             events = parse_payload(self.market, payload)
         except PayloadError as exc:
@@ -236,9 +254,17 @@ class MarketRuntime:
             )
             return
         for event in events:
-            await self.handle_event(event)
+            if received_at_ms is not None and isinstance(event, BookTicker):
+                await self.handle_event(event, received_at_ms=received_at_ms)
+            else:
+                await self.handle_event(event)
 
-    async def handle_event(self, event: Candle | BookTicker | AggTrade | MiniTicker) -> None:
+    async def handle_event(
+        self,
+        event: Candle | BookTicker | AggTrade | MiniTicker,
+        *,
+        received_at_ms: int | None = None,
+    ) -> None:
         if event.market is not self.market:
             return
         if isinstance(event, MiniTicker):
@@ -260,7 +286,8 @@ class MarketRuntime:
         elif event.symbol not in self.tradable_symbols:
             return
         if isinstance(event, BookTicker):
-            received_at_ms = self.clock.now_ms()
+            if received_at_ms is None:
+                received_at_ms = self.clock.now_ms()
             event = event.model_copy(
                 update={
                     "event_time_ms": event.event_time_ms or received_at_ms,
@@ -442,6 +469,7 @@ class MarketRuntime:
                         "book_age_ms": book.age_ms,
                         "bid_quote_capacity": book.bid_quote_capacity,
                         "ask_quote_capacity": book.ask_quote_capacity,
+                        "observed_bbo": book.observed_bbo,
                     }
                 )
             feature = self._with_funding(feature)
@@ -492,10 +520,18 @@ class MarketRuntime:
         return contexts
 
     async def _process(self, evaluation: RuleEvaluation) -> SignalDecision | None:
+        checkpoint = self.state_machine.checkpoint()
         decision = self.state_machine.process(evaluation)
         if decision is None:
             return None
-        return await self._publish_decision(decision)
+        try:
+            persisted = await self._publish_decision(decision)
+        except Exception:
+            self.state_machine.restore(checkpoint)
+            raise
+        if persisted is None:
+            self.state_machine.restore(checkpoint)
+        return persisted
 
     async def _publish_decision(
         self, decision: SignalDecision

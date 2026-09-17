@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 from conftest import make_feature
 from signalbot.config import Settings
@@ -94,7 +95,7 @@ def test_observation_payload_embeds_versioned_research_context() -> None:
     )
 
     payload = build_observation_payload(
-        observer,
+        cast(Any, observer),
         candidate,
         feature,
         contexts,

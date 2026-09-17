@@ -127,6 +127,34 @@ class BookTicker(FrozenModel):
         return value.upper()
 
 
+class ObservedBboSnapshot(FrozenModel):
+    """Immutable raw top-of-book evidence from one received BookTicker."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    bid_price: Decimal
+    bid_quantity: Decimal
+    ask_price: Decimal
+    ask_quantity: Decimal
+    exchange_event_time_ms: int | None = None
+    receipt_time_ms: int | None = None
+    update_id: int | None = None
+    age_ms: int
+
+    @model_validator(mode="after")
+    def validate_snapshot(self) -> ObservedBboSnapshot:
+        values = (self.bid_price, self.bid_quantity, self.ask_price, self.ask_quantity)
+        if any(not value.is_finite() for value in values):
+            raise ValueError("observed BBO values must be finite")
+        if self.bid_price <= 0 or self.ask_price <= 0:
+            raise ValueError("observed BBO prices must be positive")
+        if self.bid_quantity < 0 or self.ask_quantity < 0:
+            raise ValueError("observed BBO quantities must be non-negative")
+        if self.ask_price < self.bid_price or self.age_ms < 0:
+            raise ValueError("observed BBO ordering/age is invalid")
+        return self
+
+
 class AggTrade(FrozenModel):
     market: Market
     symbol: str
@@ -272,6 +300,7 @@ class FeatureSnapshot(FrozenModel):
     book_age_ms: int | None = None
     bid_quote_capacity: float | None = None
     ask_quote_capacity: float | None = None
+    observed_bbo: ObservedBboSnapshot | None = None
     previous_high: float | None = None
     previous_low: float | None = None
     previous_ema20: float | None = None

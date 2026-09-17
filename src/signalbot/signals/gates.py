@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from signalbot.config import SignalSettings
 from signalbot.domain.enums import Direction, Market
-from signalbot.domain.models import FeatureSnapshot, GateEvaluation
+from signalbot.domain.models import FeatureSnapshot, GateEvaluation, ObservedBboSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +36,7 @@ class BboExecutionEvidence:
     capacity_present: bool
     capacity_sufficient: bool
     failures: tuple[str, ...]
+    raw_bbo: ObservedBboSnapshot | None = None
 
 
 def evaluate_bbo_execution_evidence(
@@ -99,6 +100,7 @@ def evaluate_bbo_execution_evidence(
         capacity_present=capacity_present,
         capacity_sufficient=capacity_sufficient,
         failures=tuple(failures),
+        raw_bbo=feature.observed_bbo,
     )
 
 

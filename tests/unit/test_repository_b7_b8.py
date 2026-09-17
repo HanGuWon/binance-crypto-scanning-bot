@@ -4,6 +4,7 @@ monotonicity (B8) for the shadow coverage repository."""
 from __future__ import annotations
 
 import sqlite3
+from typing import Any, cast
 
 import pytest
 
@@ -123,7 +124,7 @@ def test_b8_open_to_sealed_is_monotonic_and_shape_valid():
                 created_at_ms=close,
             )
             args.update(over)
-            repo.save_shadow_coverage(**args)
+            repo.save_shadow_coverage(**cast(dict[str, Any], args))
 
         regressions = [
             {"mature_count": 4, "seen_symbols": ["A", "B", "C", "D"]},

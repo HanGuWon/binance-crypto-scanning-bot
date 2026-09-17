@@ -4,9 +4,13 @@ conflict-loud."""
 
 from __future__ import annotations
 
+import hashlib
+from typing import Any, cast
+
 import pytest
 
 from signalbot.persistence.repository import EventIdConflictError, SqlRepository
+from signalbot.prospective.retest import retest_policy_for_horizon
 
 
 def _register(repo, campaign_id="cret"):
@@ -31,12 +35,34 @@ def _register(repo, campaign_id="cret"):
     return repo.get_shadow_campaign(campaign_id)["manifest_sha256"]
 
 
-def _lifecycle(stage="ARMED", bars=0):
+def _lifecycle(stage="ARMED", bars=0, opportunity_id="opp-1"):
     return {
-        "arm": {"opportunity_id": "opp-1", "breakout_level": 100.0},
+        "arm": {
+            "opportunity_id": opportunity_id,
+            "breakout_level": 100.0,
+            "retest_policy_sha256": retest_policy_for_horizon(72).sha256,
+        },
         "stage": stage,
         "elapsed_bars": bars,
     }
+
+
+def _save_base_observation(repo, manifest, opportunity_id, observation_id):
+    return repo.save_shadow_observation(
+        observation_id=observation_id,
+        campaign_id="cret",
+        campaign_manifest_sha256=manifest,
+        opportunity_id=opportunity_id,
+        market="SPOT",
+        symbol="BTCUSDT",
+        family="BREAKOUT_LONG",
+        direction="LONG",
+        decision_time_ms=100,
+        primary_interval="5m",
+        payload={"opportunity_id": opportunity_id, "observation_id": observation_id},
+        policy_sha256="psh",
+        created_at_ms=100,
+    )
 
 
 def test_begin_then_transition_persists_durable_history():
@@ -60,6 +86,7 @@ def test_begin_then_transition_persists_durable_history():
         current = repo.load_retest_lifecycle(
             campaign_id="cret", opportunity_id=opp
         )
+        assert current is not None
         assert current["stage"] == "READY"
         assert current["lifecycle"]["stage"] == "READY"
         history = repo.list_retest_transitions(
@@ -68,6 +95,10 @@ def test_begin_then_transition_persists_durable_history():
         assert [t["transition_id"] for t in history] == ["t1"]
         assert history[0]["from_stage"] == "ARMED"
         assert history[0]["to_stage"] == "READY"
+        assert history[0]["payload_json"]
+        assert hashlib.sha256(
+            history[0]["payload_json"].encode("utf-8")
+        ).hexdigest() == history[0]["payload_sha256"]
         assert current["lifecycle_sha256"] != ""
     finally:
         repo.close()
@@ -91,8 +122,8 @@ def test_identical_replay_is_idempotent_noop():
             to_stage="READY", decision_time_ms=900, bar_close_ms=1000,
             lifecycle=_lifecycle("READY", bars=1), persisted_at_ms=1001,
         )
-        assert repo.transition_retest(**args) is True
-        assert repo.transition_retest(**args) is False
+        assert repo.transition_retest(**cast(dict[str, Any], args)) is True
+        assert repo.transition_retest(**cast(dict[str, Any], args)) is False
         history = repo.list_retest_transitions(
             campaign_id="cret", opportunity_id=opp
         )
@@ -236,7 +267,7 @@ def test_transition_requires_current_source_stage_and_matching_payload_stage():
         repo.close()
 
 
-def test_transition_id_binds_manifest_and_persisted_time():
+def test_persistence_time_does_not_change_logical_transition_identity():
     repo = SqlRepository("sqlite:///:memory:")
     repo.initialize()
     try:
@@ -253,9 +284,8 @@ def test_transition_id_binds_manifest_and_persisted_time():
             to_stage="READY", decision_time_ms=900, bar_close_ms=1000,
             lifecycle=_lifecycle("READY", bars=1), persisted_at_ms=1001,
         )
-        assert repo.transition_retest(**args) is True
-        with pytest.raises(EventIdConflictError):
-            repo.transition_retest(**{**args, "persisted_at_ms": 1002})
+        assert repo.transition_retest(**cast(dict[str, Any], args)) is True
+        assert repo.transition_retest(**{**args, "persisted_at_ms": 1002}) is False
         changed_lifecycle = _lifecycle("READY", bars=1)
         changed_lifecycle["arm"]["breakout_level"] = 101.0
         with pytest.raises(EventIdConflictError):
@@ -281,7 +311,7 @@ def test_terminal_current_row_cannot_receive_later_transition():
             to_stage="TIMEOUT", decision_time_ms=900, bar_close_ms=1000,
             lifecycle=_lifecycle("TIMEOUT", bars=1), persisted_at_ms=1001,
         )
-        assert repo.transition_retest(**first) is True
+        assert repo.transition_retest(**cast(dict[str, Any], first)) is True
         with pytest.raises(EventIdConflictError, match="terminal"):
             repo.transition_retest(
                 **{
@@ -292,6 +322,53 @@ def test_terminal_current_row_cannot_receive_later_transition():
                     "lifecycle": _lifecycle("READY", bars=2),
                     "persisted_at_ms": 1002,
                 }
+            )
+    finally:
+        repo.close()
+
+
+def test_stale_expected_lifecycle_sha_is_rejected():
+    repo = SqlRepository("sqlite:///:memory:")
+    repo.initialize()
+    try:
+        manifest = _register(repo)
+        repo.begin_retest_lifecycle(
+            campaign_id="cret", campaign_manifest_sha256=manifest,
+            opportunity_id="opp-cas", protocol_version="causal_retest_v1",
+            stage="ARMED", lifecycle=_lifecycle("ARMED"), updated_at_ms=100,
+        )
+        with pytest.raises(EventIdConflictError, match="stale retest lifecycle"):
+            repo.transition_retest(
+                campaign_id="cret", campaign_manifest_sha256=manifest,
+                opportunity_id="opp-cas", protocol_version="causal_retest_v1",
+                from_stage="ARMED", to_stage="READY",
+                decision_time_ms=900, bar_close_ms=1000,
+                lifecycle=_lifecycle("READY", bars=1), persisted_at_ms=1001,
+                expected_previous_lifecycle_sha256="0" * 64,
+            )
+    finally:
+        repo.close()
+
+
+def test_corrupt_lifecycle_payload_fails_closed_on_load():
+    repo = SqlRepository("sqlite:///:memory:")
+    repo.initialize()
+    try:
+        manifest = _register(repo)
+        repo.begin_retest_lifecycle(
+            campaign_id="cret", campaign_manifest_sha256=manifest,
+            opportunity_id="opp-corrupt", protocol_version="causal_retest_v1",
+            stage="ARMED", lifecycle=_lifecycle("ARMED"), updated_at_ms=100,
+        )
+        with repo.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "UPDATE retest_lifecycles SET lifecycle_json = ? "
+                "WHERE campaign_id = ? AND opportunity_id = ?",
+                ('{"stage":"ARMED","arm":{}}', "cret", "opp-corrupt"),
+            )
+        with pytest.raises(EventIdConflictError, match="content hash mismatch"):
+            repo.load_retest_lifecycle(
+                campaign_id="cret", opportunity_id="opp-corrupt"
             )
     finally:
         repo.close()
@@ -329,5 +406,57 @@ def test_retest_lifecycle_counts_expose_active_touched_and_each_terminal():
             "admitted": 6,
             "terminal": 4,
         }
+    finally:
+        repo.close()
+
+
+def test_retest_denominator_audit_uses_base_observations_and_detects_gaps():
+    repo = SqlRepository("sqlite:///:memory:")
+    repo.initialize()
+    try:
+        manifest = _register(repo)
+        policy = retest_policy_for_horizon(72).sha256
+        for index, opportunity_id in enumerate(("a", "b", "c")):
+            _save_base_observation(repo, manifest, opportunity_id, f"obs-{index}")
+        repo.begin_retest_lifecycle(
+            campaign_id="cret", campaign_manifest_sha256=manifest,
+            opportunity_id="a", protocol_version="causal_retest_v1",
+            retest_policy_sha256=policy, stage="ARMED",
+            lifecycle=_lifecycle("ARMED", opportunity_id="a"), updated_at_ms=100,
+        )
+        repo.begin_retest_lifecycle(
+            campaign_id="cret", campaign_manifest_sha256=manifest,
+            opportunity_id="unexpected", protocol_version="causal_retest_v1",
+            retest_policy_sha256=policy, stage="CENSORED",
+            lifecycle=_lifecycle("CENSORED", opportunity_id="unexpected"),
+            updated_at_ms=100,
+        )
+        audit = repo.audit_retest_denominator(
+            campaign_id="cret", campaign_manifest_sha256=manifest,
+            retest_policy_sha256=policy,
+        )
+        assert audit["expected"] == 3
+        assert audit["lifecycle_rows"] == 2
+        assert audit["missing_opportunity_ids"] == ["b", "c"]
+        assert audit["unexpected_opportunity_ids"] == ["unexpected"]
+        assert audit["active"] == 1
+        assert audit["CENSORED"] == 1
+    finally:
+        repo.close()
+
+
+def test_retest_denominator_audit_detects_duplicate_expected_evidence():
+    repo = SqlRepository("sqlite:///:memory:")
+    repo.initialize()
+    try:
+        manifest = _register(repo)
+        _save_base_observation(repo, manifest, "dup", "obs-1")
+        _save_base_observation(repo, manifest, "dup", "obs-2")
+        audit = repo.audit_retest_denominator(
+            campaign_id="cret", campaign_manifest_sha256=manifest,
+            retest_policy_sha256=retest_policy_for_horizon(72).sha256,
+        )
+        assert audit["expected"] == 1
+        assert audit["duplicate_expected_ids"] == ["dup"]
     finally:
         repo.close()

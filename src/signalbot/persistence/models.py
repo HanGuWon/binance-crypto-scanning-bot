@@ -190,14 +190,18 @@ class ShadowCoverageRow(Base):
 class RetestTransitionRow(Base):
     __tablename__ = "retest_transitions"
     transition_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    logical_transition_id: Mapped[str] = mapped_column(String(128), index=True, default="")
     campaign_id: Mapped[str] = mapped_column(String(64), index=True)
     campaign_manifest_sha256: Mapped[str] = mapped_column(String(64))
     opportunity_id: Mapped[str] = mapped_column(String(64), index=True)
     protocol_version: Mapped[str] = mapped_column(String(32))
+    retest_policy_sha256: Mapped[str] = mapped_column(String(64), default="")
     from_stage: Mapped[str] = mapped_column(String(24))
     to_stage: Mapped[str] = mapped_column(String(24))
-    decision_time_ms: Mapped[int] = mapped_column(BigInteger)
-    bar_close_ms: Mapped[int] = mapped_column(BigInteger)
+    transition_time_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    decision_time_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bar_close_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="")
     payload_sha256: Mapped[str] = mapped_column(String(64))
     persisted_at_ms: Mapped[int] = mapped_column(BigInteger)
 
@@ -215,6 +219,7 @@ class RetestLifecycleRow(Base):
     opportunity_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     campaign_manifest_sha256: Mapped[str] = mapped_column(String(64))
     protocol_version: Mapped[str] = mapped_column(String(32))
+    retest_policy_sha256: Mapped[str] = mapped_column(String(64), default="")
     stage: Mapped[str] = mapped_column(String(24))
     lifecycle_json: Mapped[str] = mapped_column(Text)
     lifecycle_sha256: Mapped[str] = mapped_column(String(64))

@@ -17,12 +17,12 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 
 from signalbot.config import Settings
 from signalbot.domain.enums import Direction, Market, SignalFamily
-from signalbot.domain.models import ComparatorCandidate, FeatureSnapshot
+from signalbot.domain.models import ComparatorCandidate, FeatureSnapshot, ObservedBboSnapshot
 from signalbot.prospective.research_context import (
     RESEARCH_CONTEXT_VERSION,
     build_research_context,
@@ -33,6 +33,10 @@ from signalbot.signals.gates import (
 )
 
 RETEST_PROTOCOL_VERSION = "causal_retest_v1"
+RETEST_TOUCH_SEMANTICS_VERSION = "close_touch_v1"
+RETEST_RECOVERY_SEMANTICS_VERSION = "close_recovery_v1"
+RETEST_INVALIDATION_SEMANTICS_VERSION = "explicit_evidence_failure_v1"
+RETEST_SNAPSHOT_SCHEMA_VERSION = "causal_retest_snapshot_v1"
 
 
 class RetestStage(StrEnum):
@@ -72,6 +76,45 @@ class RetestConflictError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class RetestPolicy:
+    """Immutable scientific identity for one causal-retest membership rule."""
+
+    protocol_version: str
+    retest_horizon_bars: int
+    touch_semantics_version: str = RETEST_TOUCH_SEMANTICS_VERSION
+    recovery_semantics_version: str = RETEST_RECOVERY_SEMANTICS_VERSION
+    invalidation_semantics_version: str = RETEST_INVALIDATION_SEMANTICS_VERSION
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "protocol_version": self.protocol_version,
+            "retest_horizon_bars": self.retest_horizon_bars,
+            "touch_semantics_version": self.touch_semantics_version,
+            "recovery_semantics_version": self.recovery_semantics_version,
+            "invalidation_semantics_version": self.invalidation_semantics_version,
+        }
+
+    @property
+    def sha256(self) -> str:
+        return _sha256(_canonical_json(self.canonical_payload()))
+
+
+def retest_policy_for_horizon(
+    retest_horizon_bars: int,
+    *,
+    protocol_version: str = RETEST_PROTOCOL_VERSION,
+) -> RetestPolicy:
+    if retest_horizon_bars <= 0:
+        raise ValueError("retest horizon must be positive")
+    if protocol_version != RETEST_PROTOCOL_VERSION:
+        raise ValueError("unsupported causal retest protocol version")
+    return RetestPolicy(
+        protocol_version=protocol_version,
+        retest_horizon_bars=retest_horizon_bars,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class RetestArm:
     opportunity_id: str
     campaign_id: str
@@ -87,6 +130,7 @@ class RetestArm:
     arm_decision_time_ms: int
     retest_horizon_bars: int
     protocol_version: str = RETEST_PROTOCOL_VERSION
+    retest_policy_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +153,9 @@ class RetestReadySnapshot:
     research_context_json: str
     research_context_sha256: str
     content_sha256: str
+    signal_close_reference_price: float | None = None
+    executable_bbo_reference_price: float | None = None
+    decision_bbo_schema: str = "decision_bbo_v1"
 
 
 @dataclass(slots=True)
@@ -154,6 +201,9 @@ def _sha256(text: str) -> str:
 def _bbo_payload(value: BboExecutionEvidence) -> dict[str, object]:
     payload = asdict(value)
     payload["failures"] = list(value.failures)
+    payload["raw_bbo"] = (
+        None if value.raw_bbo is None else value.raw_bbo.model_dump(mode="json")
+    )
     return payload
 
 
@@ -186,6 +236,14 @@ def arm_from_raw_c0(arm: RetestArm) -> RetestLifecycle:
     _require_positive_finite("arm_atr", arm.arm_atr)
     if arm.retest_horizon_bars <= 0:
         raise ValueError("retest horizon must be positive")
+    policy = retest_policy_for_horizon(
+        arm.retest_horizon_bars,
+        protocol_version=arm.protocol_version,
+    )
+    if arm.retest_policy_sha256 not in {"", policy.sha256}:
+        raise ValueError("retest arm policy identity does not match its parameters")
+    if arm.retest_policy_sha256 != policy.sha256:
+        arm = replace(arm, retest_policy_sha256=policy.sha256)
     if not arm.opportunity_id or not arm.campaign_id:
         raise ValueError("retest arm requires opportunity/campaign identity")
     if not arm.campaign_manifest_sha256:
@@ -271,6 +329,21 @@ def build_ready_snapshot(
         raise RetestOutOfOrderError("READY feature must be strictly after the arm")
     _require_positive_finite("READY price", feature.price)
 
+    for interval in ("15m", "1h"):
+        context = contexts.get(interval)
+        if context is None:
+            raise ValueError(f"missing READY strictly-prior {interval} context")
+        if context.market is not feature.market:
+            raise ValueError(f"READY {interval} context market mismatch")
+        if context.symbol != feature.symbol:
+            raise ValueError(f"READY {interval} context symbol mismatch")
+        if context.interval != interval:
+            raise ValueError(f"READY {interval} context interval mismatch")
+        if context.event_time_ms >= feature.event_time_ms:
+            raise RetestOutOfOrderError(
+                f"READY {interval} context must be strictly prior"
+            )
+
     bbo = evaluate_bbo_execution_evidence(
         feature,
         arm.direction,
@@ -294,6 +367,17 @@ def build_ready_snapshot(
         "decision_time_ms": feature.event_time_ms,
         "bar_close_ms": bar_close_ms,
         "price": feature.price,
+        "signal_close_reference_price": feature.price,
+        "executable_bbo_reference_price": (
+            None
+            if bbo.raw_bbo is None
+            else float(
+                bbo.raw_bbo.ask_price
+                if arm.direction is Direction.LONG
+                else bbo.raw_bbo.bid_price
+            )
+        ),
+        "decision_bbo_schema": "decision_bbo_v1",
         "breakout_level": arm.breakout_level,
         "bbo": _bbo_payload(bbo),
         "research_context_version": RESEARCH_CONTEXT_VERSION,
@@ -317,6 +401,16 @@ def build_ready_snapshot(
         research_context_json=research_json,
         research_context_sha256=research_sha256,
         content_sha256=_sha256(_canonical_json(canonical)),
+        signal_close_reference_price=feature.price,
+        executable_bbo_reference_price=(
+            None
+            if bbo.raw_bbo is None
+            else float(
+                bbo.raw_bbo.ask_price
+                if arm.direction is Direction.LONG
+                else bbo.raw_bbo.bid_price
+            )
+        ),
     )
 
 
@@ -379,11 +473,6 @@ def on_completed_bar(
         )
     if lifecycle.terminal:
         return
-    if not math.isfinite(close) or close <= 0:
-        lifecycle.stage = RetestStage.INVALID
-        lifecycle.terminal_reason = "non-positive or non-finite retest close"
-        lifecycle.terminal_time_ms = decision_time_ms
-        return
     if decision_time_ms <= lifecycle.arm.arm_decision_time_ms:
         raise RetestOutOfOrderError(
             "retest bar must be strictly after the armed raw-C0 decision time"
@@ -418,6 +507,12 @@ def on_completed_bar(
             raise RetestConflictError(
                 "READY snapshot does not match retest bar/arm identity"
             )
+
+    if not math.isfinite(close) or close <= 0:
+        lifecycle.stage = RetestStage.INVALID
+        lifecycle.terminal_reason = "non-positive or non-finite retest close"
+        lifecycle.terminal_time_ms = decision_time_ms
+        return
 
     lifecycle.last_bar_close_ms = bar_close_ms
     lifecycle.last_decision_time_ms = decision_time_ms
@@ -471,11 +566,15 @@ def _arm_to_dict(arm: RetestArm) -> dict:
         "arm_decision_time_ms": arm.arm_decision_time_ms,
         "retest_horizon_bars": arm.retest_horizon_bars,
         "protocol_version": arm.protocol_version,
+        "retest_policy_sha256": arm.retest_policy_sha256,
     }
 
 
 def _arm_from_dict(d: dict) -> RetestArm:
-    return RetestArm(
+    policy_sha256 = d.get("retest_policy_sha256", "")
+    if not policy_sha256:
+        raise ValueError("retest lifecycle is missing retest policy provenance")
+    arm = RetestArm(
         opportunity_id=d["opportunity_id"],
         campaign_id=d["campaign_id"],
         campaign_manifest_sha256=d["campaign_manifest_sha256"],
@@ -490,7 +589,9 @@ def _arm_from_dict(d: dict) -> RetestArm:
         arm_decision_time_ms=d["arm_decision_time_ms"],
         retest_horizon_bars=d["retest_horizon_bars"],
         protocol_version=d.get("protocol_version", RETEST_PROTOCOL_VERSION),
+        retest_policy_sha256=policy_sha256,
     )
+    return arm_from_raw_c0(arm).arm
 
 
 def serialize_lifecycle(lifecycle: RetestLifecycle) -> dict:
@@ -498,6 +599,7 @@ def serialize_lifecycle(lifecycle: RetestLifecycle) -> dict:
 
     ready = lifecycle.ready_snapshot
     return {
+        "schema_version": RETEST_SNAPSHOT_SCHEMA_VERSION,
         "arm": _arm_to_dict(lifecycle.arm),
         "stage": lifecycle.stage.value,
         "elapsed_bars": lifecycle.elapsed_bars,
@@ -523,11 +625,14 @@ def serialize_lifecycle(lifecycle: RetestLifecycle) -> dict:
             "bar_close_ms": ready.bar_close_ms,
             "price": ready.price,
             "breakout_level": ready.breakout_level,
-            "bbo": asdict(ready.bbo),
+            "bbo": _bbo_payload(ready.bbo),
             "research_context_version": ready.research_context_version,
             "research_context_json": ready.research_context_json,
             "research_context_sha256": ready.research_context_sha256,
             "content_sha256": ready.content_sha256,
+            "signal_close_reference_price": ready.signal_close_reference_price,
+            "executable_bbo_reference_price": ready.executable_bbo_reference_price,
+            "decision_bbo_schema": ready.decision_bbo_schema,
         },
     }
 
@@ -535,6 +640,8 @@ def serialize_lifecycle(lifecycle: RetestLifecycle) -> dict:
 def restore_lifecycle(data: dict) -> RetestLifecycle:
     """Restore a RetestLifecycle from a durable canonical snapshot."""
 
+    if data.get("schema_version") != RETEST_SNAPSHOT_SCHEMA_VERSION:
+        raise ValueError("unsupported causal retest lifecycle schema version")
     arm = _arm_from_dict(data["arm"])
     lifecycle = RetestLifecycle(arm=arm)
     lifecycle.stage = RetestStage(data["stage"])
@@ -551,7 +658,12 @@ def restore_lifecycle(data: dict) -> RetestLifecycle:
     lifecycle.terminal_reason = data.get("terminal_reason")
     ready = data.get("ready_snapshot")
     if ready is not None:
-        bbo = BboExecutionEvidence(**ready["bbo"])
+        bbo_data = dict(ready["bbo"])
+        raw_bbo = bbo_data.get("raw_bbo")
+        bbo_data["raw_bbo"] = (
+            None if raw_bbo is None else ObservedBboSnapshot.model_validate(raw_bbo)
+        )
+        bbo = BboExecutionEvidence(**bbo_data)
         lifecycle.ready_snapshot = RetestReadySnapshot(
             campaign_id=ready["campaign_id"],
             campaign_manifest_sha256=ready["campaign_manifest_sha256"],
@@ -569,6 +681,13 @@ def restore_lifecycle(data: dict) -> RetestLifecycle:
             research_context_json=ready["research_context_json"],
             research_context_sha256=ready["research_context_sha256"],
             content_sha256=ready["content_sha256"],
+            signal_close_reference_price=ready.get(
+                "signal_close_reference_price", ready["price"]
+            ),
+            executable_bbo_reference_price=ready.get(
+                "executable_bbo_reference_price"
+            ),
+            decision_bbo_schema=ready.get("decision_bbo_schema", "decision_bbo_v1"),
         )
     return lifecycle
 

@@ -91,20 +91,42 @@ class ShadowPolicySettings(StrictModel):
     cost_headroom_multiple: float = Field(default=2.0, ge=1, le=20)
     require_btc_context_aligned: bool = True
     observation_enabled: bool = False
-    observation_schema_version: str = "shadow_observation_v1"
+    observation_schema_version: Literal[
+        "shadow_observation_v1", "shadow_observation_v2"
+    ] = "shadow_observation_v1"
     campaign_schema_version: Literal["shadow_campaign_v1"] = "shadow_campaign_v1"
     campaign_mode: Literal["smoke", "prospective"] = "smoke"
     campaign_id: str | None = None
     activation_ms: int | None = None
     source_identity: str | None = None
     campaign_created_at_ms: int | None = None
+    retest_observation_enabled: bool = False
+    retest_horizon_bars: int = Field(default=72, ge=1, le=10_000)
 
     @model_validator(mode="after")
     def freeze_observation_contract(self) -> ShadowPolicySettings:
+        if self.retest_observation_enabled and not self.observation_enabled:
+            raise ValueError(
+                "causal retest observation requires shadow observation_enabled"
+            )
         if not self.observation_enabled:
             return self
-        if self.observation_schema_version != "shadow_observation_v1":
-            raise ValueError("shadow observation schema version is frozen")
+        if (
+            self.retest_observation_enabled
+            and self.observation_schema_version != "shadow_observation_v2"
+        ):
+            raise ValueError("retest observation requires shadow_observation_v2")
+        if self.retest_observation_enabled:
+            prefix = "worktree-source-v1:"
+            digest = (self.source_identity or "").removeprefix(prefix)
+            if (
+                not (self.source_identity or "").startswith(prefix)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(
+                    "retest observation requires worktree-source-v1 source_identity"
+                )
         if self.policy_version != "er_context_v1":
             raise ValueError("shadow policy version is frozen for observation")
         if not self.campaign_id:
@@ -268,6 +290,7 @@ class RuntimeSettings(StrictModel):
     persist_candles: bool = True
     record_raw_events: bool = False
     raw_event_directory: str = "./var/raw-events"
+    storage_mode: Literal["legacy_jsonl_v1", "segmented_zstd_v1"] = "legacy_jsonl_v1"
     raw_event_max_bytes: int = Field(
         default=10_737_418_240,
         ge=1_048_576,
@@ -325,6 +348,27 @@ class Settings(StrictModel):
                 raise ValueError("shadow observation requires source_identity")
             if self.shadow.campaign_created_at_ms is None:
                 raise ValueError("shadow observation requires campaign_created_at_ms")
+            if self.shadow.retest_observation_enabled:
+                if not self.runtime.persist_candles:
+                    raise ValueError(
+                        "causal retest observation requires runtime.persist_candles"
+                    )
+                prefix = "worktree-source-v1:"
+                source_identity = self.shadow.source_identity or ""
+                digest = source_identity.removeprefix(prefix)
+                if (
+                    not source_identity.startswith(prefix)
+                    or len(digest) != 64
+                    or any(character not in "0123456789abcdef" for character in digest)
+                ):
+                    raise ValueError(
+                        "prospective causal retest requires worktree-source-v1 source_identity"
+                    )
+                if not self.runtime.record_raw_events:
+                    raise ValueError(
+                        "causal retest observation requires "
+                        "runtime.record_raw_events for receipt-time parity evidence"
+                    )
             required_intervals = {"5m", "15m", "1h"}
             missing = sorted(
                 required_intervals.difference(self.binance.intervals)

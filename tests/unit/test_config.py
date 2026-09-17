@@ -89,6 +89,12 @@ def test_surveillance_limit_must_cover_tradable_limit() -> None:
         Settings.model_validate({"binance": {"top_n": 2, "surveillance_n": 1}})
 
 
+@pytest.mark.parametrize("value", ["segmented_zstd_typo", "", 1, None])
+def test_storage_mode_rejects_unknown_values(value: object) -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"runtime": {"storage_mode": value}})
+
+
 def test_frozen_backtest_contract_loads() -> None:
     spec = load_backtest_spec(ROOT / "config/backtest.research.yaml")
     assert spec.protocol_version == "bt_1h_v1_frozen_2026-07-14"

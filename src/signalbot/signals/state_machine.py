@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Collection
+from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -54,6 +55,38 @@ class SignalStateMachine:
         for key in stale:
             del self._states[key]
         return len(stale)
+
+    def checkpoint(self) -> dict[tuple[str, str, str, str], _State]:
+        """Capture mutable transition state before a persistence attempt."""
+
+        return deepcopy(self._states)
+
+    def restore(self, checkpoint: dict[tuple[str, str, str, str], _State]) -> None:
+        """Restore state when its corresponding decision was not durable."""
+
+        self._states = deepcopy(checkpoint)
+
+    def restore_from_decisions(self, decisions: Collection[SignalDecision]) -> None:
+        """Rebuild alert stage and cooldown state from durable decisions."""
+
+        for decision in sorted(decisions, key=lambda item: (item.event_time_ms, item.event_id)):
+            key = (
+                decision.market.value,
+                decision.symbol,
+                decision.family.value,
+                decision.timeframe,
+            )
+            state = self._states.setdefault(key, _State())
+            if decision.stage is SignalStage.INVALIDATED:
+                state.stage = SignalStage.IDLE
+                state.invalidation = None
+                continue
+            state.stage = decision.stage
+            state.invalidation = decision.invalidation
+            if decision.stage is SignalStage.CONFIRMED:
+                state.cooldown_until_ms = (
+                    decision.event_time_ms + self.settings.cooldown_seconds * 1000
+                )
 
     def process(self, e: RuleEvaluation) -> SignalDecision | None:
         e = self._validated_evaluation(e)

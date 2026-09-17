@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from signalbot.domain.enums import Market
-from signalbot.domain.models import AggTrade, BookTicker, Candle
+from signalbot.domain.models import AggTrade, BookTicker, Candle, ObservedBboSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +29,7 @@ class BookSnapshot:
     age_ms: int
     bid_quote_capacity: float
     ask_quote_capacity: float
+    observed_bbo: ObservedBboSnapshot
 
 
 class BookTickerConflictError(RuntimeError):
@@ -221,6 +222,16 @@ class BookState:
             age_ms=age_ms,
             bid_quote_capacity=float(book.bid_price * book.bid_quantity),
             ask_quote_capacity=float(book.ask_price * book.ask_quantity),
+            observed_bbo=ObservedBboSnapshot(
+                bid_price=book.bid_price,
+                bid_quantity=book.bid_quantity,
+                ask_price=book.ask_price,
+                ask_quantity=book.ask_quantity,
+                exchange_event_time_ms=book.exchange_event_time_ms,
+                receipt_time_ms=book.receipt_time_ms,
+                update_id=book.update_id,
+                age_ms=age_ms,
+            ),
         )
 
     def retain_symbols(self, market: Market, symbols: frozenset[str]) -> int:

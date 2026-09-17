@@ -49,6 +49,7 @@ from signalbot.domain.models import Candle, SignalDecision
 from signalbot.exchange.binance.endpoints import build_websocket_plans
 from signalbot.observability.logging import configure_logging
 from signalbot.persistence.repository import SqlRepository
+from signalbot.prospective.smoke_audit import write_smoke_audit
 from signalbot.runtime import MarketRuntime
 
 
@@ -60,6 +61,12 @@ def _parser() -> argparse.ArgumentParser:
     run = subs.add_parser("run")
     run.add_argument("--config", required=True)
     run.add_argument("--dry-run", action="store_true")
+    run.add_argument(
+        "--stop-after-minutes",
+        type=int,
+        default=None,
+        help="Gracefully stop after N minutes (operational bounded run)",
+    )
     replay = subs.add_parser("replay")
     replay.add_argument("--config", required=True)
     replay.add_argument("--market", choices=[m.value for m in Market], required=True)
@@ -72,6 +79,15 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         nargs="+",
         default=[900, 3600, 14400, 43200, 86400],
+    )
+    audit_smoke = subs.add_parser("audit-retest-smoke")
+    audit_smoke.add_argument("--config", required=True)
+    audit_smoke.add_argument("--campaign-id", required=True)
+    audit_smoke.add_argument("--output", required=True)
+    audit_smoke.add_argument(
+        "--raw-event-directory",
+        default=None,
+        help="Explicit frozen raw-event tape directory override",
     )
     api = subs.add_parser("serve-api")
     api.add_argument("--config", required=True)
@@ -469,13 +485,32 @@ def main() -> None:
         if args.dry_run:
             _dry_run(settings)
             return
-        asyncio.run(SignalApplication(settings).run())
+        asyncio.run(
+            SignalApplication(settings, stop_after_minutes=args.stop_after_minutes).run()
+        )
         return
     if args.command == "replay":
         asyncio.run(_replay(settings, Market(args.market), Path(args.input)))
         return
     if args.command == "evaluate-outcomes":
         _evaluate_outcomes(Path(args.input), args.horizons)
+        return
+    if args.command == "audit-retest-smoke":
+        repository = SqlRepository(settings.storage.url, settings.storage.echo_sql)
+        repository.initialize()
+        try:
+            report = write_smoke_audit(
+                settings,
+                repository,
+                campaign_id=args.campaign_id,
+                output=args.output,
+                raw_event_directory=getattr(args, "raw_event_directory", None),
+            )
+        finally:
+            repository.close()
+        print(json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True))
+        if not report["integrity"]["pass"]:
+            raise SystemExit(2)
         return
     if args.command == "serve-api":
         repository = SqlRepository(settings.storage.url, settings.storage.echo_sql)

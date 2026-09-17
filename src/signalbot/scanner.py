@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path as _Path
 from typing import Any
 
 from signalbot.clock import Clock
 from signalbot.config import Settings
 from signalbot.data.candles import CandleGap, interval_to_milliseconds
 from signalbot.data.funding import FundingRateCapacityError, FundingRatePayloadError
-from signalbot.data.raw_events import RawEventCapacityError, RawEventRecorder
+from signalbot.data.raw_events import (
+    RawEventRecorder,
+    RawEventRecorderFatalError,
+)
 from signalbot.domain.enums import Market
 from signalbot.domain.models import Candle
 from signalbot.exchange.binance.endpoints import build_websocket_plans
@@ -19,6 +23,7 @@ from signalbot.runtime import MarketRuntime
 
 LOGGER = logging.getLogger(__name__)
 MAX_GAP_RECOVERY_PAGES = 100
+TASK_CANCELLATION_DEADLINE_SECONDS = 15.0
 
 
 class MarketScanner:
@@ -31,12 +36,15 @@ class MarketScanner:
         stop_event: asyncio.Event,
         rest_client: BinanceRestClient | None = None,
         raw_recorder: RawEventRecorder | None = None,
+        cancellation_deadline_seconds: float = TASK_CANCELLATION_DEADLINE_SECONDS,
     ) -> None:
         self.market = market
         self.settings = settings
         self.clock = clock
         self.runtime = runtime
         self.stop_event = stop_event
+        self._cancellation_deadline_seconds = cancellation_deadline_seconds
+        self.abandoned_tasks: list[asyncio.Task[Any]] = []
         self.rest = rest_client or BinanceRestClient(
             market, settings.binance.request_timeout_seconds
         )
@@ -47,10 +55,24 @@ class MarketScanner:
         self._pending_universe_confirmations = 0
         self.raw_recorder = None
         if settings.runtime.record_raw_events:
-            self.raw_recorder = raw_recorder or RawEventRecorder(
-                settings.runtime.raw_event_directory,
-                settings.runtime.raw_event_max_bytes,
-            )
+            if settings.runtime.storage_mode == "segmented_zstd_v1":
+                from signalbot.prospective.segmented_storage import (
+                    ProspectiveTapeRecorder,
+                )
+
+                self.raw_recorder = raw_recorder or ProspectiveTapeRecorder(
+                    _Path(settings.runtime.raw_event_directory),
+                    campaign_id=getattr(
+                        settings, "_campaign_id", "prospective"
+                    ),
+                    source_identity="runtime",
+                    raw_event_max_bytes=settings.runtime.raw_event_max_bytes,
+                )
+            else:
+                self.raw_recorder = raw_recorder or RawEventRecorder(
+                    settings.runtime.raw_event_directory,
+                    settings.runtime.raw_event_max_bytes,
+                )
         runtime.gap_recoverer = self._recover_gap
 
     async def close(self) -> None:
@@ -113,11 +135,54 @@ class MarketScanner:
             for plan in plans
         ]
 
-    @staticmethod
-    async def _cancel_tasks(tasks: list[asyncio.Task[None]]) -> None:
+    async def _cancel_tasks_instance(
+        self, tasks: list[asyncio.Task[None]]
+    ) -> None:
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=self._cancellation_deadline_seconds,
+            )
+        except TimeoutError:
+            hung = [task for task in tasks if not task.done()]
+            for task in hung:
+                self.abandoned_tasks.append(task)
+                task.add_done_callback(self._log_abandoned_task)
+            LOGGER.critical(
+                "websocket task cancellation exceeded deadline; abandoning tasks",
+                extra={
+                    "market": self.market.value,
+                    "hung_task_names": [task.get_name() for task in hung],
+                },
+            )
+
+    @staticmethod
+    def _log_abandoned_task(task: asyncio.Task[Any]) -> None:
+        if task.cancelled():
+            LOGGER.warning(
+                "abandoned scanner task finished cancelled",
+                extra={"task": task.get_name()},
+            )
+            return
+        error = task.exception()
+        if error is not None:
+            LOGGER.error(
+                "abandoned scanner task raised",
+                extra={"task": task.get_name()},
+                exc_info=error,
+            )
+        else:
+            LOGGER.warning(
+                "abandoned scanner task eventually completed",
+                extra={"task": task.get_name()},
+            )
+
+    async def _cancel_tasks(self, tasks: list[asyncio.Task[None]]) -> None:
+        # Keep the historical static call sites working; route through the
+        # bounded instance implementation.
+        await MarketScanner._cancel_tasks_instance(self, tasks)
 
     @staticmethod
     def _raise_unexpected_task_exit(task: asyncio.Task[Any], label: str) -> None:
@@ -202,6 +267,25 @@ class MarketScanner:
         previous_tradable = (
             set() if previous is None else set(previous.tradable_symbols)
         )
+        outgoing_tradable = previous_tradable - set(candidate.tradable_symbols)
+        shadow_observer = getattr(self.runtime, "shadow_observer", None)
+        if outgoing_tradable and shadow_observer is not None:
+            try:
+                shadow_observer.censor_universe_exit(
+                    outgoing_tradable,
+                    decision_time_ms=self.clock.now_ms(),
+                )
+            except Exception as exc:
+                # A research-store failure must not block confirmed universe
+                # rotation; the observer retains its in-memory lifecycle.
+                LOGGER.error(
+                    "shadow retest universe-exit censor failed; rotation continues",
+                    exc_info=exc,
+                    extra={
+                        "market": self.market.value,
+                        "outgoing_symbols": sorted(outgoing_tradable),
+                    },
+                )
         candidate_market_data = set(self._market_data_symbols(candidate))
         added_market_data = sorted(candidate_market_data - previous_market_data)
         added_tradable = sorted(set(candidate.tradable_symbols) - previous_tradable)
@@ -296,20 +380,23 @@ class MarketScanner:
             )
 
     async def _handle_payload(self, payload: Any) -> None:
+        ingress_received_at_ms = self.clock.now_ms()
         if self.raw_recorder is not None:
             try:
                 await self.raw_recorder.append(
-                    self.market, payload, self.clock.now_ms()
+                    self.market, payload, ingress_received_at_ms
                 )
-            except RawEventCapacityError as exc:
+            except RawEventRecorderFatalError as exc:
                 LOGGER.critical(
-                    "raw market-evidence quota exhausted; stopping scanner",
+                    "raw market-evidence recorder fatal; failing closed",
                     extra={"market": self.market.value},
                     exc_info=exc,
                 )
                 self.stop_event.set()
                 return
-        await self.runtime.handle_payload(payload)
+        await self.runtime.handle_payload(
+            payload, received_at_ms=ingress_received_at_ms
+        )
 
     async def _funding_refresh_loop(self) -> None:
         """Refresh settled public funding until cancellation or the shared stop event."""
@@ -376,7 +463,19 @@ class MarketScanner:
                     self.settings.binance.bootstrap_candles,
                     now_ms=self.clock.now_ms(),
                 )
-            self.runtime.bootstrap(candles, rebuild=False)
+            try:
+                self.runtime.bootstrap(candles, rebuild=False)
+            except ValueError as exc:
+                LOGGER.error(
+                    "bootstrap history rejected; deferring signals for symbol/interval",
+                    extra={
+                        "market": self.market.value,
+                        "symbol": symbol,
+                        "interval": interval,
+                        "reason": str(exc),
+                    },
+                )
+                return
             if self.settings.runtime.persist_candles:
                 self.runtime.repository.save_candles(candles)
 
