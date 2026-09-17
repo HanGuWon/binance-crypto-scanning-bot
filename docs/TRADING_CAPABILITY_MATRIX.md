@@ -29,6 +29,13 @@ The scanner has no private Binance client and no order endpoint. The current
 paper-position lifecycle is an alert and research aid; its technical exits do
 not create exchange orders.
 
+Futures LONG remains unsupported as an operational entry candidate. Futures
+SHORT retains its existing alert-only family shape, but it has no successor
+promotion receipt. The bidirectional successor contract is registered in
+`config/research.futures-bidirectional.v1.yaml` and is intentionally
+`WAITING_FOR_AUTHORITY`; each direction needs its own historical and forward
+receipt before recommendation wiring can change.
+
 ## Ownership and incident rule
 
 The process owner who holds a credential also owns its rotation and revocation.
