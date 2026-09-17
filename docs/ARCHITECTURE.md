@@ -33,7 +33,11 @@ persistence, notification, and shutdown services.
    deterministic event IDs, reasons, invalidation, rule version, and cooldown
    behavior.
 
-No component in this path calls an order endpoint.
+No component in this path calls an order endpoint. The scanner is public-data
+only and produces recommendations and warnings. Any future position Guardian
+is a separate private-read, stop-only process, while Freqtrade automation is
+restricted to a dedicated account; see
+[`TRADING_CAPABILITY_MATRIX.md`](TRADING_CAPABILITY_MATRIX.md).
 
 Live Discord titles translate the existing final decision state into a direct
 Korean recommendation (`상승 예상`, `하락 예상`, or `진입 보류`). The displayed
@@ -172,3 +176,14 @@ awaits Discord HTTP. A separate outbox worker owns provider I/O, so webhook
 latency, rate limiting, and ambiguous transport outcomes cannot block Binance
 WebSocket processing. The worker sends only already-persisted immutable alert
 intents.
+
+## Recommendation boundary
+
+The recommendation core is a pure projection boundary after the signal state
+machine. It preserves the source event ID, reasons, failed gates,
+invalidation, rule version, and a deterministic projection ID. Only a fully
+confirmed, directionally valid decision can become an entry candidate. Watch
+and setup states, informational pullbacks, failed gates, stale context, and
+directionally invalid stops become `NO_ENTRY`; pump and crash anomalies remain
+risk warnings. Ranking filters expired recommendations and never converts a
+rule-strength score into a probability.

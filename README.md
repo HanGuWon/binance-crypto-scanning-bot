@@ -4,6 +4,14 @@ An executable, alert-first Python service for Binance Spot and USDⓈ-M perpetua
 
 This repository intentionally **does not place orders**. Spot sell/exit suggestions and futures short suggestions are distinct. Public market data requires no Binance API key.
 
+The first trading-oriented boundary is recommendation-only: the scanner emits
+`LONG`, `SHORT`, or `NO_ENTRY` envelopes with reasons, blockers, invalidation,
+expiry, and deterministic IDs. It has no private account access and no order
+placement path. The planned Position Guardian is stop-only for explicitly
+assigned positions, while Freqtrade automation is isolated to a dedicated
+account. See [`docs/TRADING_CAPABILITY_MATRIX.md`](docs/TRADING_CAPABILITY_MATRIX.md)
+and [`docs/TRADING_EVENT_CONTRACTS.md`](docs/TRADING_EVENT_CONTRACTS.md).
+
 ## Implemented vertical slice
 
 - Binance Spot and USDⓈ-M public REST adapters.
