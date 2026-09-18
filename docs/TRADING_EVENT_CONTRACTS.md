@@ -50,16 +50,34 @@ envelope is not eligible for ranking or reuse.
 
 ## ProtectionContext
 
-The future Guardian may create a protection context only from a closed candle:
+The scanner creates a protection context only from a fully closed candle. The
+current wire contract is `protection-context-v1` and contains:
 
 ```text
-closed_candle_time_ms, close, atr, confirmed_structure_boundary,
-trend_status, data_completeness, source_event_id, context_version
+context_id, context_version, source_decision_clock_id, market, symbol,
+primary_interval, candle_open_time_ms, candle_close_time_ms,
+source_candle_closed, close, atr, confirmed_swing_support,
+confirmed_swing_resistance, trend_state, consecutive_trend_failure_count,
+data_completeness, context_freshness_ms, higher_timeframes
 ```
 
 An open candle, a future timestamp, incomplete required data, or stale
 higher-timeframe context produces no stop intent. `null` structure boundary
 means unknown; it is not the same as a strategy that has no boundary.
+
+Guardian consumers must inspect `context_version` before using the payload.
+Version strings have the form `protection-context-v<major>`; the current
+consumer contract supports major version `1` only. Older `v0`, newer `v2+`,
+missing versions, and malformed version strings are rejected as unsupported
+before policy evaluation. Merely constructing a `ProtectionContext` model does
+not grant compatibility with an unsupported major version.
+
+Unknown top-level fields on a `v1` payload are transport extensions and are
+ignored by a `v1` consumer. They must not change the v1 semantic payload or its
+`context_id`. A field that changes identity, stop-policy meaning, required
+validation, or safety semantics requires a new major version. Known required
+v1 fields still undergo normal schema and deterministic-ID validation, so a
+missing, malformed, or identity-conflicting known field is rejected.
 
 ## ManagedPositionSnapshot
 
