@@ -9,6 +9,7 @@ from signalbot.domain.enums import Direction, Market, SignalFamily, SignalStage
 from signalbot.domain.models import Candle, MiniTicker, RuleEvaluation, SignalDecision
 from signalbot.persistence.repository import SqlRepository
 from signalbot.runtime import MarketRuntime
+from signalbot.signals.protection_context import ProtectionContext
 
 
 @pytest.mark.asyncio
@@ -78,6 +79,195 @@ async def test_runtime_ignores_open_candle_and_runs_intrabar_anomaly_pipeline() 
     assert decisions[0].family is SignalFamily.PUMP_RISK
     assert decisions[0].stage is SignalStage.CONFIRMED
     assert repo.recent_signals() == decisions
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_emits_one_context_from_the_existing_closed_candle_feature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings.model_validate(
+        {
+            "binance": {
+                "markets": ["spot"],
+                "intervals": ["5m", "15m"],
+                "primary_interval": "5m",
+            },
+            "storage": {"url": "sqlite:///:memory:"},
+        }
+    )
+    repo = SqlRepository(settings.storage.url)
+    repo.initialize()
+    emitted: list[ProtectionContext] = []
+
+    async def collect_context(context: ProtectionContext) -> None:
+        emitted.append(context)
+
+    async def discard(_decision: SignalDecision) -> None:
+        return None
+
+    runtime = MarketRuntime(
+        Market.SPOT,
+        settings,
+        repo,
+        ReplayClock(),
+        discard,
+        protection_context_handler=collect_context,
+    )
+    runtime.set_active_symbols(frozenset({"BTCUSDT"}), frozenset({"BTCUSDT"}))
+    candle = make_candle(1, market=Market.SPOT, symbol="BTCUSDT")
+    feature = make_feature(
+        market=Market.SPOT,
+        symbol="BTCUSDT",
+        interval="5m",
+        event_time_ms=candle.close_time_ms,
+        price=float(candle.close),
+        atr=2.5,
+    )
+    observed_features: list[object] = []
+    monkeypatch.setattr(
+        runtime,
+        "_update_derived_for_candle",
+        lambda _candle: feature,
+    )
+    monkeypatch.setattr(
+        runtime.rule_engine,
+        "evaluate",
+        lambda current, _contexts: observed_features.append(current) or [],
+    )
+
+    await runtime.handle_event(candle)
+    await runtime.handle_event(candle)
+
+    assert observed_features == [feature]
+    assert len(emitted) == 1
+    assert emitted[0].source_decision_clock_id == "spot:BTCUSDT:5m:599999"
+    assert emitted[0].close == float(candle.close)
+    assert emitted[0].atr == feature.atr
+    assert runtime.protection_context_error_count == 0
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_id_is_stable_across_gap_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings.model_validate(
+        {
+            "binance": {
+                "markets": ["spot"],
+                "intervals": ["5m"],
+                "primary_interval": "5m",
+            },
+            "storage": {"url": "sqlite:///:memory:"},
+        }
+    )
+    target = make_candle(2, market=Market.SPOT, symbol="BTCUSDT")
+    target_feature = make_feature(
+        market=Market.SPOT,
+        symbol="BTCUSDT",
+        interval="5m",
+        event_time_ms=target.close_time_ms,
+    )
+
+    async def discard(_decision: SignalDecision) -> None:
+        return None
+
+    async def run_runtime(*, with_gap: bool) -> ProtectionContext:
+        repo = SqlRepository(settings.storage.url)
+        repo.initialize()
+        emitted: list[ProtectionContext] = []
+
+        async def collect_context(context: ProtectionContext) -> None:
+            emitted.append(context)
+
+        async def recover(_gap: object) -> list[Candle]:
+            return [make_candle(1, market=Market.SPOT, symbol="BTCUSDT")]
+
+        runtime = MarketRuntime(
+            Market.SPOT,
+            settings,
+            repo,
+            ReplayClock(),
+            discard,
+            recover if with_gap else None,
+            protection_context_handler=collect_context,
+        )
+        runtime.set_active_symbols(frozenset({"BTCUSDT"}), frozenset({"BTCUSDT"}))
+        monkeypatch.setattr(
+            runtime,
+            "_update_derived_for_candle",
+            lambda candle: target_feature if candle.open_time_ms == target.open_time_ms else None,
+        )
+        monkeypatch.setattr(runtime.rule_engine, "evaluate", lambda *_args: [])
+        if with_gap:
+            runtime.bootstrap([make_candle(0, market=Market.SPOT, symbol="BTCUSDT")])
+        await runtime.handle_event(target)
+        assert len(emitted) == 1
+        context = emitted[0]
+        repo.close()
+        return context
+
+    direct = await run_runtime(with_gap=False)
+    replayed = await run_runtime(with_gap=True)
+    assert direct.context_id == replayed.context_id
+    assert direct.source_decision_clock_id == replayed.source_decision_clock_id
+
+
+@pytest.mark.asyncio
+async def test_context_builder_failure_does_not_change_source_signal_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings.model_validate(
+        {
+            "binance": {"markets": ["spot"], "intervals": ["5m"]},
+            "storage": {"url": "sqlite:///:memory:"},
+        }
+    )
+    repo = SqlRepository(settings.storage.url)
+    repo.initialize()
+    decisions: list[SignalDecision] = []
+
+    async def collect(decision: SignalDecision) -> None:
+        decisions.append(decision)
+
+    runtime = MarketRuntime(Market.SPOT, settings, repo, ReplayClock(), collect)
+    runtime.set_active_symbols(frozenset({"BTCUSDT"}), frozenset({"BTCUSDT"}))
+    candle = make_candle(1, market=Market.SPOT, symbol="BTCUSDT")
+    feature = make_feature(
+        market=Market.SPOT,
+        symbol="BTCUSDT",
+        interval="5m",
+        event_time_ms=candle.close_time_ms,
+    )
+    evaluation = RuleEvaluation(
+        market=Market.SPOT,
+        symbol="BTCUSDT",
+        family=SignalFamily.BREAKOUT_LONG,
+        direction=Direction.LONG,
+        timeframe="5m",
+        event_time_ms=candle.close_time_ms,
+        score=85,
+        triggered=True,
+        eligible=True,
+        price=Decimal("100"),
+        reasons=("test trigger",),
+        invalidation=Decimal("98"),
+    )
+    monkeypatch.setattr(runtime, "_update_derived_for_candle", lambda _candle: feature)
+    monkeypatch.setattr(runtime.rule_engine, "evaluate", lambda *_args: [evaluation])
+
+    def fail_builder(**_kwargs: object) -> ProtectionContext:
+        raise ValueError("injected context build failure")
+
+    monkeypatch.setattr(ProtectionContext, "from_closed_candle", fail_builder)
+
+    await runtime.handle_event(candle)
+
+    assert len(decisions) == 1
+    assert decisions[0].event_time_ms == candle.close_time_ms
+    assert len(repo.recent_signals()) == 1
+    assert runtime.protection_context_error_count == 1
     repo.close()
 
 

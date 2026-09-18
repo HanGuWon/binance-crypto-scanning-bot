@@ -36,11 +36,13 @@ from signalbot.signals.positions import (
     PaperLifecycleCheckpoint,
     PaperPositionLifecycle,
 )
+from signalbot.signals.protection_context import ProtectionContext
 from signalbot.signals.rules import SignalRuleEngine
 from signalbot.signals.state_machine import SignalStateMachine
 
 LOGGER = logging.getLogger(__name__)
 DecisionHandler = Callable[[SignalDecision], Awaitable[object]]
+ProtectionContextHandler = Callable[[ProtectionContext], Awaitable[object]]
 GapRecoverer = Callable[[CandleGap], Awaitable[list[Candle]]]
 FEATURE_HISTORY_LIMIT = 4
 
@@ -55,6 +57,7 @@ class MarketRuntime:
         decision_handler: DecisionHandler,
         gap_recoverer: GapRecoverer | None = None,
         campaign_id: str | None = None,
+        protection_context_handler: ProtectionContextHandler | None = None,
     ) -> None:
         self.market = market
         self.settings = settings
@@ -62,6 +65,7 @@ class MarketRuntime:
         self.clock = clock
         self.decision_handler = decision_handler
         self.gap_recoverer = gap_recoverer
+        self.protection_context_handler = protection_context_handler
         self.candles = CandleStore(settings.binance.history_limit)
         self.order_flow = OrderFlowTracker()
         self.books = BookState()
@@ -111,6 +115,7 @@ class MarketRuntime:
         ] = {}
         self.decision_count = 0
         self.parse_error_count = 0
+        self.protection_context_error_count = 0
 
     def restore_persisted_state(self) -> None:
         """Restore alert cooldowns from durable signal rows after restart."""
@@ -408,6 +413,47 @@ class MarketRuntime:
                     exc_info=exc,
                     extra={"market": self.market.value, "symbol": candle.symbol},
                 )
+        await self._emit_protection_context(candle, feature, contexts)
+
+    async def _emit_protection_context(
+        self,
+        candle: Candle,
+        feature: FeatureSnapshot,
+        contexts: dict[str, FeatureSnapshot],
+    ) -> None:
+        """Build and optionally hand off one deterministic closed-candle context.
+
+        The context is composed from the feature and strictly-prior HTF snapshots
+        already produced by this runtime. Errors are isolated after the source
+        signal/PAPER/shadow path has completed so Guardian context cannot alter it.
+        """
+
+        try:
+            context = ProtectionContext.from_closed_candle(
+                candle=candle,
+                feature=feature,
+                higher_timeframe_contexts=contexts,
+                source_decision_clock_id=self._decision_clock_id(candle),
+            )
+            if self.protection_context_handler is not None:
+                await self.protection_context_handler(context)
+        except Exception as exc:
+            self.protection_context_error_count += 1
+            LOGGER.error(
+                "protection context failed; source signal path unchanged",
+                exc_info=exc,
+                extra={
+                    "market": self.market.value,
+                    "symbol": candle.symbol,
+                    "candle_close_time_ms": candle.close_time_ms,
+                },
+            )
+
+    def _decision_clock_id(self, candle: Candle) -> str:
+        return (
+            f"{candle.market.value}:{candle.symbol}:{candle.interval}:"
+            f"{candle.close_time_ms}"
+        )
 
     async def _recover_gap(self, gap: CandleGap) -> bool:
         if self.gap_recoverer is None:
