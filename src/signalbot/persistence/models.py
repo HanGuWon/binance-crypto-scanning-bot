@@ -88,6 +88,41 @@ class OutcomeRow(Base):
     observed_until_ms: Mapped[int] = mapped_column(BigInteger)
 
 
+class ProtectionContextRow(Base):
+    """Immutable closed-candle protection context event."""
+
+    __tablename__ = "protection_contexts"
+    __table_args__ = (
+        UniqueConstraint(
+            "market",
+            "symbol",
+            "primary_interval",
+            "candle_close_time_ms",
+            name="uq_protection_context_clock",
+        ),
+    )
+    context_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    market: Mapped[str] = mapped_column(String(16), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    primary_interval: Mapped[str] = mapped_column(String(8), index=True)
+    candle_close_time_ms: Mapped[int] = mapped_column(BigInteger, index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_sha256: Mapped[str] = mapped_column(String(64))
+    created_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
+class ProtectionContextLatestRow(Base):
+    """Mutable index pointing at the newest immutable context per stream."""
+
+    __tablename__ = "protection_context_latest"
+    market: Mapped[str] = mapped_column(String(16), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    primary_interval: Mapped[str] = mapped_column(String(8), primary_key=True)
+    context_id: Mapped[str] = mapped_column(String(64), index=True)
+    candle_close_time_ms: Mapped[int] = mapped_column(BigInteger, index=True)
+    updated_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
 class ShadowObservationRow(Base):
     """One durable prospective comparator observation for a raw C0 opportunity.
 

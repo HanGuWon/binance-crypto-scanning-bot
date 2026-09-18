@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import create_engine, desc, func, inspect, select, update
+from sqlalchemy import create_engine, delete, desc, func, inspect, select, update
 from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -20,6 +20,8 @@ from signalbot.persistence.models import (
     Base,
     CandleRow,
     OutcomeRow,
+    ProtectionContextLatestRow,
+    ProtectionContextRow,
     RetestLifecycleRow,
     RetestTransitionRow,
     ShadowCampaignRow,
@@ -27,6 +29,7 @@ from signalbot.persistence.models import (
     ShadowObservationRow,
     SignalRow,
 )
+from signalbot.signals.protection_context import ProtectionContext
 
 
 class EventIdConflictError(RuntimeError):
@@ -37,11 +40,16 @@ class OutboxCapacityError(RuntimeError):
     """Raised before persisting a signal when active delivery intent is full."""
 
 
+class ProtectionContextCursorError(RuntimeError):
+    """Raised when a protection-context cursor can no longer be resolved safely."""
+
+
 _RETEST_STAGES = frozenset(
     {"RAW_C0", "ARMED", "RETEST_TOUCH", "READY", "INVALID", "TIMEOUT", "CENSORED"}
 )
 _RETEST_TERMINAL_STAGES = frozenset({"READY", "INVALID", "TIMEOUT", "CENSORED"})
 _SQLITE_BUSY_TIMEOUT_SECONDS = 2.0
+_DEFAULT_PROTECTION_CONTEXT_RETENTION_PER_STREAM = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +69,15 @@ class OutboxItem:
 def _signal_payload(decision: SignalDecision) -> str:
     return json.dumps(
         decision.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False
+    )
+
+
+def _protection_context_payload(context: ProtectionContext) -> str:
+    return json.dumps(
+        context.model_dump(mode="json"),
+        separators=(",", ":"),
+        sort_keys=True,
+        ensure_ascii=False,
     )
 
 
@@ -1372,6 +1389,192 @@ class SqlRepository:
         with Session(self.engine) as session:
             rows = session.scalars(statement).all()
         return [SignalDecision.model_validate(json.loads(row.payload_json)) for row in rows]
+
+    def save_protection_context(
+        self,
+        context: ProtectionContext,
+        *,
+        created_at_ms: int,
+        retention_per_stream: int = _DEFAULT_PROTECTION_CONTEXT_RETENTION_PER_STREAM,
+    ) -> bool:
+        """Persist one immutable context and advance its latest pointer atomically."""
+
+        if created_at_ms < 0:
+            raise ValueError("created_at_ms must be non-negative")
+        if retention_per_stream < 1:
+            raise ValueError("retention_per_stream must be positive")
+
+        validated = ProtectionContext.model_validate(context.model_dump(mode="json"))
+        payload = _protection_context_payload(validated)
+        payload_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        stream_filters = (
+            ProtectionContextRow.market == validated.market.value,
+            ProtectionContextRow.symbol == validated.symbol,
+            ProtectionContextRow.primary_interval == validated.primary_interval,
+        )
+
+        with Session(self.engine) as session:
+            existing = session.get(ProtectionContextRow, validated.context_id)
+            if existing is not None:
+                if (
+                    existing.payload_json != payload
+                    or existing.payload_sha256 != payload_sha256
+                ):
+                    raise EventIdConflictError(
+                        f"context ID {validated.context_id} maps to conflicting payloads"
+                    )
+                return False
+
+            same_clock = session.scalar(
+                select(ProtectionContextRow).where(
+                    *stream_filters,
+                    ProtectionContextRow.candle_close_time_ms
+                    == validated.candle_close_time_ms,
+                )
+            )
+            if same_clock is not None:
+                raise EventIdConflictError(
+                    "protection-context decision clock maps to multiple payloads"
+                )
+
+            session.add(
+                ProtectionContextRow(
+                    context_id=validated.context_id,
+                    market=validated.market.value,
+                    symbol=validated.symbol,
+                    primary_interval=validated.primary_interval,
+                    candle_close_time_ms=validated.candle_close_time_ms,
+                    payload_json=payload,
+                    payload_sha256=payload_sha256,
+                    created_at_ms=created_at_ms,
+                )
+            )
+            session.flush()
+
+            latest_key = {
+                "market": validated.market.value,
+                "symbol": validated.symbol,
+                "primary_interval": validated.primary_interval,
+            }
+            latest = session.get(ProtectionContextLatestRow, latest_key)
+            if latest is None:
+                session.add(
+                    ProtectionContextLatestRow(
+                        **latest_key,
+                        context_id=validated.context_id,
+                        candle_close_time_ms=validated.candle_close_time_ms,
+                        updated_at_ms=created_at_ms,
+                    )
+                )
+            elif validated.candle_close_time_ms > latest.candle_close_time_ms:
+                latest.context_id = validated.context_id
+                latest.candle_close_time_ms = validated.candle_close_time_ms
+                latest.updated_at_ms = created_at_ms
+
+            cutoff_close_ms = session.scalar(
+                select(ProtectionContextRow.candle_close_time_ms)
+                .where(*stream_filters)
+                .order_by(
+                    desc(ProtectionContextRow.candle_close_time_ms),
+                    desc(ProtectionContextRow.context_id),
+                )
+                .offset(retention_per_stream - 1)
+                .limit(1)
+            )
+            if cutoff_close_ms is not None:
+                session.execute(
+                    delete(ProtectionContextRow).where(
+                        *stream_filters,
+                        ProtectionContextRow.candle_close_time_ms < cutoff_close_ms,
+                    )
+                )
+            session.commit()
+            return True
+
+    def list_protection_contexts(
+        self,
+        *,
+        market: Market,
+        symbol: str,
+        primary_interval: str,
+        limit: int = 100,
+        after_context_id: str | None = None,
+        after_close_time_ms: int | None = None,
+    ) -> list[ProtectionContext]:
+        """Read a bounded ascending context page from one stream."""
+
+        if limit < 1 or limit > 1000:
+            raise ValueError("protection-context limit must be between 1 and 1000")
+        if after_context_id is not None and after_close_time_ms is not None:
+            raise ValueError("use only one protection-context cursor")
+        if after_close_time_ms is not None and after_close_time_ms < 0:
+            raise ValueError("after_close_time_ms must be non-negative")
+
+        normalized_symbol = symbol.upper().strip()
+        if not normalized_symbol:
+            raise ValueError("symbol must not be blank")
+
+        with Session(self.engine) as session:
+            cursor_close_ms = after_close_time_ms
+            if after_context_id is not None:
+                cursor = session.get(ProtectionContextRow, after_context_id)
+                if (
+                    cursor is None
+                    or cursor.market != market.value
+                    or cursor.symbol != normalized_symbol
+                    or cursor.primary_interval != primary_interval
+                ):
+                    raise ProtectionContextCursorError(
+                        "protection-context cursor is missing or belongs to another stream"
+                    )
+                cursor_close_ms = cursor.candle_close_time_ms
+
+            statement = (
+                select(ProtectionContextRow)
+                .where(
+                    ProtectionContextRow.market == market.value,
+                    ProtectionContextRow.symbol == normalized_symbol,
+                    ProtectionContextRow.primary_interval == primary_interval,
+                )
+                .order_by(
+                    ProtectionContextRow.candle_close_time_ms,
+                    ProtectionContextRow.context_id,
+                )
+                .limit(limit)
+            )
+            if cursor_close_ms is not None:
+                statement = statement.where(
+                    ProtectionContextRow.candle_close_time_ms > cursor_close_ms
+                )
+            rows = session.scalars(statement).all()
+
+        return [
+            ProtectionContext.model_validate(json.loads(row.payload_json)) for row in rows
+        ]
+
+    def latest_protection_context(
+        self,
+        *,
+        market: Market,
+        symbol: str,
+        primary_interval: str,
+    ) -> ProtectionContext | None:
+        normalized_symbol = symbol.upper().strip()
+        if not normalized_symbol:
+            raise ValueError("symbol must not be blank")
+        key = {
+            "market": market.value,
+            "symbol": normalized_symbol,
+            "primary_interval": primary_interval,
+        }
+        with Session(self.engine) as session:
+            latest = session.get(ProtectionContextLatestRow, key)
+            if latest is None:
+                return None
+            row = session.get(ProtectionContextRow, latest.context_id)
+            if row is None or row.candle_close_time_ms != latest.candle_close_time_ms:
+                raise EventIdConflictError("protection-context latest pointer is inconsistent")
+            return ProtectionContext.model_validate(json.loads(row.payload_json))
 
     def save_outcome(
         self,

@@ -13,6 +13,7 @@ from signalbot.domain.models import SignalDecision
 from signalbot.persistence.repository import SqlRepository
 from signalbot.runtime import MarketRuntime
 from signalbot.scanner import MarketScanner
+from signalbot.signals.protection_context import ProtectionContext
 
 LOGGER = logging.getLogger(__name__)
 
@@ -76,6 +77,13 @@ class SignalApplication:
         )
         return None
 
+    async def _persist_protection_context(self, context: ProtectionContext) -> object:
+        self.repository.save_protection_context(
+            context,
+            created_at_ms=self.clock.now_ms(),
+        )
+        return None
+
     async def run(self) -> None:
         self.repository.initialize()
         self.notifier = DiscordNotifier(self.settings.alerts, self.repository, self.clock)
@@ -99,6 +107,7 @@ class SignalApplication:
                 self.repository,
                 self.clock,
                 self._after_decision_persisted,
+                protection_context_handler=self._persist_protection_context,
             )
             restore = getattr(runtime, "restore_persisted_state", None)
             if callable(restore):

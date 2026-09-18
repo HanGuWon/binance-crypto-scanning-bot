@@ -11,6 +11,7 @@ async def test_application_market_runtime_does_not_use_notifier_send(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     handlers: list[object] = []
+    protection_handlers: list[object] = []
 
     class FakeNotifier:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -36,8 +37,10 @@ async def test_application_market_runtime_does_not_use_notifier_send(
             _repository: object,
             _clock: object,
             decision_handler: object,
+            protection_context_handler: object | None = None,
         ) -> None:
             handlers.append(decision_handler)
+            protection_handlers.append(protection_context_handler)
 
     class FakeScanner:
         def __init__(
@@ -71,3 +74,4 @@ async def test_application_market_runtime_does_not_use_notifier_send(
     await application.run()
 
     assert handlers == [application._after_decision_persisted]
+    assert protection_handlers == [application._persist_protection_context]
