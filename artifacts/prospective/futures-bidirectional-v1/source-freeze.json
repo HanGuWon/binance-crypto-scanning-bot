@@ -1,0 +1,999 @@
+{
+  "files": [
+    {
+      "path": "pyproject.toml",
+      "sha256": "06132a7a371b34185aea130b9742a28eeedaf4ae4252ecc207482f08d13f48d8"
+    },
+    {
+      "path": "src/signalbot/__init__.py",
+      "sha256": "9784ea04968e59de77cf5890f53a6cc7d22c2c62e47fc0215ee276db8527cd09"
+    },
+    {
+      "path": "src/signalbot/__main__.py",
+      "sha256": "3e2abe9ca3d0e6b8670e7e1eeebc499190d810b698ca3d7cfc78f82591b8875b"
+    },
+    {
+      "path": "src/signalbot/alerts/__init__.py",
+      "sha256": "ddf4467fa9167923f7eecb3df90acbf48147e300668963ffa7a6d745b06c8f8f"
+    },
+    {
+      "path": "src/signalbot/alerts/discord.py",
+      "sha256": "759a26867ef1fa89b8003005e96d2f329983c22e3f01cca99d9e1c22254cccf7"
+    },
+    {
+      "path": "src/signalbot/alerts/embeds.py",
+      "sha256": "9e12e85fac15d2b426c9c21096ee7fb6bebe2b9c016871f3130dfe915bd27aa7"
+    },
+    {
+      "path": "src/signalbot/api/__init__.py",
+      "sha256": "3a9e08621b885d9f87bc4e6a2fd469ca1228feda01375749b788e39487a85ff4"
+    },
+    {
+      "path": "src/signalbot/api/server.py",
+      "sha256": "a0012061719fbe2285059c5509c93cd10d00f498368bc4984701b745fe6656aa"
+    },
+    {
+      "path": "src/signalbot/app.py",
+      "sha256": "3142250f6e66cdfe92a4f760e9f22a0d12b2a4af54ba598f3692915cf22b5dd0"
+    },
+    {
+      "path": "src/signalbot/backtest/__init__.py",
+      "sha256": "81d5be3df578f518b5280dd8778497c769f9ac0a72e560feff3e8816d6760a1d"
+    },
+    {
+      "path": "src/signalbot/backtest/alert_filter.py",
+      "sha256": "f4632a15cfe2462aaa196aff7495f6fe79bd61271e6e61559d580784a7eb2d03"
+    },
+    {
+      "path": "src/signalbot/backtest/alert_replay.py",
+      "sha256": "8c6945f6441d20c4aca1907581073adbf8d777e12f72b183b1bd13b3a2822765"
+    },
+    {
+      "path": "src/signalbot/backtest/analysis.py",
+      "sha256": "9cd34e58de706b5fd7f137cbbfac48c29162c5e5760602faa5dcbe297e467069"
+    },
+    {
+      "path": "src/signalbot/backtest/calibration.py",
+      "sha256": "ce209ce36621e8fc3f5b9e8c7d568c35bec92a9fbf74a17860b613669e9a9f84"
+    },
+    {
+      "path": "src/signalbot/backtest/carry.py",
+      "sha256": "855595f9a2a0c152f816e1c92e7ff21b090f9cd376765c0d7a188d06b7996a54"
+    },
+    {
+      "path": "src/signalbot/backtest/carry_runner.py",
+      "sha256": "70893c8232391fdc499f62c10468fa673ec2c73aeccf4966128d12ac3ff2a9df"
+    },
+    {
+      "path": "src/signalbot/backtest/comparison.py",
+      "sha256": "cf6fcdec251ff0ef67e6b8a24227cfedd44f95d0bef6786146466157e443e4c4"
+    },
+    {
+      "path": "src/signalbot/backtest/config.py",
+      "sha256": "6844f58a25b6686b464c8106264213c78b9e82bb557fdbde6cb1969bc13d21e2"
+    },
+    {
+      "path": "src/signalbot/backtest/context.py",
+      "sha256": "cb3591ff0fef7eed6529096f7ff1de0efb86cc36ca83c73e9894aca2c40f7871"
+    },
+    {
+      "path": "src/signalbot/backtest/d1_scefb_historical_attempt_wal.py",
+      "sha256": "7afa5d962a2340fd3c049cdc35dfa8286aa4ddda090f1ed1d8d7633666f6759e"
+    },
+    {
+      "path": "src/signalbot/backtest/d1_scefb_historical_development.py",
+      "sha256": "9a53b4e47fc8c2adfb3568b0ddc1706de1191e863b55cb41c0f5b027023d340a"
+    },
+    {
+      "path": "src/signalbot/backtest/d1_scefb_historical_math.py",
+      "sha256": "1603ff0cc7f9ad80bcb113395282f3108808a02942b04beba2bfd85915603106"
+    },
+    {
+      "path": "src/signalbot/backtest/d1_scefb_historical_operator.py",
+      "sha256": "2c14c7e66618232398d28479fac950c6dd1ccbd160919efa1595c6c8b4bb92e6"
+    },
+    {
+      "path": "src/signalbot/backtest/d2_scefb_derived_hourly_historical.py",
+      "sha256": "1eaea0a3b107016210ba51b7adb0c3d1604e9aa291c75ead41a85ae5d875df0a"
+    },
+    {
+      "path": "src/signalbot/backtest/d2_scefb_historical_development.py",
+      "sha256": "17e99b4a394a25cb8c6b6b381e1cb385d10868b266dc5eb8af8522fd3786f847"
+    },
+    {
+      "path": "src/signalbot/backtest/d2_scefb_historical_operator.py",
+      "sha256": "4b4beea20f56c0e0f8139271e58e380fc7a50040b8ce3c2146e935485a9fc80e"
+    },
+    {
+      "path": "src/signalbot/backtest/dataset.py",
+      "sha256": "f56c928e2b904437776f9dc243cbf53609fdec1cd4258706f1dfa2730842ef28"
+    },
+    {
+      "path": "src/signalbot/backtest/downstream_code_freeze.py",
+      "sha256": "261d2f3bc795bac42a8eb36541d5e99b17ceb8542b4264b90da206ad839f4ad0"
+    },
+    {
+      "path": "src/signalbot/backtest/engine.py",
+      "sha256": "76fc746916d52c9a6e3cdf61e9b60ce494e27273a28714128e5cbe4a35a1f963"
+    },
+    {
+      "path": "src/signalbot/backtest/funding.py",
+      "sha256": "c2f13af537eb663c7de3cab7ed595518463000a365fd51ac113e86d910394c19"
+    },
+    {
+      "path": "src/signalbot/backtest/historical_three_family_analysis.py",
+      "sha256": "a2e3ccad462d7f3dbfe59aad610ce99cc5a6d1520e10e0ffa921d853b3107700"
+    },
+    {
+      "path": "src/signalbot/backtest/historical_three_family_census.py",
+      "sha256": "79e49646720877e0d1ec96e13f7116a698a41596995e57a84b0fdc4e139619a0"
+    },
+    {
+      "path": "src/signalbot/backtest/historical_three_family_conflicted_adapter.py",
+      "sha256": "0e02dacaec90f08410ba21dec6bc70a051d497778944048696d80ee8c88445e8"
+    },
+    {
+      "path": "src/signalbot/backtest/historical_three_family_conflicted_outcomes.py",
+      "sha256": "cc3ae66d39778fb31b4d8b40b197ae0fddf6eff156166c7976b637282a053c48"
+    },
+    {
+      "path": "src/signalbot/backtest/historical_three_family_outcomes.py",
+      "sha256": "af29960887bdea9b52c95d7183da8bd431732b5165d2ab7a4f82a00d398ba677"
+    },
+    {
+      "path": "src/signalbot/backtest/historical_three_family_report.py",
+      "sha256": "0dd78552eb93a374b5070035b51e2f0956a28333b9b7e9583abea62cd7d6a23f"
+    },
+    {
+      "path": "src/signalbot/backtest/historical_three_family_te0.py",
+      "sha256": "61df7d92f7ec7a8ed7d8b1707550a5134ff60115a3beb1a8c0325180f2f83a12"
+    },
+    {
+      "path": "src/signalbot/backtest/historical_three_family_walk_forward.py",
+      "sha256": "0a3597ff275b8762e45de6195854ee5fff141f64a47b97d88bec9b5caf59a15a"
+    },
+    {
+      "path": "src/signalbot/backtest/indicator_analysis.py",
+      "sha256": "eb7da87031b3b34878772de66ddf12907fb3f5874a85c86d1556fded87d5e8e6"
+    },
+    {
+      "path": "src/signalbot/backtest/indicator_analysis_v1a.py",
+      "sha256": "733597fc37d932371e64acbd92acbe56bdb34e8c097585a9667260a1ea259516"
+    },
+    {
+      "path": "src/signalbot/backtest/labels.py",
+      "sha256": "fc9f111a0a139131db2f9c027ce45813f50736575fc2fc0d9dfc5dd88ff0b07e"
+    },
+    {
+      "path": "src/signalbot/backtest/outcomes.py",
+      "sha256": "1f98924537820eb22e7c845d13c949f5ee6eee34da40b4efe93f7789d831f2aa"
+    },
+    {
+      "path": "src/signalbot/backtest/r2.py",
+      "sha256": "fb743d5d8c0356c6f2150311e74c32ffebe43d7193a36d2060618867b5446712"
+    },
+    {
+      "path": "src/signalbot/backtest/r3.py",
+      "sha256": "e82771e57b604a131826b632f198c6e094d1cae145f6754388f736b3fb8f5eaf"
+    },
+    {
+      "path": "src/signalbot/backtest/r4.py",
+      "sha256": "6af6d9fe5bc3236ce285fd17d83eeb7a6da1f46e9e3db7160f890cf08541cccd"
+    },
+    {
+      "path": "src/signalbot/backtest/r4b.py",
+      "sha256": "4f1b2c940ea76a69575a97350cb6a498c1cc70694d6bc77f9b02f8eaf43eeca9"
+    },
+    {
+      "path": "src/signalbot/backtest/replay.py",
+      "sha256": "6134ca915d24cf8757b977d584f8d986e0dbe672a32dba366a85562d87e44d31"
+    },
+    {
+      "path": "src/signalbot/backtest/runner.py",
+      "sha256": "ebb6e85fdb607904f9494fb3cfc0d5a5b1dce78ce2dc68d010d0e4500bff8aec"
+    },
+    {
+      "path": "src/signalbot/backtest/verdict.py",
+      "sha256": "f4b9840c8a0c46bed186a55f5d274105455d991c610f8c1adcee7e6c785fa8c0"
+    },
+    {
+      "path": "src/signalbot/capture/__init__.py",
+      "sha256": "0bb4b78ef692acc7b97194c02d84e7659ea5f2e34f2ea5a18e3d5e9142e419f2"
+    },
+    {
+      "path": "src/signalbot/capture/canary_report.py",
+      "sha256": "00fe7e957060ab72932375b6b05a8e1ea01ba0f0fe4eeb67ba00ce8a76de4065"
+    },
+    {
+      "path": "src/signalbot/capture/cli.py",
+      "sha256": "60f2ecdd68951241d723af67c5bd230f2845ffe962ba8b7a3c6717d3d361106e"
+    },
+    {
+      "path": "src/signalbot/capture/clock_health_report.py",
+      "sha256": "80d0d1f06108ecbd136f39d05c7aef30c8b050821e9c4d788e02a1200212470f"
+    },
+    {
+      "path": "src/signalbot/capture/closed_evidence.py",
+      "sha256": "ff6f393c74b9688abc1ecaa2852f9482e01d947e2389c32de385e115641cbe07"
+    },
+    {
+      "path": "src/signalbot/capture/config.py",
+      "sha256": "bf79530859e3b135dc03d2e2dfe07ee9c5d8c1e16d982aa1ffa9ea37aadd87fb"
+    },
+    {
+      "path": "src/signalbot/capture/depth_coverage_report.py",
+      "sha256": "201c3a80b033c4b67517405c0cfcaa468131f930ff4c89978935b0260d5cdecf"
+    },
+    {
+      "path": "src/signalbot/capture/depth_sequence.py",
+      "sha256": "e18331f0e93411e25696f16d0be27d10bcc80978a65fa2e149a4f5b8fa558f15"
+    },
+    {
+      "path": "src/signalbot/capture/errors.py",
+      "sha256": "4c1ab534859cebb67397c7e6fef8b727349d5ddb3e52daac4608c95f4e338340"
+    },
+    {
+      "path": "src/signalbot/capture/handoff.py",
+      "sha256": "8f1a601d7a68fd599c2352e7d3650811dbeff65cd562de3792490511f1a00254"
+    },
+    {
+      "path": "src/signalbot/capture/live.py",
+      "sha256": "0fe65740f2cfa7fb49912b50cf1e577c9ac5c48f325e905686d808f57db81bd2"
+    },
+    {
+      "path": "src/signalbot/capture/local_book.py",
+      "sha256": "273d3c4d92aa4508d5b5ac961ba7dd5e0ca41e7f58dc65d818806b134395733f"
+    },
+    {
+      "path": "src/signalbot/capture/models.py",
+      "sha256": "f2abe85402d3471b4cf0a0cdff84fe1b7b615b71e5a14a8fb3b568b5d17b66e0"
+    },
+    {
+      "path": "src/signalbot/capture/path_safety.py",
+      "sha256": "4e83856e1a7ecb299bef9d2ea971205c43401f0cce4e9b9a5ec86071498e651f"
+    },
+    {
+      "path": "src/signalbot/capture/pipeline.py",
+      "sha256": "fe3e2af5b206b9e2401287316dc8716f0aec337dfe75a25d07c0f238e3f11306"
+    },
+    {
+      "path": "src/signalbot/capture/plans.py",
+      "sha256": "dceb069029d871602c4f2386adbf0722c3bf73723944b4f615264b1332a99204"
+    },
+    {
+      "path": "src/signalbot/capture/provenance.py",
+      "sha256": "ba7ae516cddd2d9ccb8d6b567fd2d5ec5e08bb5f66929b153cce5a943c8315ae"
+    },
+    {
+      "path": "src/signalbot/capture/receipts.py",
+      "sha256": "6e33da02f0b54362fddbc250ed92baf4096d7d64c7d63507bb47cffc35e827d4"
+    },
+    {
+      "path": "src/signalbot/capture/rest.py",
+      "sha256": "7aced38ffba790d22349daa59333b9aff70c5f82b2b6424321b6a4dc498d8302"
+    },
+    {
+      "path": "src/signalbot/capture/rest_scheduler.py",
+      "sha256": "4857082c1edd317125147e66c9ce4f9056d175be49628b9a40a75a6a076bf31b"
+    },
+    {
+      "path": "src/signalbot/capture/schema_registry.py",
+      "sha256": "82980b622e2d0476501f9434ca2eaf258df8e20494ec73d7fb93fa228d59ce49"
+    },
+    {
+      "path": "src/signalbot/capture/session.py",
+      "sha256": "601b352c0c0861e1fc87e442a5cd625cee9093809e89d1c555fe978749d8742c"
+    },
+    {
+      "path": "src/signalbot/capture/storage.py",
+      "sha256": "eb3b636be1cd52dfddf5fc717ffa322006421b82a9a56719bb366b2d8f13c85e"
+    },
+    {
+      "path": "src/signalbot/capture/websocket.py",
+      "sha256": "76196ed2ce0e021b1bfd72e7429c0d5ba1435cad0cd4fb5aae297073fd2e9679"
+    },
+    {
+      "path": "src/signalbot/capture/writer_lease.py",
+      "sha256": "66ca37d40b21ce37dd7695337df8daf105fa7ff406d1c38869318ad7c10b9f99"
+    },
+    {
+      "path": "src/signalbot/capture/ws_owner.py",
+      "sha256": "b0c6ffa30ff54e0055abd0df804600405ae7028346cbf2577c4c91caf060bd8c"
+    },
+    {
+      "path": "src/signalbot/cli.py",
+      "sha256": "9ad3df1fb3112d7b6b6a168d002526fe44dc1c8bb1c7b819ff078db82afc5ba2"
+    },
+    {
+      "path": "src/signalbot/clock.py",
+      "sha256": "5581449721926e084790b185e0bce60c68723b9f7e6a6d8b4a3f561d1f18e894"
+    },
+    {
+      "path": "src/signalbot/config.py",
+      "sha256": "8734f6213b73e9430da6858841b409d396ceab3ab7f034065bd15aa61613918f"
+    },
+    {
+      "path": "src/signalbot/data/__init__.py",
+      "sha256": "0253cafdcf200b43723313244b1b685609ec6bfe7afd615eb9aeddf63c7a2640"
+    },
+    {
+      "path": "src/signalbot/data/anomaly.py",
+      "sha256": "7a4c58471c176a9614bc1f33718a291c603cfb689e566df36a85458a038874c0"
+    },
+    {
+      "path": "src/signalbot/data/candles.py",
+      "sha256": "62b566d48c894bf28a97adb51c4e6cd8a0df6f4fa96e85432b7330d4499736e2"
+    },
+    {
+      "path": "src/signalbot/data/funding.py",
+      "sha256": "b6be97a35628c336f9f21da92527b046237274ffdf3a07d4b2b1dada4f2c6816"
+    },
+    {
+      "path": "src/signalbot/data/microstructure.py",
+      "sha256": "041ad057901a4761fdac12cf45e62ecafeb0670b24332b993a88e01dd149c3b8"
+    },
+    {
+      "path": "src/signalbot/data/raw_events.py",
+      "sha256": "92180307b628eae20f2b786bd61ca1db96fc1cf7271ee40319747a7deee29cbc"
+    },
+    {
+      "path": "src/signalbot/domain/__init__.py",
+      "sha256": "86a39f85e9923914ba463e5597bbba106550c11998d2b69987f6438d80de64e4"
+    },
+    {
+      "path": "src/signalbot/domain/enums.py",
+      "sha256": "79c747d8955bc6991c6f13902bfe46651aacbc6406ad5bd92208080781dc0a74"
+    },
+    {
+      "path": "src/signalbot/domain/models.py",
+      "sha256": "f7f9def765a9ffebfab0561f3e7c84b9783ed507f230c57b7e13aaf4860b1fb8"
+    },
+    {
+      "path": "src/signalbot/exchange/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "src/signalbot/exchange/binance/__init__.py",
+      "sha256": "f8d764fb58f65891df9d369761514af3551f916d0fbcb5bc212a3a8dadd8b537"
+    },
+    {
+      "path": "src/signalbot/exchange/binance/endpoints.py",
+      "sha256": "4ed220ce1431e2a5f7adc02e89e9ac46ecb3b44afdf0a500c2e7ca92ad4e4cd7"
+    },
+    {
+      "path": "src/signalbot/exchange/binance/rest.py",
+      "sha256": "5d05aa16b0f86c55a4a32a656abe24663b17f7e56f46cb267a0f0dd6a3ad0133"
+    },
+    {
+      "path": "src/signalbot/exchange/binance/schemas.py",
+      "sha256": "0b0b1e4f61eeec98ef2052f053b19ce17bfcd2de2a7fb8a8c4bbfca45bbdbe88"
+    },
+    {
+      "path": "src/signalbot/exchange/binance/universe.py",
+      "sha256": "4be4df04b7338fbe41f2ce7a2d8b8f04175d63b0948dd1efedd1e458cb041fc0"
+    },
+    {
+      "path": "src/signalbot/exchange/binance/websocket.py",
+      "sha256": "82aceda8af14cad82bc4ee9defb968a284d1068a2cf28c6ce3bae0d90cfa9129"
+    },
+    {
+      "path": "src/signalbot/indicators/__init__.py",
+      "sha256": "c13c7bf0a6c309bca3b0897ba27d189357cf122a6e7848e197db4bcdf4868375"
+    },
+    {
+      "path": "src/signalbot/indicators/core.py",
+      "sha256": "7ac200b898bcf7afc8834500cec34b620c4666318ff6d093d5060cac03e9fd6e"
+    },
+    {
+      "path": "src/signalbot/indicators/structure.py",
+      "sha256": "fc29b1e15bc6e2a077293f924379d8188fa532491732da27a6f1577d5e737d05"
+    },
+    {
+      "path": "src/signalbot/indicators/volume.py",
+      "sha256": "1013b924e70a7bf5d6fc4c14681a4196906a5a51d66d299994dc407270ac7cf9"
+    },
+    {
+      "path": "src/signalbot/observability/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "src/signalbot/observability/logging.py",
+      "sha256": "6f14e2e314473f84e58f0a879d41da3011b3297b565717ebbcfd6b103e52f0d6"
+    },
+    {
+      "path": "src/signalbot/persistence/__init__.py",
+      "sha256": "3a82676165afd234924a4b61f4bd71efeda716eeb45fea85f054704bc60ec652"
+    },
+    {
+      "path": "src/signalbot/persistence/models.py",
+      "sha256": "57a188505cca590522dfccde98c69d19a32721185a37476497046b57df73b1fd"
+    },
+    {
+      "path": "src/signalbot/persistence/repository.py",
+      "sha256": "fd424666a36e970fb03a25b90e7018f1ff052db2667ac7fe8158f54b1d48efc5"
+    },
+    {
+      "path": "src/signalbot/prospective/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "src/signalbot/prospective/directional_candidates.py",
+      "sha256": "5ec1712db2cce68032229dfb5e520c866c37eea76cd126d746749ac1fae58d0b"
+    },
+    {
+      "path": "src/signalbot/prospective/directional_review.py",
+      "sha256": "3a66fbda3cbf4ccd669c4b87d67d4c89d866601d82462c8e06efc3b8febe0905"
+    },
+    {
+      "path": "src/signalbot/prospective/directional_shadow.py",
+      "sha256": "1207aeb5557f272fe8bc046a42276109f89cc3ee3e3cb73894e06c1a1e0cc4b7"
+    },
+    {
+      "path": "src/signalbot/prospective/directional_validation.py",
+      "sha256": "1789757ed76171b2fe8b99ce36f1871be5eb18f1e162c5de0c24b1487b453762"
+    },
+    {
+      "path": "src/signalbot/prospective/observer.py",
+      "sha256": "51fab2c8e9c9e3cbe4a2de79293475436206c1ab3335db5584104fab3da7d797"
+    },
+    {
+      "path": "src/signalbot/prospective/raw_tape.py",
+      "sha256": "bafc2f823eb1f2e109139b32953939d71fe1423d8661e4eaa8116526ec05d9b2"
+    },
+    {
+      "path": "src/signalbot/prospective/research_context.py",
+      "sha256": "50c79f81a18d8037a1dc474a33b0dad7acdbacd3d7dcdd327cb00ff371aac414"
+    },
+    {
+      "path": "src/signalbot/prospective/retest.py",
+      "sha256": "beb0ff2c9777c8e697ed7e72606c01a37219c9ff558e3cecfb03f00cc3e604e0"
+    },
+    {
+      "path": "src/signalbot/prospective/retest_observer.py",
+      "sha256": "8572471f3813801ba08d166badbe395a1e3e68aa561a61abec6e77a312707a2d"
+    },
+    {
+      "path": "src/signalbot/prospective/retest_outcomes.py",
+      "sha256": "47fc97fe51c38651c8d6fdede2d22625ccb741b432d715c8f127b781e548fff8"
+    },
+    {
+      "path": "src/signalbot/prospective/retest_parity.py",
+      "sha256": "5a1e21ec8af7a820fc935f8c0f3f75640d631074a244a6e625cea694dc2c7ebe"
+    },
+    {
+      "path": "src/signalbot/prospective/retest_replay.py",
+      "sha256": "559770a841d5f70418e067bd43a08879d4b6768ac431b2b27e9fdf5088693550"
+    },
+    {
+      "path": "src/signalbot/prospective/segment_set.py",
+      "sha256": "2d82500c20415cdaa2cbf0d2c3cd9813f7a6908feec1739bc0abe625707068ee"
+    },
+    {
+      "path": "src/signalbot/prospective/segmented_replay.py",
+      "sha256": "9a23ce59aa9689cd2ba5efb8cd2c17d79ab794456ee7d9d69ff2196a65d7bf3e"
+    },
+    {
+      "path": "src/signalbot/prospective/segmented_storage.py",
+      "sha256": "8c318e90e804803aa670253ba766a22d7030a1d8744e09938f59b44e2602a9b3"
+    },
+    {
+      "path": "src/signalbot/prospective/smoke_audit.py",
+      "sha256": "917502b29f8c709b43710f4554a3d8e697c094222fbddbacb98f37b67e2cc7d1"
+    },
+    {
+      "path": "src/signalbot/prospective/source_freeze.py",
+      "sha256": "5f6cf0aa120c459094e6b2f1200548ff40573f8de5d3654ac0383fde1953fb5b"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/__init__.py",
+      "sha256": "ad52834f099dedafcd22852f12dec53f4ffc97c099fee54dc32e9126bef7d265"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/alerts/__init__.py",
+      "sha256": "dfba90bf4bdba984628b6ff2a8596030046f51a1a94a687ee47bec6132a71cfd"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/alerts/actionability.py",
+      "sha256": "2a0ee095aae114692565ba8171eae38639bfc8f7a2a7c309be17bf7d113e54c1"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/alerts/directional_evidence.py",
+      "sha256": "95810c70fffab337eabba28a58b57cdc56c9a4aec98b355ddf1007563d09b0ff"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/alerts/evidence.py",
+      "sha256": "55e9a8f89a01872bb589c75483f6c868ed6a2c81463d13b78bf0ba46c7c6aa55"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/canonical.py",
+      "sha256": "3694832885c816e459997ce3989f726d1c631dc47f138fcd94e21ed68ca50065"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/__init__.py",
+      "sha256": "6b898abc4f7d2f35f68eec8e685e3f4807efac50367c5991c276a5849ec3c4a2"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/authority.py",
+      "sha256": "b2f11c1d124061ef2a2455371c8bb3d5c98d7e220be7b72ff2e93cffecf22d34"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/batching.py",
+      "sha256": "b6d0e4a019805e63ae001a9bdb34acad38506dc55a4a26d011fe3f513d2871cc"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/block_container.py",
+      "sha256": "d5c2dcccfac61b7442b571e8085b1c9e5ffc4413fe2c8e806004c70eed2ca3cf"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/blocks.py",
+      "sha256": "89c0b1552c50d54d6b9a3374e46763977468338c7b20e45c3d0577400f4cf625"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/causal_target_authority.py",
+      "sha256": "3ec0bf35aa46b7bcce9f0609c61f8b39ef74c50b44625c16e2a80c8e00c197e2"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/causal_target_cursor.py",
+      "sha256": "f1fc0f8a79b483b0fdde592a1ac03c44177e2c1502de509ae396c4e96f3255c3"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/closed_session_owner.py",
+      "sha256": "afaa23b5f4fbc83d049cf0c274ce067881f5e235794e7dec9bcbf1e174e95742"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/full_runtime.py",
+      "sha256": "1f1cf185b66b109b63af7d9046964a846794c40c9dcbaae253b0fb5de3fc9eb9"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/integrity_ledger.py",
+      "sha256": "707528ded77fcd593334116d3bde3403778f25f49e1c8d862c192fe01584cfa1"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/membership.py",
+      "sha256": "6628b2c4a91c9bf67e5d97f2962f879cc9a6d2f4b9a2b1f132f39891fc27eeff"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/mirrored_wal.py",
+      "sha256": "5bbc3960bc2abb03c5b4f17b01ac1683717461d915fbf5ca5c9377a2483c522a"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/models.py",
+      "sha256": "745029312a7ef72f1570cf135740407699b830a01494012515c1ff7c84abc0a8"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/observed_session.py",
+      "sha256": "e49ba0accdf237899174dfe38b75f090abce4bc30cfdd282fe2d578d9f2797e3"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/pipeline.py",
+      "sha256": "4680935609bff33c762945b1a258eb5054261c36e1b32ffa954dd7cb717a3af2"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/plans.py",
+      "sha256": "5227ac4c557d781ea8cc0a2672cf4eb0a332abd8717ceffb1c5129795de9c565"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest.py",
+      "sha256": "a1a6ca0fff5c701a75f2cecaf34a6385006fb967d22da44c0df86d1a34ea293c"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_adapter.py",
+      "sha256": "4b7eb6b53bcd2ea53cd91abf1fef6a6de73baee99c298fca226102fc662bd127"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_attempt_owner.py",
+      "sha256": "adbda3f80d974321eb5edaa26e0e2a04646c5d97e8aee350d25367547a2f9309"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_census.py",
+      "sha256": "bbf906ed2ef5c390266c836310edbdbf2a360b1b276cec0d4c7a53c87d987486"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_census_verifier.py",
+      "sha256": "fc31039892c993e98d8274f8f470139d0312c5038127240eb64e2d3598f46e1c"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_clock.py",
+      "sha256": "2f7266f5ba9a147b28eece021eab762f1522021b30d856cbd86fe42624203856"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_clock_adapter.py",
+      "sha256": "e2f37744a870bc3ad87ade30db65507a355256d7f8da020f7b08cb7f4cbadf92"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_clock_scheduler.py",
+      "sha256": "15888b933edf4f8170ed71cde2359c0211a4786f7b2dd05cf3a3de9f2a9b7592"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_depth.py",
+      "sha256": "4816582d9cc9154baa9ad5fdaec3ba39624c19ae34653ba8aa05c49ebb10896f"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_depth_adapter.py",
+      "sha256": "b15ecfb24997e489df68c728c74cce7680d8c538df2f1fa4cf3762679d485474"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_depth_bridge.py",
+      "sha256": "dce9afcf557fd268d2e4c374c80be86e8b416af1db20a36529b68732b112af08"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_depth_bridge_evidence.py",
+      "sha256": "64bb24c37ce27119ef62be191651c9ad98ac31bfcd7942c84e0dd1f29a0fc73f"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_depth_scheduler.py",
+      "sha256": "36d55deae50c97ed1b6216168caa03e358c9ca05df61978c8a38fe76582412e2"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_depth_semantics.py",
+      "sha256": "5bcd69093a31b5f5b355558bce18df7bc1189521fef0be3065155cee01af90aa"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_open_interest_semantics.py",
+      "sha256": "83033126550d14cedda7ca3985c1876a5dbec735bc8c132e1cf4f28e18b99c83"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_schedule_body_verifier.py",
+      "sha256": "12abc2d4c746698fb11d1ebb3511de5b3be060de6ee0c9985fdb8d99e557b9d9"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/rest_scheduler.py",
+      "sha256": "86be77856ad974da1cc551164c67013fb9b2bd9d3f74a73e6867c840ff6f7271"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/session.py",
+      "sha256": "4b0e1d66de9f384a54f1fd5fa6530f48a5d732f2cca45cda4d8cec191e16a612"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/spot_snapshot_qualification.py",
+      "sha256": "b61f8f0597805ec5ffefb82b1a8b86a446eb20414d274c4fa4d8db7eb35dc8c4"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/telemetry.py",
+      "sha256": "b8fff4349111cac2f3c60e73871cdd99a2c6979dfad52d8d2be793577f7af091"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/usdm_market_m1.py",
+      "sha256": "d279f885419bfcdb4e354dd3c518d1cdda4cd0be8828f465d15fcabf551975c3"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/usdm_market_prefix_health.py",
+      "sha256": "2ec751a052fdf79e89a303cacdd495449b565e59278d9cc6df9cd27a6af210fb"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/usdm_open_interest_m1.py",
+      "sha256": "1031c7655f090aeca8d951ad2aadc82bf800bbd4ca2e168d21e533f8e614b501"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/usdm_public_m1.py",
+      "sha256": "eafa605b4312dd83059990c9bac6eab8f40a94ac741db454916fd2d526a7034c"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/usdm_public_prefix_health.py",
+      "sha256": "0964b49df2f56e119d74100bf481a10d5d34558a8ed1770ab248fb2d4d09d1c0"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/usdm_venue_clock_m1.py",
+      "sha256": "5b4f6e92874bba849cfb7ce9b9cfa5fa25fbd0be3f527729637140f7ea1bd892"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/wal.py",
+      "sha256": "5f5732217ed184d632ec14176ef579b11fa06fe1a22685dd3359a0319897ccc9"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/wal_qualification.py",
+      "sha256": "fec08269ef36079962881dceb00eef17a0646fedba9a59f4fefd59c220d5c846"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/websocket.py",
+      "sha256": "e60edb25e537b46c9499fd111f83446d7b542284880ba46f739723c07f3aef6b"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/websocket_composition.py",
+      "sha256": "92fb7e9f8003c6fe2231bad5a57ee69810cd5f8663288e986c75b2208b9e8b28"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/websocket_finality.py",
+      "sha256": "6d04b394498721a30f593e2392de8334ab2b5d4122e3a0830ae2bf3465e19489"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/capture/websocket_lifecycle.py",
+      "sha256": "a2d132f91bcf7a943bfb97e430df4b2bc5ba0fdb6fe4622a85b4e1855a342600"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/__init__.py",
+      "sha256": "b98c14a441a197fc719affa056efc04be8a9f1119cfee124d6a1710348af760c"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/authorized_paper_entry.py",
+      "sha256": "9d759c09a00c2a091eb9d12d625401853104c0f585525b051c64884e235be2b6"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/fees.py",
+      "sha256": "1cd730e693fe4310d52095a13dff9f2a8bd1cb95ab4e77a5b3af65eee544d7c2"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/funding.py",
+      "sha256": "29f3d4116da18c9a853573ec4028eb3384044b859205ad5c79d2ce98c381fd20"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/mandatory_exit.py",
+      "sha256": "fb1b5cc41a420363417437307f72bba074673d14d71594c96b817e5bee5c4a67"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/paper_fok.py",
+      "sha256": "8cdc09b44115019a8daba25b5aa53973f3ee5d3518dbbec8f5f52faa4ef57ef8"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/paper_sizing.py",
+      "sha256": "2484c03453dc8457514fbbb59b8ee8ce084c74ed302ee475fcb36aedce294218"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_attempt_ledger.py",
+      "sha256": "a844612202ed07630504cffb75598612eb884c14116ac3bc24b822dc1bcf215a"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_census.py",
+      "sha256": "3f46d9ec21158b9e31d27c3f0259490d0cceb29ddc2dd9493238e16bb1d1eb02"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_daily_wal_store.py",
+      "sha256": "2ff84b03a6f8198f9e07e42138b63c6c216d1bb5b5e5ddab76a43d57740c8f31"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_decision_owner.py",
+      "sha256": "7398d0ca3677e2ad0eec5640f13268b74d8a3870b6ad03c8aed053fe458951b0"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_decision_payload.py",
+      "sha256": "4c82b121751ab84600233a392757723f8c5d33af6e5c1cd9d5ec189af9a7fd5d"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_outcome_wal_record.py",
+      "sha256": "717c49eb9586dd9a3aa4a945ecd49ce9efb15d72525be2748210a7598a7bfc57"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_outcome_wal_store.py",
+      "sha256": "f6fd83624a3d3b8fdb5ce160e444fa23308d131764ac4be94774936160a3b83d"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_paper_terminal_payload.py",
+      "sha256": "6f3aa08c03b1797c64e847feddf4445d3ab86c87ba1c7b58582ccacd886759fc"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_position_lifecycle_owner.py",
+      "sha256": "b6d7a0342ee4f7eba1e8ab5f9d3b10430758dd216bb854a7138c546ffcb54daa"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_position_terminal_payload.py",
+      "sha256": "51ad4036449f014fb3c51431b51a190a064246878962b65931bb87f5492887bc"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_segment_seal.py",
+      "sha256": "358d493df579a2ec8641a7cc186bf165bb735c78756a031286208cfe985b0eb3"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_terminal_contract.py",
+      "sha256": "277f0fb7ecdfcd7fdd27c94b3927d0db6e655466bb1aad8508ef2a18a0a0919e"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/execution/prospective_wal_record.py",
+      "sha256": "599f2efb3b0a136c63de7d753880bf8193d7d04910504ff54c6d19e0d2320da6"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/protocol/__init__.py",
+      "sha256": "796432920638368ac98eaca91f6a97dab0e47a46c2521ed81f7c23ae69360d44"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/protocol/decimal_context.py",
+      "sha256": "1a72b887cc49c0973afd208a145e05fdc0486dc56d50af78250a9670ce963265"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/protocol/decision_clock.py",
+      "sha256": "ba85501f5dc95c646bd8af59c5b5a390307ed73affec39f55a90f005b7f54fc6"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/protocol/features.py",
+      "sha256": "bb969108fd347158918cfd387a6d0d9558a08b38dc38c40e0a2298a8f3bb5010"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/protocol/lifecycle.py",
+      "sha256": "acdbacfa88d7eacdc6c0bba79a4b12d6073981f0b98bac3ef796807ff86830b8"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/protocol/prospective_code_freeze.py",
+      "sha256": "8eb9da6434e39ec6a0aa0dce3db8b721670b4d8ae4ea3c80709259f037389041"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/research/__init__.py",
+      "sha256": "161ca5c767a45473a715240e84ac4e8f0cc2a4b3a800bdbdf592364188ee5f4e"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/research/directional_agreement_audit.py",
+      "sha256": "2a8f43e3dd777490c5c13a90b2c5f6fd1e9bc8bcb326647a707368f6d94c48a0"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/research/directional_agreement_bootstrap.py",
+      "sha256": "c0f01ea45ddc9d2dfdb822bdec6454371e223f7f07d7c4cb1515b1bbf234b45e"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/research/historical_three_family_bootstrap.py",
+      "sha256": "0d86aaf948b8914598a2a961ae6d125963d54560ca74c4d4646b10229b388527"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/research/historical_three_family_outcome_audit.py",
+      "sha256": "b77791ff2f304a110ccbae4f2b371251cba15272ae4600e1a6c11846f9bad820"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/research/historical_three_family_topology.py",
+      "sha256": "6f62a2db2fa21e6c0ab743f769e6d615e0e6fd539a8a605be61183ea3d37cb39"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/research/prospective_efficacy_contract.py",
+      "sha256": "70c43a6c3bcedbdfd3c92169c108ace27185f0a5ddc14112cf93e780769121ef"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/__init__.py",
+      "sha256": "3a75db3072cac787f11685c2b4f3625457293ae6de48735e77b04da2924121e3"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/closed_kline_path.py",
+      "sha256": "918ff000fc0cecc37f78fe43dc53f95b3abae984718551cb691e4fce26484193"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/cross_sectional_directional_candidate.py",
+      "sha256": "b630b880f1f7bd0e113353211e0c93300bd8ad0b44368afc1a538cb207e34109"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/cross_sectional_evidence.py",
+      "sha256": "aefc815da0e375d9da6182b4fedaa4510869152ee4f2539b1bc0cd2d5a93e5e9"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/cross_sectional_historical_7asset_proxy.py",
+      "sha256": "2ef43b91f02a6266e5a6e1855fc673e32835b8959b046e94e0342e03cd5d76d1"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/d1_scefb.py",
+      "sha256": "b33650de8d75f9183049f43247e0b212a502d61ed01b53f359fe59aca616fab5"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/directional_evidence.py",
+      "sha256": "1779c8724808a88c64ebdbe26117cb07536a0bce72dc945d9238accd9f59b49d"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/evidence_producer.py",
+      "sha256": "0dac9e0203dfc41fbc99a36911f10d099b20a1f64f8301632cd41b910cacdae9"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/evidence_score.py",
+      "sha256": "9893595e7489d07bfdb82157a71e334b3861ef259a49580ae64667e17a8ac178"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/family_a.py",
+      "sha256": "cdc74e9d0e687c6ddf8da80a6bd1de7ab7b722cc70446f00c845ea89d8fccecb"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/family_a_features.py",
+      "sha256": "3cc6f6fa815be8dfa6dc9e73ad09c87d037efc6e4e4a580734ce0b9fd2db5ce0"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/family_b.py",
+      "sha256": "17f3061b30ca58fc59b861eecf15c6ca6e5fe15ed898b473cfb8c6341214c170"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/family_b_features.py",
+      "sha256": "9b2b5c625dfaf61caaf83988b58c705bc2c50bca47ec0729fccd24febdd369a8"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/family_c.py",
+      "sha256": "0ea8cd545f54fd20644d654a0df91f6d41809c6a3276870cae18b4a0b613b08e"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/historical_numeric_precompute.py",
+      "sha256": "5d7feae61e32391a8796dde937223c8be7215667ff2dccde5143867b52688f87"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/historical_three_family_consensus.py",
+      "sha256": "5e058af70db0d4e98216f60e12030641669cd9e0be879febfec7d260f5dde502"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/participation_agg_trade_m1_projection.py",
+      "sha256": "c38cf768a8e234f560579306068ab359ae33a0acfc1c9b8d428cbccead92aa81"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/participation_evidence.py",
+      "sha256": "fc5a48ada6c0c45c1e510af980678b0e9f9705aa6af7d3fb32ad38b82ac3cea5"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/participation_historical_kline_proxy.py",
+      "sha256": "bd7de522797bdb54cd242dc17ec7acfe7ea84429c34e4291c886b7281bc1f740"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/price_evidence.py",
+      "sha256": "198758d95756d953b3bf7328f0b1aa86454e92a5985058cee7c9caf7d690be16"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/price_historical_kline_proxy.py",
+      "sha256": "20b8a966b15b1f663ac660bd299cd6d80dd0d8f7c01c92611baa95e498ab7b85"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/price_kline_m1_projection.py",
+      "sha256": "2ac226396dfaec2b6d177900f5bb456ec7ac91b87b70fb58787dc7f05a588b03"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/prospective_plan.py",
+      "sha256": "8f31c24f642dfa9efbe239d7e3cbfe6849c0f4bc5c32c4a44bc1031cadca4de3"
+    },
+    {
+      "path": "src/signalbot/r4b_v2/strategy/volatility_evidence.py",
+      "sha256": "a94177c0d542543f0a297030c2241020895388c8279b64853d11137f622c8498"
+    },
+    {
+      "path": "src/signalbot/recommendations/__init__.py",
+      "sha256": "6b7a7328a51a76f90927635e7065def4a414e76f746c1ad3726eb197c2ab4153"
+    },
+    {
+      "path": "src/signalbot/recommendations/models.py",
+      "sha256": "dcd2fb2e5dab9b5b72d5a8fe3673e17374ee1a9dcf316e8742df7a55c00a36a7"
+    },
+    {
+      "path": "src/signalbot/recommendations/projector.py",
+      "sha256": "798b5a514267a9caf54dfbaad0d2791a8a7101ec7ebb710547a36d1f6c169dc4"
+    },
+    {
+      "path": "src/signalbot/recommendations/ranking.py",
+      "sha256": "a677cc3efa2aacbd9dfa7534f04cf191e5e973333aa885b827b597b3d666b4f0"
+    },
+    {
+      "path": "src/signalbot/regime/__init__.py",
+      "sha256": "69b34f64ba81ecc3a1b8e2a80bbadd11dcb551b06c9e97cff306d9e007cab3d5"
+    },
+    {
+      "path": "src/signalbot/regime/market.py",
+      "sha256": "4bb8cae9b093e274b27adc55a3a076431ca21047ca141e05c674bef7c9f86943"
+    },
+    {
+      "path": "src/signalbot/runtime.py",
+      "sha256": "25dd9030cca27ece7c39744cfe09dd3ebae317da933bc1f9b1bf31a573e0630f"
+    },
+    {
+      "path": "src/signalbot/scanner.py",
+      "sha256": "07694414b51233be232a61a3fb772179307b45592ed20015ce8e7a54434ea027"
+    },
+    {
+      "path": "src/signalbot/signals/__init__.py",
+      "sha256": "b15c4ebfcd68929733faff3cd76baadf47a480322e5e0dd05a50d49d7d06ab42"
+    },
+    {
+      "path": "src/signalbot/signals/gates.py",
+      "sha256": "bac08c1114b6cc63e02c6ee6c4ef68853ae54431dc7be6926f95bdae133be300"
+    },
+    {
+      "path": "src/signalbot/signals/position_management.py",
+      "sha256": "e51950226b56fa0a38c3fb4a47fb7af836a87682d5a5704aeb3c30adef1a8e48"
+    },
+    {
+      "path": "src/signalbot/signals/positions.py",
+      "sha256": "9c036ec4c253476450edde71fd24dcc5545e52f5c1ed6c50b8a037ce2c79926e"
+    },
+    {
+      "path": "src/signalbot/signals/rules.py",
+      "sha256": "cfd7eb9c95094e259984ad7649dd28d1f0ea8f10d78c5641140758bb7595a72d"
+    },
+    {
+      "path": "src/signalbot/signals/shadow_policy.py",
+      "sha256": "54a79936a582b92eed5ed4f58a2b35bcfe54f77572ddc7318be7dfbf3194d392"
+    },
+    {
+      "path": "src/signalbot/signals/state_machine.py",
+      "sha256": "c5417e892e5f4f83376c15fbbbd5cd2ff02c4a75a7bb8ec2379ba193599a0cbd"
+    },
+    {
+      "path": "uv.lock",
+      "sha256": "d9f2064dec2913dfa24032007e80a32623f55540c248cd724f948b5b07326288"
+    }
+  ],
+  "git_head": "800be683577a9903ee68e804e67921710b58eb71",
+  "source_freeze_schema_version": "worktree-source-v1",
+  "source_root_sha256": "0f629d1bb44ce10cfd8fec241ae2958105533fb066c189867605c47608dfcba6"
+}

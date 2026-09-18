@@ -1,0 +1,30 @@
+{
+  "candidate_version": "futures-bidirectional-v1",
+  "config_sha256": "a1b2977c3de07959413d4509c888f34d275cd32a8070ca2e41ca288961fa5b31",
+  "created_at_utc": "2026-09-18T04:01:21.065873+00:00",
+  "data_authority_sha256": "1f191533c6d3cf44aece6ad0d081ede791a4498fd5c9fce909f97f2552d6b492",
+  "fixture_replay_sha256": "d54d9508a4ceb1ca8c09007ff17b3d729860ff49b715670da23b9073bfa43ae7",
+  "forward_shadow": {
+    "reason": "requires a future live activation boundary",
+    "status": "NOT_STARTED"
+  },
+  "freqtrade": {
+    "sidecar_config": "integrations/freqtrade/config-futures-validation-static.json",
+    "status": "NOT_INSTALLED"
+  },
+  "independent_review": {
+    "status": "NOT_STARTED"
+  },
+  "outputs": {
+    "data-authority.json": "edd241ed6bc5b1f973209bbe235dc955c35e2997dfc5ce434a78473eeb83980e",
+    "fixture-replay.json": "f45938efd54d4c175224ebcf60dde01afaea30f029546feb8205caaddcb098f8",
+    "historical-summary.json": "732b39701f47b30f2aa28a15828acedd9a8cd8af99a9c133661ac4684bbc6de9",
+    "promotion-evidence.json": "f60b1d4b2da2d88f34d3bc8d42be410c99ff664b6f1bc6a6f07d8e0847e87838",
+    "source-freeze.json": "8be8756baec9431efd12a7dd1a4281184107ff550d7f3c138787156cbc62ec67"
+  },
+  "protocol_version": "futures_bidirectional_validation_v1",
+  "research_manifest_sha256": "e5f9cd3168d3a25ca00a9af20899ccf94433971dc93a47cdaa7391a4767f0c43",
+  "source_identity": "worktree-source-v1:0f629d1bb44ce10cfd8fec241ae2958105533fb066c189867605c47608dfcba6",
+  "trial_registry_sha256": "df973e3adf062f0b90d3f1baa119421ca847d7839c8ff5f05952aa14f3b7c422",
+  "universe_manifest_sha256": "a50a106ad5a45806762b259a4123c47d4d62ff24ca8393c96de02e3d5d874dab"
+}

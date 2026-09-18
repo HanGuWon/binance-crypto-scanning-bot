@@ -1,0 +1,122 @@
+{
+  "bbo_status": "UNAVAILABLE",
+  "candidate_version": "futures-bidirectional-v1",
+  "config_sha256": "a1b2977c3de07959413d4509c888f34d275cd32a8070ca2e41ca288961fa5b31",
+  "data_authority_sha256": "1f191533c6d3cf44aece6ad0d081ede791a4498fd5c9fce909f97f2552d6b492",
+  "direction_receipts": [
+    {
+      "candidate_version": "futures-bidirectional-v1",
+      "censor_fraction": 0.0025807440719541885,
+      "config_sha256": "a1b2977c3de07959413d4509c888f34d275cd32a8070ca2e41ca288961fa5b31",
+      "data_quality_passed": true,
+      "direction": "long",
+      "independent_review_passed": false,
+      "operational_health_passed": true,
+      "regime_count": 3,
+      "sample_count": 39035,
+      "symbol_count": 8
+    },
+    {
+      "candidate_version": "futures-bidirectional-v1",
+      "censor_fraction": 0.0004848837491211455,
+      "config_sha256": "a1b2977c3de07959413d4509c888f34d275cd32a8070ca2e41ca288961fa5b31",
+      "data_quality_passed": true,
+      "direction": "short",
+      "independent_review_passed": false,
+      "operational_health_passed": true,
+      "regime_count": 3,
+      "sample_count": 41227,
+      "symbol_count": 8
+    }
+  ],
+  "historical_screen": "PASS",
+  "opportunity_count": 80383,
+  "outcome_counts_by_direction": {
+    "long": 39035,
+    "short": 41227
+  },
+  "protocol_version": "futures_bidirectional_validation_v1",
+  "source_identity": "worktree-source-v1:0f629d1bb44ce10cfd8fec241ae2958105533fb066c189867605c47608dfcba6",
+  "symbols": [
+    {
+      "asset": "BTC",
+      "candidate_setups": 144602,
+      "candles": 245376,
+      "confirmed_signals": 4368,
+      "evaluated_bars": 210240,
+      "opportunities": 9969,
+      "scheduled_entries": 2253,
+      "symbol": "BTCUSDT"
+    },
+    {
+      "asset": "ETH",
+      "candidate_setups": 135442,
+      "candles": 245376,
+      "confirmed_signals": 3711,
+      "evaluated_bars": 210240,
+      "opportunities": 8821,
+      "scheduled_entries": 2064,
+      "symbol": "ETHUSDT"
+    },
+    {
+      "asset": "BNB",
+      "candidate_setups": 144304,
+      "candles": 245376,
+      "confirmed_signals": 4874,
+      "evaluated_bars": 210240,
+      "opportunities": 11090,
+      "scheduled_entries": 2281,
+      "symbol": "BNBUSDT"
+    },
+    {
+      "asset": "SOL",
+      "candidate_setups": 139357,
+      "candles": 245376,
+      "confirmed_signals": 4405,
+      "evaluated_bars": 210240,
+      "opportunities": 10221,
+      "scheduled_entries": 2217,
+      "symbol": "SOLUSDT"
+    },
+    {
+      "asset": "XRP",
+      "candidate_setups": 139712,
+      "candles": 245376,
+      "confirmed_signals": 4509,
+      "evaluated_bars": 210240,
+      "opportunities": 10014,
+      "scheduled_entries": 2233,
+      "symbol": "XRPUSDT"
+    },
+    {
+      "asset": "DOGE",
+      "candidate_setups": 137075,
+      "candles": 245376,
+      "confirmed_signals": 4380,
+      "evaluated_bars": 210240,
+      "opportunities": 9832,
+      "scheduled_entries": 2224,
+      "symbol": "DOGEUSDT"
+    },
+    {
+      "asset": "SUI",
+      "candidate_setups": 138704,
+      "candles": 245376,
+      "confirmed_signals": 4542,
+      "evaluated_bars": 210240,
+      "opportunities": 10326,
+      "scheduled_entries": 2235,
+      "symbol": "SUIUSDT"
+    },
+    {
+      "asset": "WIF",
+      "candidate_setups": 137267,
+      "candles": 245376,
+      "confirmed_signals": 4541,
+      "evaluated_bars": 210240,
+      "opportunities": 10110,
+      "scheduled_entries": 2213,
+      "symbol": "WIFUSDT"
+    }
+  ]
+}
