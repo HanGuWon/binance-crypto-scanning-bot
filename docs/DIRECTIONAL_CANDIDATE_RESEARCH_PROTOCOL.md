@@ -55,6 +55,18 @@ uv run signalbot prospective-directional-validate `
   --output-dir artifacts/prospective/futures-bidirectional-v1
 ```
 
+After the receipt set is complete, run the read-only independent review:
+
+```powershell
+uv run signalbot prospective-directional-review `
+  --preregistration config/research.futures-bidirectional.v1.yaml `
+  --receipt-dir artifacts/prospective/futures-bidirectional-v1
+```
+
+The review writes `independent-review.json`. `BLOCKED` is an expected result
+until the forward shadow window, sidecar comparison, and independent evidence
+are all complete; it must not be treated as a promotion approval.
+
 The command freezes the source tree, verifies each Futures 5m and funding
 manifest, runs the two directional hypotheses with the strict-prior HTF policy,
 and writes bounded JSON receipts. It does not copy raw candles into the output

@@ -49,6 +49,7 @@ from signalbot.domain.models import Candle, SignalDecision
 from signalbot.exchange.binance.endpoints import build_websocket_plans
 from signalbot.observability.logging import configure_logging
 from signalbot.persistence.repository import SqlRepository
+from signalbot.prospective.directional_review import review_directional_validation
 from signalbot.prospective.directional_validation import run_directional_validation
 from signalbot.prospective.smoke_audit import write_smoke_audit
 from signalbot.runtime import MarketRuntime
@@ -163,6 +164,9 @@ def _parser() -> argparse.ArgumentParser:
     directional.add_argument("--spec", required=True)
     directional.add_argument("--data-dir", required=True)
     directional.add_argument("--output-dir", required=True)
+    review = subs.add_parser("prospective-directional-review")
+    review.add_argument("--preregistration", required=True)
+    review.add_argument("--receipt-dir", required=True)
     return parser
 
 
@@ -482,6 +486,15 @@ def main() -> None:
         )
         if status_axes["data_integrity"] != "PASS":
             raise SystemExit(2)
+        return
+    if args.command == "prospective-directional-review":
+        root = Path(__file__).resolve().parents[2]
+        result = review_directional_validation(
+            args.preregistration,
+            args.receipt_dir,
+            workspace_root=root,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
         return
     settings = load_settings(args.config)
     configure_logging(settings.log_level)
