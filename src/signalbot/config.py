@@ -102,6 +102,14 @@ class ShadowPolicySettings(StrictModel):
     campaign_created_at_ms: int | None = None
     retest_observation_enabled: bool = False
     retest_horizon_bars: int = Field(default=72, ge=1, le=10_000)
+    directional_observation_enabled: bool = False
+    directional_campaign_id: str | None = None
+    directional_source_identity: str | None = None
+    directional_campaign_created_at_ms: int | None = None
+    directional_activation_ms: int | None = None
+    directional_candidate_version: Literal["futures-bidirectional-v1"] = (
+        "futures-bidirectional-v1"
+    )
 
     @model_validator(mode="after")
     def freeze_observation_contract(self) -> ShadowPolicySettings:
@@ -109,6 +117,34 @@ class ShadowPolicySettings(StrictModel):
             raise ValueError(
                 "causal retest observation requires shadow observation_enabled"
             )
+        if self.directional_observation_enabled:
+            prefix = "worktree-source-v1:"
+            digest = (self.directional_source_identity or "").removeprefix(prefix)
+            if (
+                not (self.directional_source_identity or "").startswith(prefix)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(
+                    "directional observation requires worktree-source-v1 source_identity"
+                )
+            if not self.directional_campaign_id:
+                raise ValueError("directional observation requires campaign_id")
+            if not self.directional_campaign_id.startswith("futures-bidirectional-"):
+                raise ValueError(
+                    "directional observation campaign_id must use the "
+                    "futures-bidirectional namespace"
+                )
+            if self.directional_campaign_created_at_ms is None:
+                raise ValueError(
+                    "directional observation requires campaign_created_at_ms"
+                )
+            if self.directional_activation_ms is None:
+                raise ValueError("directional observation requires activation_ms")
+            if self.directional_activation_ms < self.directional_campaign_created_at_ms:
+                raise ValueError(
+                    "directional activation_ms must be >= campaign_created_at_ms"
+                )
         if not self.observation_enabled:
             return self
         if (

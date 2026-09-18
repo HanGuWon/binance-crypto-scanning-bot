@@ -34,6 +34,13 @@ does not make the successor active, and a short smoke process does not satisfy
 the preregistered forward observation window. Independent review must recompute
 the receipt hashes before promotion can move beyond `CONTINUE_OBSERVING`.
 
+The successor runtime observer is now implemented but remains disabled by
+default. It is enabled only with a distinct `futures-bidirectional-*` campaign
+ID, a matching `worktree-source-v1` identity, and a future activation boundary.
+It records both Futures directions in the existing idempotent shadow evidence
+store and cannot create a production decision, paper position, Discord message,
+or exchange order.
+
 Promotion is per direction. A Futures LONG receipt cannot promote Futures
 SHORT, and a Freqtrade result cannot substitute for the scanner's canonical
 replay and forward evidence.

@@ -66,3 +66,27 @@ sidecar. Its static-universe strategy is useful for a candle-family comparison,
 but it cannot substitute for this scanner's source/data hash, fixture replay, or
 forward evidence. If the `freqtrade` executable is unavailable, the campaign
 receipt must say `NOT_INSTALLED` rather than implying parity.
+
+## Successor forward shadow
+
+The successor observer is opt-in and attaches only to the Futures runtime after
+the incumbent signal, paper, and Discord paths have completed. Add these fields
+to a private runtime config after computing the current source identity and
+choosing a future UTC activation boundary:
+
+```yaml
+shadow:
+  directional_observation_enabled: true
+  directional_campaign_id: futures-bidirectional-20260918-a
+  directional_source_identity: worktree-source-v1:<64-hex-source-hash>
+  directional_campaign_created_at_ms: <registration-time-ms>
+  directional_activation_ms: <future-boundary-ms>
+```
+
+The observer writes immutable evidence rows under the existing shadow campaign
+repository with schema `directional_shadow_observation_v1`. It records both
+`BREAKOUT_LONG` and `BREAKDOWN_SHORT` raw closed-candle triggers, strictly-prior
+HTF acceptance, and explicit `production_entry: false`, `order_placement: false`,
+and `discord_delivery: false` markers. The incumbent observer and its campaign
+remain separate. A campaign cannot be called complete until the future boundary
+has elapsed and the independent review recomputes the stored hashes.

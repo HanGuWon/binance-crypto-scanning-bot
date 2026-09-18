@@ -29,6 +29,7 @@ from signalbot.domain.models import (
 from signalbot.exchange.binance.schemas import PayloadError, parse_payload
 from signalbot.indicators.core import FeatureEngine
 from signalbot.persistence.repository import SqlRepository
+from signalbot.prospective.directional_shadow import DirectionalShadowObserver
 from signalbot.prospective.observer import ShadowObserver
 from signalbot.regime.market import MarketRegimeEngine
 from signalbot.signals.positions import (
@@ -74,6 +75,7 @@ class MarketRuntime:
         self.feature_engine = FeatureEngine(settings.signals)
         self.rule_engine = SignalRuleEngine(settings.signals, settings.shadow)
         self.shadow_observer: ShadowObserver | None = None
+        self.directional_shadow_observer: DirectionalShadowObserver | None = None
         if settings.shadow.observation_enabled:
             if campaign_id is not None and campaign_id != settings.shadow.campaign_id:
                 raise ValueError(
@@ -82,6 +84,12 @@ class MarketRuntime:
             self.shadow_observer = ShadowObserver(
                 settings,
                 self.rule_engine,
+                repository,
+                clock=clock,
+            )
+        if self.market is Market.FUTURES and settings.shadow.directional_observation_enabled:
+            self.directional_shadow_observer = DirectionalShadowObserver(
+                settings,
                 repository,
                 clock=clock,
             )
@@ -121,15 +129,22 @@ class MarketRuntime:
         """
 
         if self.shadow_observer is None:
-            return
-        try:
-            self.shadow_observer.flush()
-        except Exception as exc:
-            LOGGER.error(
-                "shadow observer finalization failed; incumbent shutdown unchanged",
-                exc_info=exc,
-                extra={"market": self.market.value},
-            )
+            incumbent_flush = None
+        else:
+            incumbent_flush = self.shadow_observer.flush
+        for flush in tuple(
+            item
+            for item in (incumbent_flush, getattr(self.directional_shadow_observer, "flush", None))
+            if item is not None
+        ):
+            try:
+                flush()
+            except Exception as exc:
+                LOGGER.error(
+                    "shadow observer finalization failed; incumbent shutdown unchanged",
+                    exc_info=exc,
+                    extra={"market": self.market.value},
+                )
 
     def set_surveillance_symbols(self, symbols: frozenset[str]) -> None:
         """Backward-compatible replay helper that treats one set as both universes."""
@@ -383,6 +398,15 @@ class MarketRuntime:
                         "market": self.market.value,
                         "symbol": candle.symbol,
                     },
+                )
+        if self.directional_shadow_observer is not None:
+            try:
+                self.directional_shadow_observer.observe(feature, contexts)
+            except Exception as exc:
+                LOGGER.error(
+                    "directional shadow observation failed; production unchanged",
+                    exc_info=exc,
+                    extra={"market": self.market.value, "symbol": candle.symbol},
                 )
 
     async def _recover_gap(self, gap: CandleGap) -> bool:
