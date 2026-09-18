@@ -28,3 +28,14 @@ def test_review_writes_blockers_for_current_not_started_receipt() -> None:
     assert "Freqtrade sidecar was not installed or executed" in result["blockers"]
     written = json.loads((receipt_dir / "independent-review.json").read_text())
     assert written["review_sha256"] == result["review_sha256"]
+
+
+def test_review_does_not_require_itself_in_validation_output_hashes() -> None:
+    receipt_dir = Path("artifacts/prospective/futures-bidirectional-v1")
+    result = review_directional_validation(
+        "config/research.futures-bidirectional.v1.yaml",
+        receipt_dir,
+        workspace_root=Path.cwd(),
+    )
+
+    assert "independent-review.json" not in result["output_hash_mismatches"]

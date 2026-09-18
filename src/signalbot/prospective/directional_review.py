@@ -58,6 +58,8 @@ def review_directional_validation(
         raise ValueError("validation manifest outputs are missing")
     output_mismatches: list[str] = []
     for name, expected in sorted(output_hashes.items()):
+        if name == "independent-review.json":
+            continue
         path = root / str(name)
         if not path.is_file() or _sha256_file(path) != expected:
             output_mismatches.append(str(name))

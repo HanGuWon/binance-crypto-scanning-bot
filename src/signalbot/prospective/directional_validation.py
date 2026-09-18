@@ -346,7 +346,7 @@ def run_directional_validation(
         "outputs": {
             path.name: _sha256_file(path)
             for path in sorted(output_root.glob("*.json"))
-            if path.name != "validation-manifest.json"
+            if path.name not in {"validation-manifest.json", "independent-review.json"}
         },
         "created_at_utc": datetime.now(UTC).isoformat(),
         "freqtrade": {
