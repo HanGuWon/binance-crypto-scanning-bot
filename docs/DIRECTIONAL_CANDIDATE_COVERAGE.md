@@ -19,6 +19,21 @@ research runner must create source, data-authority, universe, and trial hashes
 before any result is inspected. Historical absence of exact BBO evidence stays
 explicit and cannot be converted into a passing live execution gate.
 
+The executable Phase 1 receipt is written to
+`artifacts/prospective/futures-bidirectional-v1/`. It contains
+`source-freeze.json`, `data-authority.json`, `fixture-replay.json`,
+`historical-summary.json`, `promotion-evidence.json`, and
+`validation-manifest.json`. These machine-local receipts are intentionally
+excluded from the repository and bind the run to the existing local
+`data/backtest` junction. The Google Drive `BINANCE_CRYPTO_BACKTESTING_ARCHIVE`
+is retained as cold archive; no raw shard is added to the local workspace for
+this campaign.
+
+Forward shadow status is separate from historical status. A historical PASS
+does not make the successor active, and a short smoke process does not satisfy
+the preregistered forward observation window. Independent review must recompute
+the receipt hashes before promotion can move beyond `CONTINUE_OBSERVING`.
+
 Promotion is per direction. A Futures LONG receipt cannot promote Futures
 SHORT, and a Freqtrade result cannot substitute for the scanner's canonical
 replay and forward evidence.

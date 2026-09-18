@@ -49,6 +49,7 @@ from signalbot.domain.models import Candle, SignalDecision
 from signalbot.exchange.binance.endpoints import build_websocket_plans
 from signalbot.observability.logging import configure_logging
 from signalbot.persistence.repository import SqlRepository
+from signalbot.prospective.directional_validation import run_directional_validation
 from signalbot.prospective.smoke_audit import write_smoke_audit
 from signalbot.runtime import MarketRuntime
 
@@ -156,6 +157,12 @@ def _parser() -> argparse.ArgumentParser:
     c1_run.add_argument("--spec", required=True)
     c1_run.add_argument("--data-dir", required=True)
     c1_run.add_argument("--output-dir", required=True)
+    directional = subs.add_parser("prospective-directional-validate")
+    directional.add_argument("--config", required=True)
+    directional.add_argument("--preregistration", required=True)
+    directional.add_argument("--spec", required=True)
+    directional.add_argument("--data-dir", required=True)
+    directional.add_argument("--output-dir", required=True)
     return parser
 
 
@@ -530,6 +537,18 @@ def main() -> None:
             config_path=args.config,
         )
         print(json.dumps(result, indent=2))
+        return
+    if args.command == "prospective-directional-validate":
+        root = Path(__file__).resolve().parents[2]
+        result = run_directional_validation(
+            settings,
+            args.preregistration,
+            args.spec,
+            args.data_dir,
+            args.output_dir,
+            workspace_root=root,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
         return
     if args.command == "backtest-alert-replay":
         spec = load_backtest_spec(args.spec)

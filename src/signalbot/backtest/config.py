@@ -110,6 +110,7 @@ class BacktestSpec(StrictModel):
     candidate_policy: Literal[
         "c0_frozen", "strict_pit_htf_diagnostic"
     ] | None = None
+    direction_scope: Literal["market_default", "futures_bidirectional"] = "market_default"
     opportunity_panel_horizon_bars: Literal[12, 72] = 72
     outcome_edge_margin_bps: float = Field(
         default=0.0,

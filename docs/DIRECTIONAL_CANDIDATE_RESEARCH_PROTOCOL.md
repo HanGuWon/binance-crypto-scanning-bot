@@ -39,3 +39,30 @@ historical results, inspect sealed Phase-S values, change the recommendation
 registry, or place orders. Only a receipt with `PROMOTE` may authorize a later
 versioned recommendation wiring change, and even that does not grant order
 permission.
+
+## Executable validation command
+
+The Phase 1 runner uses the existing manifest-verified `data/backtest` input and
+does not download the Google Drive cold-archive shards:
+
+```powershell
+$env:UV_PROJECT_ENVIRONMENT = 'D:\\Binance bot-2\\.venv-codex'
+uv run signalbot prospective-directional-validate `
+  --config config/settings.example.yaml `
+  --preregistration config/research.futures-bidirectional.v1.yaml `
+  --spec config/backtest.5m.r2-c0-corrected.yaml `
+  --data-dir data/backtest `
+  --output-dir artifacts/prospective/futures-bidirectional-v1
+```
+
+The command freezes the source tree, verifies each Futures 5m and funding
+manifest, runs the two directional hypotheses with the strict-prior HTF policy,
+and writes bounded JSON receipts. It does not copy raw candles into the output
+directory. Historical spread/BBO remains a proxy; therefore a valid historical
+screen cannot be described as a passing live observed-BBO gate.
+
+The Freqtrade integration under `integrations/freqtrade/` remains a dry-run
+sidecar. Its static-universe strategy is useful for a candle-family comparison,
+but it cannot substitute for this scanner's source/data hash, fixture replay, or
+forward evidence. If the `freqtrade` executable is unavailable, the campaign
+receipt must say `NOT_INSTALLED` rather than implying parity.
