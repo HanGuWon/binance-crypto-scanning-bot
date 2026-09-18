@@ -52,15 +52,22 @@ def _chunks(values: list[str], size: int) -> list[tuple[str, ...]]:
 
 
 def build_websocket_plans(
-    market: Market, symbols: list[str], intervals: list[str], batch_size: int
+    market: Market,
+    symbols: list[str],
+    intervals: list[str],
+    batch_size: int,
+    *,
+    candle_only_symbols: frozenset[str] = frozenset(),
 ) -> list[WebSocketPlan]:
     lowered = [symbol.lower() for symbol in symbols]
+    candle_only = {symbol.lower() for symbol in candle_only_symbols}
     plans: list[WebSocketPlan] = []
     if market is Market.SPOT:
         detailed: list[str] = []
         for symbol in lowered:
             detailed.extend(f"{symbol}@kline_{interval}" for interval in intervals)
-            detailed.extend((f"{symbol}@aggTrade", f"{symbol}@bookTicker"))
+            if symbol not in candle_only:
+                detailed.extend((f"{symbol}@aggTrade", f"{symbol}@bookTicker"))
         for index, streams in enumerate(_chunks(detailed, batch_size), start=1):
             plans.append(
                 WebSocketPlan(
@@ -86,8 +93,9 @@ def build_websocket_plans(
     public_streams: list[str] = []
     for symbol in lowered:
         market_streams.extend(f"{symbol}@kline_{interval}" for interval in intervals)
-        market_streams.append(f"{symbol}@aggTrade")
-        public_streams.append(f"{symbol}@bookTicker")
+        if symbol not in candle_only:
+            market_streams.append(f"{symbol}@aggTrade")
+            public_streams.append(f"{symbol}@bookTicker")
     for index, streams in enumerate(_chunks(market_streams, batch_size), start=1):
         plans.append(
             WebSocketPlan(

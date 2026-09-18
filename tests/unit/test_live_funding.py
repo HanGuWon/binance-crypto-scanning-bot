@@ -191,7 +191,7 @@ async def test_scanner_bootstraps_recent_funding_then_requests_only_new_timestam
         assert latest.funding_time_ms == 400
 
         scanner.stop_event.set()
-        await asyncio.wait_for(scanner._funding_refresh_loop(["BTCUSDT"]), timeout=0.1)
+        await asyncio.wait_for(scanner._funding_refresh_loop(), timeout=0.1)
         assert len(requests) == 2
     finally:
         repository.close()

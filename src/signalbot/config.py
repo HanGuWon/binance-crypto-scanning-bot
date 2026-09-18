@@ -32,6 +32,8 @@ class BinanceSettings(StrictModel):
     request_timeout_seconds: float = Field(default=15, ge=1, le=60)
     funding_history_points: int = Field(default=256, ge=3, le=1000)
     funding_refresh_seconds: int = Field(default=300, ge=30, le=3600)
+    universe_refresh_seconds: int = Field(default=900, ge=60, le=86_400)
+    universe_change_confirmations: int = Field(default=2, ge=1, le=12)
     blacklist: list[str] = Field(default_factory=list)
     excluded_base_assets: list[str] = Field(default_factory=list)
 
@@ -79,6 +81,90 @@ class TechnicalExitSettings(StrictModel):
     max_holding_bars: int = Field(default=72, ge=1, le=10_000)
 
 
+class ShadowPolicySettings(StrictModel):
+    """Shadow successor policy. Informational-only until prospective validation."""
+
+    policy_version: Literal["er_context_v1"] = "er_context_v1"
+    efficiency_ratio_min: float = Field(default=0.40, gt=0, le=1)
+    breakout_max_distance_atr: float = Field(default=0.50, ge=0, le=5)
+    round_trip_cost_bps: float = Field(default=26.0, gt=0, le=200)
+    cost_headroom_multiple: float = Field(default=2.0, ge=1, le=20)
+    require_btc_context_aligned: bool = True
+    observation_enabled: bool = False
+    observation_schema_version: Literal[
+        "shadow_observation_v1", "shadow_observation_v2"
+    ] = "shadow_observation_v1"
+    campaign_schema_version: Literal["shadow_campaign_v1"] = "shadow_campaign_v1"
+    campaign_mode: Literal["smoke", "prospective"] = "smoke"
+    campaign_id: str | None = None
+    activation_ms: int | None = None
+    source_identity: str | None = None
+    campaign_created_at_ms: int | None = None
+    retest_observation_enabled: bool = False
+    retest_horizon_bars: int = Field(default=72, ge=1, le=10_000)
+
+    @model_validator(mode="after")
+    def freeze_observation_contract(self) -> ShadowPolicySettings:
+        if self.retest_observation_enabled and not self.observation_enabled:
+            raise ValueError(
+                "causal retest observation requires shadow observation_enabled"
+            )
+        if not self.observation_enabled:
+            return self
+        if (
+            self.retest_observation_enabled
+            and self.observation_schema_version != "shadow_observation_v2"
+        ):
+            raise ValueError("retest observation requires shadow_observation_v2")
+        if self.retest_observation_enabled:
+            prefix = "worktree-source-v1:"
+            digest = (self.source_identity or "").removeprefix(prefix)
+            if (
+                not (self.source_identity or "").startswith(prefix)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(
+                    "retest observation requires worktree-source-v1 source_identity"
+                )
+        if self.policy_version != "er_context_v1":
+            raise ValueError("shadow policy version is frozen for observation")
+        if not self.campaign_id:
+            raise ValueError("shadow observation requires an explicit campaign_id")
+        if not self.source_identity or not self.source_identity.strip():
+            raise ValueError("shadow observation requires source_identity")
+        if self.campaign_created_at_ms is None:
+            raise ValueError("shadow observation requires campaign_created_at_ms")
+        if self.campaign_mode == "prospective":
+            if not self.campaign_id:
+                raise ValueError(
+                    "prospective shadow campaign requires an explicit campaign_id"
+                )
+            if self.campaign_id.lower().startswith("smoke-"):
+                raise ValueError(
+                    "prospective campaign_id must not use the smoke namespace"
+                )
+            if self.activation_ms is None:
+                raise ValueError(
+                    "prospective shadow campaign requires activation_ms"
+                )
+            if not self.source_identity or not self.source_identity.strip():
+                raise ValueError(
+                    "prospective shadow campaign requires source_identity"
+                )
+            if self.campaign_created_at_ms is None:
+                raise ValueError(
+                    "prospective shadow campaign requires campaign_created_at_ms"
+                )
+            if self.activation_ms < self.campaign_created_at_ms:
+                raise ValueError(
+                    "prospective activation_ms must be >= campaign_created_at_ms"
+                )
+        elif self.campaign_id and not self.campaign_id.lower().startswith("smoke-"):
+            raise ValueError("smoke campaign_id must use the smoke- namespace")
+        return self
+
+
 class SignalSettings(StrictModel):
     watch_score: int = Field(default=60, ge=1, le=100)
     setup_score: int = Field(default=70, ge=1, le=100)
@@ -95,6 +181,7 @@ class SignalSettings(StrictModel):
     anomaly_robust_zscore: float = Field(default=4.0, ge=1, le=20)
     anomaly_min_points: int = Field(default=20, ge=5, le=500)
     anomaly_history_points: int = Field(default=600, ge=50, le=10000)
+    anomaly_min_quote_volume_usdt: float = Field(default=0, ge=0)
     gate_enabled: bool = False
     trend_gate: int = Field(default=60, ge=0, le=100)
     participation_gate: int = Field(default=60, ge=0, le=100)
@@ -110,6 +197,10 @@ class SignalSettings(StrictModel):
     gate_use_participation: bool = True
     gate_use_crowding: bool = True
     gate_use_higher_timeframes: bool = True
+    # ``shadow_er_context_v1`` is intentionally NOT a selectable production
+    # entry policy. The shadow successor may never replace R2 as the production
+    # decision path; it is evaluated only through the separate prospective
+    # observer (``shadow.observation_enabled``) alongside the frozen R2.
     entry_policy: Literal["legacy_gates", "r2_pit_htf_exec"] = "legacy_gates"
     execution_notional_usdt: float = Field(default=100.0, gt=0, le=1_000_000)
     confirmation_mode: Literal["score", "explicit_trigger"] = "explicit_trigger"
@@ -199,6 +290,7 @@ class RuntimeSettings(StrictModel):
     persist_candles: bool = True
     record_raw_events: bool = False
     raw_event_directory: str = "./var/raw-events"
+    storage_mode: Literal["legacy_jsonl_v1", "segmented_zstd_v1"] = "legacy_jsonl_v1"
     raw_event_max_bytes: int = Field(
         default=10_737_418_240,
         ge=1_048_576,
@@ -215,6 +307,7 @@ class Settings(StrictModel):
     storage: StorageSettings = StorageSettings()
     alerts: AlertSettings = AlertSettings()
     runtime: RuntimeSettings = RuntimeSettings()
+    shadow: ShadowPolicySettings = ShadowPolicySettings()
 
     @model_validator(mode="after")
     def validate_funding_history_capacity(self) -> Settings:
@@ -235,6 +328,54 @@ class Settings(StrictModel):
             if missing:
                 raise ValueError(
                     "r2_pit_htf_exec requires subscribed intervals: "
+                    + ", ".join(missing)
+                )
+        if self.shadow.observation_enabled:
+            # A prospective campaign observes ONE causal 5m clock while R2 stays
+            # the production path. A silent non-5m clock would corrupt the frozen
+            # sampling contract, so reject it at configuration load time.
+            if self.signals.entry_policy != "r2_pit_htf_exec":
+                raise ValueError(
+                    "shadow observation requires entry_policy=r2_pit_htf_exec"
+                )
+            if self.binance.primary_interval != "5m":
+                raise ValueError("shadow observation requires primary_interval=5m")
+            if not self.signals.gate_enabled:
+                raise ValueError("shadow observation requires gate_enabled")
+            if not self.shadow.campaign_id:
+                raise ValueError("shadow observation requires an explicit campaign_id")
+            if not self.shadow.source_identity or not self.shadow.source_identity.strip():
+                raise ValueError("shadow observation requires source_identity")
+            if self.shadow.campaign_created_at_ms is None:
+                raise ValueError("shadow observation requires campaign_created_at_ms")
+            if self.shadow.retest_observation_enabled:
+                if not self.runtime.persist_candles:
+                    raise ValueError(
+                        "causal retest observation requires runtime.persist_candles"
+                    )
+                prefix = "worktree-source-v1:"
+                source_identity = self.shadow.source_identity or ""
+                digest = source_identity.removeprefix(prefix)
+                if (
+                    not source_identity.startswith(prefix)
+                    or len(digest) != 64
+                    or any(character not in "0123456789abcdef" for character in digest)
+                ):
+                    raise ValueError(
+                        "prospective causal retest requires worktree-source-v1 source_identity"
+                    )
+                if not self.runtime.record_raw_events:
+                    raise ValueError(
+                        "causal retest observation requires "
+                        "runtime.record_raw_events for receipt-time parity evidence"
+                    )
+            required_intervals = {"5m", "15m", "1h"}
+            missing = sorted(
+                required_intervals.difference(self.binance.intervals)
+            )
+            if missing:
+                raise ValueError(
+                    "shadow observation requires subscribed intervals: "
                     + ", ".join(missing)
                 )
         return self

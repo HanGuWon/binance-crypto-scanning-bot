@@ -203,3 +203,29 @@ def test_prune_symbols_removes_only_inactive_symbol_state() -> None:
     assert machine.process(btc) is None
     assert machine.process(eth) is not None
     assert machine.prune_symbols(set()) == 2
+
+
+def test_prune_directional_states_keeps_risk_families_outside_tradable() -> None:
+    machine = SignalStateMachine(SignalSettings(), "v1")
+    assert machine.process(rule(60, 1_000, symbol="DOGEUSDT")) is not None
+    pump = RuleEvaluation(
+        market=Market.FUTURES,
+        symbol="DOGEUSDT",
+        family=SignalFamily.PUMP_RISK,
+        direction=Direction.RISK_UP,
+        timeframe="30s",
+        event_time_ms=1_000,
+        score=0,
+        price=Decimal("1"),
+    )
+    assert machine.process(pump) is None
+
+    assert machine.prune_directional_states({"BTCUSDT"}) == 1
+    assert {key[2] for key in machine._states} == {"pump_risk"}
+
+
+def test_prune_directional_states_keeps_tradable_directional_state() -> None:
+    machine = SignalStateMachine(SignalSettings(), "v1")
+    assert machine.process(rule(60, 1_000, symbol="BTCUSDT")) is not None
+    assert machine.prune_directional_states({"BTCUSDT"}) == 0
+    assert {key[2] for key in machine._states} == {"breakout_long"}

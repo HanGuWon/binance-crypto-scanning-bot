@@ -85,3 +85,65 @@ async def test_surveillance_panel_is_volume_ranked_and_bounded() -> None:
     universe = await selector.select(cast(BinanceRestClient, FakeRest()))
     assert universe.tradable_symbols == ["BTCUSDT"]
     assert universe.surveillance_symbols == frozenset({"BTCUSDT"})
+
+
+@pytest.mark.asyncio
+async def test_btc_benchmark_is_retained_when_volume_rank_falls_outside_panel() -> None:
+    class LowVolumeBtcRest(FakeRest):
+        async def tickers_24h(self) -> list[dict[str, Any]]:
+            return [
+                {"symbol": "BTCUSDT", "quoteVolume": "100"},
+                {"symbol": "ETHUSDT", "quoteVolume": "1000000"},
+            ]
+
+    settings = BinanceSettings(
+        top_n=1,
+        surveillance_n=1,
+        min_quote_volume=500,
+        minimum_age_days=30,
+    )
+    selector = UniverseSelector(settings, ReplayClock(1_710_000_000_000))
+    universe = await selector.select(cast(BinanceRestClient, LowVolumeBtcRest()))
+
+    assert universe.tradable_symbols == ["ETHUSDT"]
+    assert universe.surveillance_symbols == frozenset({"ETHUSDT"})
+    assert universe.context_symbols == frozenset({"BTCUSDT"})
+
+
+@pytest.mark.asyncio
+async def test_btc_benchmark_uses_only_a_non_tradable_surveillance_slot() -> None:
+    class ThreeAssetRest(FakeRest):
+        async def exchange_info(self) -> dict[str, Any]:
+            payload = await super().exchange_info()
+            symbols = cast(list[dict[str, Any]], payload["symbols"])
+            symbols.append(
+                {
+                    "symbol": "SOLUSDT",
+                    "baseAsset": "SOL",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                    "contractType": "PERPETUAL",
+                    "onboardDate": 1_600_000_000_000,
+                }
+            )
+            return payload
+
+        async def tickers_24h(self) -> list[dict[str, Any]]:
+            return [
+                {"symbol": "BTCUSDT", "quoteVolume": "100"},
+                {"symbol": "ETHUSDT", "quoteVolume": "1000000"},
+                {"symbol": "SOLUSDT", "quoteVolume": "900000"},
+            ]
+
+    settings = BinanceSettings(
+        top_n=1,
+        surveillance_n=2,
+        min_quote_volume=500,
+        minimum_age_days=30,
+    )
+    selector = UniverseSelector(settings, ReplayClock(1_710_000_000_000))
+    universe = await selector.select(cast(BinanceRestClient, ThreeAssetRest()))
+
+    assert universe.tradable_symbols == ["ETHUSDT"]
+    assert universe.surveillance_symbols == frozenset({"ETHUSDT", "BTCUSDT"})
+    assert universe.context_symbols == frozenset({"BTCUSDT"})

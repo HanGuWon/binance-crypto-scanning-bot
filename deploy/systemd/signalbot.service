@@ -1,0 +1,27 @@
+[Unit]
+Description=Binance Signal Bot (alert-only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=signalbot
+Group=signalbot
+WorkingDirectory=/opt/signalbot/current
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=-/etc/signalbot/signalbot.env
+ExecStart=/opt/signalbot/current/.venv/bin/signalbot run --config /etc/signalbot/settings.yaml
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+
+# The service only needs its SQLite state directory and outbound network access.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/signalbot
+
+[Install]
+WantedBy=multi-user.target

@@ -5,8 +5,12 @@ persistence, notification, and shutdown services.
 
 ## Live data and decision path
 
-1. Public REST discovers instruments, creates a bounded surveillance universe,
-   and ranks a smaller tradable universe by 24-hour quote volume.
+1. Public REST discovers instruments and separates three roles: a bounded
+   surveillance universe for broad anomaly detection, a smaller tradable
+   universe ranked by 24-hour quote volume, and an independent BTCUSDT context
+   universe for benchmark candles and market regime. Context symbols receive
+   candle data but never become recommendation candidates, BBO/order-flow
+   owners, funding owners, or PAPER positions unless they are also tradable.
 2. Public REST bootstraps closed candles for every configured timeframe. Gap
    recovery replays missing closed candles sequentially before evaluation.
 3. WebSocket plans use the routed endpoints: Spot uses its combined endpoint;
@@ -30,6 +34,11 @@ persistence, notification, and shutdown services.
    behavior.
 
 No component in this path calls an order endpoint.
+
+Live Discord titles translate the existing final decision state into a direct
+Korean recommendation (`상승 예상`, `하락 예상`, or `진입 보류`). The displayed
+0–100 value remains rule-evidence strength, not a calibrated probability, and
+only `CONFIRMED` directional decisions are rendered as entry candidates.
 
 ## Signal persistence and Discord outbox
 
@@ -163,4 +172,3 @@ awaits Discord HTTP. A separate outbox worker owns provider I/O, so webhook
 latency, rate limiting, and ambiguous transport outcomes cannot block Binance
 WebSocket processing. The worker sends only already-persisted immutable alert
 intents.
-

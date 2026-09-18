@@ -127,6 +127,34 @@ class BookTicker(FrozenModel):
         return value.upper()
 
 
+class ObservedBboSnapshot(FrozenModel):
+    """Immutable raw top-of-book evidence from one received BookTicker."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    bid_price: Decimal
+    bid_quantity: Decimal
+    ask_price: Decimal
+    ask_quantity: Decimal
+    exchange_event_time_ms: int | None = None
+    receipt_time_ms: int | None = None
+    update_id: int | None = None
+    age_ms: int
+
+    @model_validator(mode="after")
+    def validate_snapshot(self) -> ObservedBboSnapshot:
+        values = (self.bid_price, self.bid_quantity, self.ask_price, self.ask_quantity)
+        if any(not value.is_finite() for value in values):
+            raise ValueError("observed BBO values must be finite")
+        if self.bid_price <= 0 or self.ask_price <= 0:
+            raise ValueError("observed BBO prices must be positive")
+        if self.bid_quantity < 0 or self.ask_quantity < 0:
+            raise ValueError("observed BBO quantities must be non-negative")
+        if self.ask_price < self.bid_price or self.age_ms < 0:
+            raise ValueError("observed BBO ordering/age is invalid")
+        return self
+
+
 class AggTrade(FrozenModel):
     market: Market
     symbol: str
@@ -272,10 +300,12 @@ class FeatureSnapshot(FrozenModel):
     book_age_ms: int | None = None
     bid_quote_capacity: float | None = None
     ask_quote_capacity: float | None = None
+    observed_bbo: ObservedBboSnapshot | None = None
     previous_high: float | None = None
     previous_low: float | None = None
     previous_ema20: float | None = None
     ema20_distance_atr: float | None = None
+    efficiency_ratio_20: float | None = None
     chart_structure: ChartStructureSnapshot = ChartStructureSnapshot()
     data_completeness: float = Field(default=1.0, ge=0.0, le=1.0)
     regime: MarketRegime
@@ -310,6 +340,31 @@ class DirectionalDiagnostics(FrozenModel):
 
 
 DIRECTIONAL_DIAGNOSTICS_METADATA_KEY = "directional_diagnostics_v1"
+
+
+class ComparatorCandidate(FrozenModel):
+    """One deterministic common-opportunity comparator view for a raw C0 close.
+
+    Built from a single causal ``FeatureSnapshot`` and strictly-prior contexts so
+    the incumbent R2 and the shadow policy are evaluated on exactly the same
+    input through the same cutoff. ``informational_only`` is locked True; this
+    is a prospective research observation, never an entry recommendation.
+    """
+
+    market: Market
+    symbol: str
+    family: SignalFamily
+    direction: Direction
+    decision_time_ms: int
+    primary_interval: str
+    raw_c0_triggered: bool
+    raw_score: int
+    r2_passed: bool
+    r2_failures: tuple[str, ...] = ()
+    shadow_passed: bool
+    shadow_failures: tuple[str, ...] = ()
+    shadow_gate: dict = Field(default_factory=dict)
+    informational_only: Literal[True] = True
 
 
 class RuleEvaluation(FrozenModel):

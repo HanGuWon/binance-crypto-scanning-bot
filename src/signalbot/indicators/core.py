@@ -482,6 +482,17 @@ class FeatureEngine:
             pivots=arrays.pivots,
             _closed_prefix_validated=True,
         )
+        efficiency_window = arrays.closes[index - 20 : index + 1]
+        efficiency_distance = abs(efficiency_window[-1] - efficiency_window[0])
+        efficiency_path = sum(
+            abs(current - previous)
+            for previous, current in pairwise(efficiency_window)
+        )
+        efficiency_ratio_20 = (
+            efficiency_distance / efficiency_path
+            if efficiency_path > 0
+            else None
+        )
         taker_delta_reason = (
             None
             if taker_delta is not None
@@ -551,6 +562,7 @@ class FeatureEngine:
                 if current_atr > 0
                 else None
             ),
+            efficiency_ratio_20=efficiency_ratio_20,
             chart_structure=chart_structure,
             data_completeness=(
                 70

@@ -189,6 +189,49 @@ async def test_runtime_atomically_keeps_pending_alert_when_handler_crashes() -> 
 
 
 @pytest.mark.asyncio
+async def test_runtime_restores_signal_state_when_persistence_fails() -> None:
+    settings = Settings.model_validate(
+        {
+            "binance": {"markets": ["spot"], "intervals": ["5m"]},
+            "storage": {"url": "sqlite:///:memory:"},
+        }
+    )
+    repo = SqlRepository(settings.storage.url)
+    repo.initialize()
+    async def collect(_decision: SignalDecision) -> None:
+        return None
+
+    runtime = MarketRuntime(Market.SPOT, settings, repo, ReplayClock(1_000), collect)
+    evaluation = RuleEvaluation(
+        market=Market.SPOT,
+        symbol="BTCUSDT",
+        family=SignalFamily.BREAKOUT_LONG,
+        direction=Direction.LONG,
+        timeframe="5m",
+        event_time_ms=600_000,
+        score=65,
+        triggered=True,
+        eligible=True,
+        price=Decimal("100"),
+        reasons=("frozen C0 trigger",),
+        invalidation=Decimal("98"),
+    )
+    original = repo.save_signal_and_enqueue
+
+    def fail_once(*_args, **_kwargs):
+        raise RuntimeError("injected persistence failure")
+
+    repo.save_signal_and_enqueue = fail_once  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="persistence failure"):
+        await runtime._process(evaluation)
+
+    repo.save_signal_and_enqueue = original  # type: ignore[method-assign]
+    decision = await runtime._process(evaluation)
+    assert decision is not None
+    assert len(repo.recent_signals()) == 1
+    repo.close()
+
+@pytest.mark.asyncio
 async def test_runtime_persists_one_paper_gap_exit_without_replay_duplicate() -> None:
     settings = Settings.model_validate(
         {

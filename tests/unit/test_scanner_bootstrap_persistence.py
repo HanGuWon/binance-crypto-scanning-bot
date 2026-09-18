@@ -1,10 +1,13 @@
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
 from conftest import make_candle
-from signalbot.domain.models import Candle
+from signalbot.domain.enums import Market
+from signalbot.domain.models import Candle, Instrument
+from signalbot.exchange.binance.universe import Universe
 from signalbot.scanner import MarketScanner
 
 
@@ -71,3 +74,61 @@ async def test_scanner_bootstrap_persists_each_rest_batch_once() -> None:
     assert runtime.bootstraps == [first_batch, second_batch]
     assert runtime.repository.batches == [first_batch, second_batch]
     assert runtime.rebuilds == 1
+
+
+@pytest.mark.asyncio
+async def test_scanner_prepares_tradable_and_independent_context_market_data() -> None:
+    class FakeSelector:
+        async def select(self, _rest: object) -> Universe:
+            eth = Instrument(
+                market=Market.SPOT,
+                symbol="ETHUSDT",
+                base_asset="ETH",
+                quote_asset="USDT",
+                status="TRADING",
+                quote_volume=Decimal("1"),
+            )
+            btc = eth.model_copy(
+                update={"symbol": "BTCUSDT", "base_asset": "BTC"}
+            )
+            return Universe(Market.SPOT, (eth,), (eth,), (btc,))
+
+    class FakeRuntime:
+        def __init__(self) -> None:
+            self.active: tuple[frozenset[str], frozenset[str], frozenset[str]] | None = None
+
+        def set_active_symbols(
+            self,
+            tradable: frozenset[str],
+            surveillance: frozenset[str],
+            context: frozenset[str],
+        ) -> None:
+            self.active = (tradable, surveillance, context)
+
+    bootstrapped: list[list[str]] = []
+
+    async def bootstrap(symbols: list[str]) -> None:
+        bootstrapped.append(symbols)
+
+    runtime = FakeRuntime()
+    scanner = cast(
+        MarketScanner,
+        SimpleNamespace(
+            selector=FakeSelector(),
+            rest=object(),
+            runtime=runtime,
+            market=Market.SPOT,
+            universe=None,
+            _bootstrap=bootstrap,
+        ),
+    )
+
+    universe = await MarketScanner.prepare(scanner)
+
+    assert universe.tradable_symbols == ["ETHUSDT"]
+    assert runtime.active == (
+        frozenset({"ETHUSDT"}),
+        frozenset({"ETHUSDT"}),
+        frozenset({"BTCUSDT"}),
+    )
+    assert bootstrapped == [["BTCUSDT", "ETHUSDT"]]

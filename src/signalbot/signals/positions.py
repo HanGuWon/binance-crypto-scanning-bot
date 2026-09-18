@@ -63,6 +63,43 @@ class StopFill:
     reason: ExitReason
 
 
+def calculate_trailing_stop_candidate(
+    *,
+    direction: Direction,
+    entry_price: float,
+    initial_stop: float,
+    active_stop: float,
+    highest_price: float,
+    lowest_price: float,
+    atr: float,
+    activation_r: float,
+    atr_multiple: float,
+) -> float | None:
+    """Return a monotonic trailing-stop candidate without mutating position state.
+
+    This is the shared price rule used by the PAPER lifecycle and by external
+    position-management intent generation. A candidate is returned only after
+    the configured favourable excursion has been reached and only when it
+    tightens the current stop.
+    """
+
+    initial_risk = abs(entry_price - initial_stop)
+    if initial_risk <= 0 or atr <= 0:
+        return None
+    activation = initial_risk * activation_r
+    if direction is Direction.LONG:
+        if highest_price - entry_price < activation:
+            return None
+        candidate = highest_price - atr_multiple * atr
+        return candidate if candidate > active_stop else None
+    if direction is Direction.SHORT:
+        if entry_price - lowest_price < activation:
+            return None
+        candidate = lowest_price + atr_multiple * atr
+        return candidate if candidate < active_stop else None
+    return None
+
+
 class TechnicalExitEngine:
     """Closed-candle exit policy shared by paper trading and backtests.
 
@@ -152,23 +189,21 @@ class TechnicalExitEngine:
         return None
 
     def _update_trailing_stop(self, position: PaperPosition, atr: float) -> None:
-        if position.initial_risk <= 0 or atr <= 0:
+        candidate = calculate_trailing_stop_candidate(
+            direction=position.direction,
+            entry_price=position.entry_price,
+            initial_stop=position.initial_stop,
+            active_stop=position.active_stop,
+            highest_price=position.highest_price,
+            lowest_price=position.lowest_price,
+            atr=atr,
+            activation_r=self.settings.trailing_activation_r,
+            atr_multiple=self.settings.trailing_atr_multiple,
+        )
+        if candidate is None:
             return
-        activation = position.initial_risk * self.settings.trailing_activation_r
-        if position.direction is Direction.LONG:
-            if position.highest_price - position.entry_price < activation:
-                return
-            candidate = position.highest_price - self.settings.trailing_atr_multiple * atr
-            if candidate > position.active_stop:
-                position.active_stop = candidate
-                position.active_stop_reason = ExitReason.TRAILING_STOP
-        else:
-            if position.entry_price - position.lowest_price < activation:
-                return
-            candidate = position.lowest_price + self.settings.trailing_atr_multiple * atr
-            if candidate < position.active_stop:
-                position.active_stop = candidate
-                position.active_stop_reason = ExitReason.TRAILING_STOP
+        position.active_stop = candidate
+        position.active_stop_reason = ExitReason.TRAILING_STOP
 
 
 @dataclass(slots=True)
@@ -230,6 +265,18 @@ class PaperPositionLifecycle:
     @property
     def pending_entry_count(self) -> int:
         return sum(state.pending_entry is not None for state in self._states.values())
+
+    @property
+    def continuation_symbols(self) -> frozenset[str]:
+        """Symbols that must keep receiving primary candles to finish PAPER state."""
+
+        return frozenset(
+            symbol
+            for symbol, state in self._states.items()
+            if state.position is not None
+            or state.pending_entry is not None
+            or state.pending_exit is not None
+        )
 
     def checkpoint_symbol(self, symbol: str) -> PaperLifecycleCheckpoint:
         """Snapshot only one bounded symbol state before attempting persistence."""

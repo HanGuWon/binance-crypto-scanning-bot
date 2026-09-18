@@ -85,6 +85,58 @@ async def test_non_tradable_candles_books_and_trades_are_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_context_symbol_keeps_market_data_without_execution_state_or_signals() -> None:
+    runtime, repository = _runtime(_settings())
+    runtime.set_active_symbols(
+        frozenset({"ETHUSDT"}),
+        frozenset({"ETHUSDT"}),
+        frozenset({"BTCUSDT"}),
+    )
+
+    assert runtime.bootstrap([make_candle(0, symbol="BTCUSDT")]) == 1
+    await runtime.handle_event(make_candle(1, symbol="BTCUSDT"))
+    await runtime.handle_event(
+        BookTicker(
+            market=Market.SPOT,
+            symbol="BTCUSDT",
+            event_time_ms=1_000,
+            bid_price=Decimal("99.9"),
+            bid_quantity=Decimal("1"),
+            ask_price=Decimal("100.1"),
+            ask_quantity=Decimal("1"),
+        )
+    )
+    await runtime.handle_event(
+        AggTrade(
+            market=Market.SPOT,
+            symbol="BTCUSDT",
+            event_time_ms=1_000,
+            trade_time_ms=1_000,
+            price=Decimal("100"),
+            quantity=Decimal("1"),
+            is_buyer_maker=False,
+            aggregate_trade_id=1,
+        )
+    )
+
+    assert runtime.candles.size(Market.SPOT, "BTCUSDT", "5m") == 2
+    assert runtime.books.spread_bps(
+        Market.SPOT, "BTCUSDT", as_of_ms=1_000, maximum_age_ms=0
+    ) is None
+    assert not runtime.order_flow.snapshot(
+        Market.SPOT, "BTCUSDT", 1_000
+    ).available
+    assert runtime.decision_count == 0
+
+    runtime.set_active_symbols(
+        frozenset({"ETHUSDT"}),
+        frozenset({"ETHUSDT"}),
+    )
+    assert runtime.candles.size(Market.SPOT, "BTCUSDT", "5m") == 0
+    repository.close()
+
+
+@pytest.mark.asyncio
 async def test_universe_rotation_prunes_every_runtime_owned_symbol_store() -> None:
     runtime, repository = _runtime(_settings())
     runtime.set_active_symbols(
@@ -163,4 +215,38 @@ def test_universe_contract_rejects_capacity_and_subset_violations() -> None:
             frozenset({"AUSDT"}),
             frozenset({"BUSDT"}),
         )
+    repository.close()
+
+
+@pytest.mark.asyncio
+async def test_conflicting_book_ticker_cursor_is_discarded_without_raising() -> None:
+    runtime, repository = _runtime(_settings())
+    runtime.set_active_symbols(frozenset({"BTCUSDT"}), frozenset({"BTCUSDT"}))
+    first = BookTicker(
+        market=Market.SPOT,
+        symbol="BTCUSDT",
+        event_time_ms=1_000,
+        bid_price=Decimal("99.9"),
+        bid_quantity=Decimal("1"),
+        ask_price=Decimal("100.1"),
+        ask_quantity=Decimal("1"),
+    )
+    conflicting = BookTicker(
+        market=Market.SPOT,
+        symbol="BTCUSDT",
+        event_time_ms=1_000,
+        bid_price=Decimal("98.0"),
+        bid_quantity=Decimal("1"),
+        ask_price=Decimal("100.1"),
+        ask_quantity=Decimal("1"),
+    )
+
+    await runtime.handle_event(first)
+    await runtime.handle_event(conflicting)
+
+    snapshot = runtime.books.snapshot(
+        Market.SPOT, "BTCUSDT", as_of_ms=1_000, maximum_age_ms=0
+    )
+    assert snapshot is not None
+    assert snapshot.bid_quote_capacity == float(Decimal("99.9"))
     repository.close()

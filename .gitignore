@@ -27,3 +27,45 @@ data/backtest/
 /integrations/freqtrade/reality_sync_freqai/
 /pro-binance-bot-skeleton.zip
 /([{]text
+
+# Local orchestration, campaign data, and operational evidence are not source.
+/.codexclaw/
+/.worktrees/
+/campaigns/
+/devlog/
+/health/
+/deployment/
+/migration/
+
+# Large/generated evidence and machine-local migration receipts.
+/artifacts/_phase_p_capture/
+/artifacts/evidence/
+/BOT2-GDRIVE-*
+/BOT2_*
+/PHASE_R_90GB_STORAGE_MAP_V1.*
+/pytest_*.txt
+/testsuitereport.txt
+/.tmp_probe
+/=
+
+# Machine-local audit, recovery, and one-off campaign helpers.
+/artifacts/_wp6_freeze_diff.json
+/artifacts/transport/
+/Binance bot-2.codexclaw_patch_incident.py
+/compact_panel_archive.py
+/docs/OCI_AUTONOMOUS_ACCESS_RUNBOOK.md
+/docs/OCI_PROSPECTIVE_RUNBOOK.md
+/tools/_phase_n_provenance_probe.py
+/tools/_run_wp6_until_replay_complete.ps1
+/tools/_wp6_freeze_diff.py
+/tools/_wp6_policy_probe.py
+/tools/_wp6_v4_gap_probe.py
+/tools/_wp7_probe_gates.py
+/tools/_wp8_canary_gates.py
+/tools/_wp8_schema_probe.py
+/tools/_wp9_activation_receipt.py
+/tools/_wp9_health_query.py
+/tools/_wp9_make_config.py
+/tools/_wp9_policy_probe.py
+/tools/resume_bot2_u001_r2.ps1
+/tools/resume_bot2_u001_spot_r2.ps1

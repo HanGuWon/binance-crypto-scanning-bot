@@ -30,6 +30,19 @@ class CandleGap:
     end_time_ms: int
 
 
+class CandleConflictError(ValueError):
+    """Raised when a finalized candle changes after it was first accepted."""
+
+    def __init__(self, existing: Candle, incoming: Candle) -> None:
+        self.existing = existing
+        self.incoming = incoming
+        super().__init__(
+            "conflicting finalized candle: "
+            f"{incoming.market.value}/{incoming.symbol}/{incoming.interval}/"
+            f"{incoming.open_time_ms}"
+        )
+
+
 class CandleStore:
     def __init__(self, history_limit: int) -> None:
         self.history_limit = history_limit
@@ -48,12 +61,43 @@ class CandleStore:
         if index < len(series) and series[index].open_time_ms == candle.open_time_ms:
             if series[index] == candle:
                 return False
-            series[index] = candle
+            raise CandleConflictError(series[index], candle)
         else:
             series.insert(index, candle)
         if len(series) > self.history_limit:
             del series[: len(series) - self.history_limit]
         return True
+
+    @staticmethod
+    @staticmethod
+    def validate_series(candles: list[Candle]) -> None:
+        """Reject malformed bootstrap history before it can feed indicators."""
+
+        if not candles:
+            return
+        ordered = sorted(candles, key=lambda item: item.open_time_ms)
+        step = interval_to_milliseconds(ordered[0].interval)
+        unique: list[Candle] = []
+        for candle in ordered:
+            if candle.interval != ordered[0].interval:
+                raise ValueError("bootstrap series mixes candle intervals")
+            if unique and candle.open_time_ms == unique[-1].open_time_ms:
+                if candle != unique[-1]:
+                    raise CandleConflictError(unique[-1], candle)
+                continue
+            if candle.open_time_ms % step:
+                raise ValueError("bootstrap candle is off the exchange time grid")
+            unique.append(candle)
+        previous: Candle | None = None
+        for candle in unique:
+            if previous is not None:
+                delta = candle.open_time_ms - previous.open_time_ms
+                if delta != step:
+                    raise ValueError(
+                        "bootstrap candle series is not contiguous: "
+                        f"expected {step} ms, observed {delta} ms"
+                    )
+            previous = candle
 
     def add_many(self, candles: list[Candle]) -> int:
         return sum(int(self.add(c)) for c in sorted(candles, key=lambda x: x.open_time_ms))

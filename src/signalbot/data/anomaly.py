@@ -34,10 +34,33 @@ class AnomalyDetector:
         machine needs a valid idle observation to clear a prior intrabar warning.
         Rejected symbols, invalid prices, and out-of-order observations return no
         evaluations and therefore cannot accidentally reset live state.
+
+        Liquidity semantics (documented fail-closed contract):
+        - a *valid* quote_volume below the configured floor is real evidence of
+          insufficient liquidity and therefore emits the idle (score 0) families,
+          which is what allows a previously liquidity-qualified warning to clear;
+        - a *missing* (``None``) quote_volume is unusable evidence: liquidity
+          qualification cannot be evaluated, so no evaluation is returned and any
+          prior warning is preserved. Absence of data never clears a warning.
         """
 
         if ticker.symbol not in allowed_symbols or ticker.close <= 0:
             return ()
+        liquidity_floor = self.settings.anomaly_min_quote_volume_usdt
+        if liquidity_floor > 0:
+            if ticker.quote_volume is None:
+                return ()
+            if float(ticker.quote_volume) < liquidity_floor:
+                return self._with_idle_families(
+                    ticker,
+                    regime,
+                    None,
+                    reason=(
+                        "below anomaly liquidity floor "
+                        f"({float(ticker.quote_volume):.0f} < "
+                        f"{liquidity_floor:.0f} USDT)"
+                    ),
+                )
         key = (ticker.market, ticker.symbol)
         points = self._points[key]
         point = PricePoint(ticker.event_time_ms, float(ticker.close))
@@ -97,13 +120,19 @@ class AnomalyDetector:
         ticker: MiniTicker,
         regime: MarketRegime,
         triggered: RuleEvaluation | None,
+        *,
+        reason: str = "valid intrabar observation; anomaly conditions absent",
     ) -> tuple[RuleEvaluation, RuleEvaluation]:
         by_family = {triggered.family: triggered} if triggered is not None else {}
         return (
             by_family.get(SignalFamily.PUMP_RISK)
-            or self._idle(ticker, regime, SignalFamily.PUMP_RISK, Direction.RISK_UP),
+            or self._idle(
+                ticker, regime, SignalFamily.PUMP_RISK, Direction.RISK_UP, reason
+            ),
             by_family.get(SignalFamily.CRASH_RISK)
-            or self._idle(ticker, regime, SignalFamily.CRASH_RISK, Direction.RISK_DOWN),
+            or self._idle(
+                ticker, regime, SignalFamily.CRASH_RISK, Direction.RISK_DOWN, reason
+            ),
         )
 
     def _idle(
@@ -112,6 +141,7 @@ class AnomalyDetector:
         regime: MarketRegime,
         family: SignalFamily,
         direction: Direction,
+        reason: str,
     ) -> RuleEvaluation:
         return RuleEvaluation(
             market=ticker.market,
@@ -123,7 +153,7 @@ class AnomalyDetector:
             score=0,
             triggered=False,
             price=ticker.close,
-            reasons=("valid intrabar observation; anomaly conditions absent",),
+            reasons=(reason,),
             regime=regime,
             metadata={"intrabar": True, "idle_evaluation": True},
         )
