@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Literal
 
@@ -150,6 +150,15 @@ def reconcile_once(
         operator_attention=bool(alerts),
         snapshot_event_accepted=snapshot_accepted,
     )
+
+
+def apply_stream_health(
+    request: ReconciliationRequest,
+    health: Literal["HEALTHY", "DEGRADED", "DISCONNECTED", "EXPIRED"],
+) -> ReconciliationRequest:
+    """Convert stream loss/expiry into the existing REST-resync uncertainty gate."""
+
+    return replace(request, uncertainty_state="CERTAIN" if health == "HEALTHY" else "DEGRADED")
 
 
 def _release(

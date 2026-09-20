@@ -31,6 +31,26 @@ The position endpoint is treated as a REST snapshot and is intended to be
 paired with `ACCOUNT_UPDATE` in the later L50-06 stream task. The open algo
 order endpoint is parsed as an array, matching the current official example.
 
+## USDⓈ-M private user stream
+
+The current official USDⓈ-M User Data Streams page was rechecked on
+2026-09-20. A listenKey is created and kept alive through the official
+`/fapi/v1/listenKey` lifecycle, is valid for 60 minutes after creation, and
+the raw stream URL is
+`wss://fstream.binance.com/private/ws/<listenKey>`. A single connection is
+valid for 24 hours, so reconnect is expected. The documented same-event-type
+ordering uses transaction time `T` and event time `E`; the implementation
+uses both as a monotonic guard and still requires a REST resync after any
+disconnect, expiry, out-of-order event, malformed payload, or queue overflow.
+
+The recorded stream adapter accepts `ACCOUNT_UPDATE`, `ORDER_TRADE_UPDATE`,
+`ALGO_UPDATE`, `ACCOUNT_CONFIG_UPDATE`, `MARGIN_CALL`,
+`CONDITIONAL_ORDER_TRIGGER_REJECT`, `TRADE_LITE`, `STRATEGY_UPDATE`,
+`GRID_UPDATE`, and `listenKeyExpired`. It keeps a bounded queue and bounded
+dedupe cache. It does not create, keep alive, or delete a listenKey yet, and
+it does not place, amend, or cancel an exchange order. The caller must complete
+REST resynchronization before clearing the degraded state.
+
 ## Signing and timing
 
 Signed requests include `timestamp` and `recvWindow` in milliseconds and send
@@ -54,4 +74,6 @@ credentials or live account data.
 - [USDⓈ-M Futures market data REST API](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data)
 - [USDⓈ-M Futures account REST API](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/account)
 - [USDⓈ-M Futures trade REST API](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade)
+- [USDⓈ-M Futures User Data Streams](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams)
+- [USDⓈ-M Futures WebSocket stream subscription](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Live-Subscribing-Unsubscribing-to-streams)
 - [Binance REST API general information and signed endpoint security](https://developers.binance.com/en/docs/products/spot/rest-api)

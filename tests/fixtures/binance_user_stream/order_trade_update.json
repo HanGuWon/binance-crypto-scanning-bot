@@ -1,0 +1,17 @@
+{
+  "e": "ORDER_TRADE_UPDATE",
+  "E": 1700000002000,
+  "T": 1700000001999,
+  "o": {
+    "s": "BTCUSDT",
+    "c": "guardian-stop",
+    "S": "SELL",
+    "o": "STOP_MARKET",
+    "x": "NEW",
+    "X": "NEW",
+    "q": "0.010",
+    "p": "0",
+    "sp": "59000",
+    "ps": "LONG"
+  }
+}
