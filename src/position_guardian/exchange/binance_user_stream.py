@@ -22,6 +22,7 @@ UserStreamEventType = Literal[
 ]
 UserStreamHealth = Literal["HEALTHY", "DEGRADED", "DISCONNECTED", "EXPIRED"]
 IngestStatus = Literal["ACCEPTED", "DUPLICATE", "OUT_OF_ORDER", "OVERFLOW", "INVALID"]
+ResyncStatus = Literal["CERTAIN", "DEGRADED"]
 
 PRODUCTION_USER_STREAM_BASE_URL = "wss://fstream.binance.com/private"
 
@@ -53,6 +54,30 @@ class IngestResult:
     status: IngestStatus
     event: UserStreamEvent | None
     health: UserStreamHealth
+
+
+@dataclass(frozen=True)
+class RestResyncSession:
+    """Fence identity for one authoritative REST reconciliation attempt."""
+
+    generation: int
+    start_ingest_sequence: int
+    pending_event_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RestResyncResult:
+    """Result of applying the REST/stream fence contract."""
+
+    status: ResyncStatus
+    snapshot_id: str
+    snapshot_cursor: str
+    reason: str | None
+    crossed_event_ids: tuple[str, ...]
+
+    @property
+    def certainty_restored(self) -> bool:
+        return self.status == "CERTAIN"
 
 
 def build_user_stream_url(
@@ -123,6 +148,11 @@ class BoundedUserEventBuffer:
         self._dedupe_ids: set[str] = set()
         self._last_ordering: dict[UserStreamEventType, tuple[int, int]] = {}
         self._health: UserStreamHealth = "HEALTHY"
+        self._ingest_sequence = 0
+        self._resync_generation = 0
+        self._active_resync: RestResyncSession | None = None
+        self._resync_event_ids: list[str] = []
+        self._resync_interference = False
 
     @property
     def health(self) -> UserStreamHealth:
@@ -140,7 +170,15 @@ class BoundedUserEventBuffer:
     def dedupe_count(self) -> int:
         return len(self._dedupe_ids)
 
+    @property
+    def resync_in_progress(self) -> bool:
+        return self._active_resync is not None
+
     def ingest(self, event: UserStreamEvent) -> IngestResult:
+        self._ingest_sequence += 1
+        if self._active_resync is not None:
+            self._resync_event_ids.append(event.event_id)
+            self._resync_interference = True
         if event.event_id in self._dedupe_ids:
             return IngestResult("DUPLICATE", event, self._health)
         last_ordering = self._last_ordering.get(event.event_type)
@@ -166,6 +204,9 @@ class BoundedUserEventBuffer:
         try:
             event = parse_user_stream_event(raw_payload)
         except UserStreamPayloadError:
+            self._ingest_sequence += 1
+            if self._active_resync is not None:
+                self._resync_interference = True
             self._health = "DEGRADED"
             return IngestResult("INVALID", None, self._health)
         return self.ingest(event)
@@ -179,9 +220,99 @@ class BoundedUserEventBuffer:
     def mark_disconnected(self) -> None:
         self._health = "DISCONNECTED"
 
-    def mark_rest_resync_complete(self) -> None:
+    def begin_rest_resync(self) -> RestResyncSession:
+        """Start a bounded REST attempt and fence all stream activity around it."""
+
+        if self._active_resync is not None:
+            raise RuntimeError("a REST resync is already in progress")
+        self._resync_generation += 1
+        session = RestResyncSession(
+            generation=self._resync_generation,
+            start_ingest_sequence=self._ingest_sequence,
+            pending_event_ids=tuple(event.event_id for event in self._queue),
+        )
+        self._active_resync = session
+        self._resync_event_ids = []
+        self._resync_interference = False
+        self._health = "DEGRADED"
+        return session
+
+    def complete_rest_resync(
+        self,
+        session: RestResyncSession,
+        *,
+        snapshot_id: str,
+        snapshot_cursor: str,
+    ) -> RestResyncResult:
+        """Restore certainty only when no stream event crossed the REST fence.
+
+        Binance REST snapshots do not provide a stream sequence number. The
+        conservative contract therefore refuses to infer ordering from wall
+        clock timestamps. A crossed or still-buffered event keeps the buffer
+        degraded until the caller explicitly fences it and performs another
+        bounded REST attempt.
+        """
+
+        self._require_active_resync(session)
+        if not snapshot_id.strip() or not snapshot_cursor.strip():
+            raise ValueError("authoritative REST snapshot identity must be non-empty")
+        crossed = tuple(dict.fromkeys((*session.pending_event_ids, *self._resync_event_ids)))
+        if (
+            self._resync_interference
+            or self._ingest_sequence != session.start_ingest_sequence
+            or self._queue
+            or crossed
+        ):
+            return RestResyncResult(
+                status="DEGRADED",
+                snapshot_id=snapshot_id,
+                snapshot_cursor=snapshot_cursor,
+                reason="STREAM_ACTIVITY_CROSSED_REST_FENCE",
+                crossed_event_ids=crossed,
+            )
+        self._active_resync = None
+        self._resync_event_ids = []
+        self._resync_interference = False
         self._health = "HEALTHY"
         self._last_ordering.clear()
+        return RestResyncResult(
+            status="CERTAIN",
+            snapshot_id=snapshot_id,
+            snapshot_cursor=snapshot_cursor,
+            reason=None,
+            crossed_event_ids=(),
+        )
+
+    def fence_buffered_events(self, session: RestResyncSession) -> tuple[str, ...]:
+        """Explicitly discard an unsafe interval and keep the buffer degraded."""
+
+        self._require_active_resync(session)
+        event_ids = tuple(
+            dict.fromkeys(
+                (
+                    *session.pending_event_ids,
+                    *self._resync_event_ids,
+                    *(event.event_id for event in self._queue),
+                )
+            )
+        )
+        self._queue.clear()
+        self._active_resync = None
+        self._resync_event_ids = []
+        self._resync_interference = False
+        self._health = "DEGRADED"
+        return event_ids
+
+    def mark_rest_resync_complete(self) -> None:
+        """Reject the historical unsafe shortcut; use begin/complete instead."""
+
+        raise RuntimeError(
+            "REST resync requires an authoritative snapshot and an explicit stream fence"
+        )
+
+    def _require_active_resync(self, session: RestResyncSession) -> None:
+        if self._active_resync != session:
+            raise ValueError("REST resync session is stale or belongs to another buffer")
 
 
 class BoundedReconnectBackoff:

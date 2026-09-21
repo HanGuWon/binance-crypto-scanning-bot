@@ -99,6 +99,28 @@ async def test_recorded_private_reads_parse_all_required_resources() -> None:
 
 
 @pytest.mark.asyncio
+async def test_testnet_private_reads_use_canonical_demo_rest_host() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=_fixture("server_time.json"))
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    client = BinancePrivateReadClient(
+        api_key="fixture-api-key",
+        api_secret="fixture-api-secret",
+        exchange_environment="testnet",
+        client=http_client,
+    )
+    async with http_client:
+        assert (await client.server_time()).server_time_ms == 1700000000123
+
+    assert requests[0].url.host == "demo-fapi.binance.com"
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_retries_are_bounded_and_use_recorded_payload() -> None:
     responses = [
         httpx.Response(429, json=_fixture("error_rate_limit.json")),

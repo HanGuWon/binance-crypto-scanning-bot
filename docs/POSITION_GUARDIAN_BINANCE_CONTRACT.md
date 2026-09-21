@@ -1,6 +1,6 @@
 # Position Guardian Binance USDⓈ-M read contract
 
-Verified against the official Binance Developer Documentation on 2026-09-20.
+Verified against the official Binance Developer Documentation on 2026-09-21.
 The Guardian contract is deliberately limited to read-only REST calls. This
 task adds no order placement, amendment, cancellation, or user-stream writer.
 
@@ -9,12 +9,12 @@ task adds no order placement, amendment, cancellation, or user-stream writer.
 | Environment | Base URL |
 | --- | --- |
 | production | `https://fapi.binance.com` |
-| testnet | `https://testnet.binancefuture.com` |
+| testnet | `https://demo-fapi.binance.com` |
 
 The production market-data and account documentation identifies
-`https://fapi.binance.com` as the USDⓈ-M REST host. The testnet host is kept as
-a configuration boundary for later testnet qualification; this package does
-not contact either host during tests.
+`https://fapi.binance.com` as the USDⓈ-M REST host. The current USDⓈ-M demo
+contract identifies `https://demo-fapi.binance.com` as its testnet REST host.
+This package does not contact either host during tests.
 
 ## Read endpoints
 
@@ -34,7 +34,7 @@ order endpoint is parsed as an array, matching the current official example.
 ## USDⓈ-M private user stream
 
 The current official USDⓈ-M User Data Streams page was rechecked on
-2026-09-20. A listenKey is created and kept alive through the official
+2026-09-21. A listenKey is created and kept alive through the official
 `/fapi/v1/listenKey` lifecycle, is valid for 60 minutes after creation, and
 the raw stream URL is
 `wss://fstream.binance.com/private/ws/<listenKey>`. A single connection is
@@ -49,7 +49,11 @@ The recorded stream adapter accepts `ACCOUNT_UPDATE`, `ORDER_TRADE_UPDATE`,
 `GRID_UPDATE`, and `listenKeyExpired`. It keeps a bounded queue and bounded
 dedupe cache. It does not create, keep alive, or delete a listenKey yet, and
 it does not place, amend, or cancel an exchange order. The caller must complete
-REST resynchronization before clearing the degraded state.
+an authoritative REST resynchronization through an explicit bounded stream
+fence before clearing the degraded state. Because the REST response has no
+stream sequence number, any buffered or concurrently arriving event makes the
+relationship ambiguous; the implementation records the crossed IDs, keeps
+`DEGRADED`, and requires another bounded REST attempt.
 
 ## Signing and timing
 

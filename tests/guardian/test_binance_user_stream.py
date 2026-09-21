@@ -15,7 +15,11 @@ from position_guardian.exchange.binance_user_stream import (
     parse_user_stream_event,
 )
 from position_guardian.exchange.protocol import PositionSnapshot
-from position_guardian.reconcile import ReconciliationRequest, apply_stream_health
+from position_guardian.reconcile import (
+    ReconciliationRequest,
+    apply_rest_resync_result,
+    apply_stream_health,
+)
 
 FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "binance_user_stream"
 
@@ -74,7 +78,13 @@ def test_listen_key_expiry_requires_resync() -> None:
     assert buffer.health == "EXPIRED"
     assert buffer.rest_resync_required
     assert len(buffer.drain()) == 1
-    buffer.mark_rest_resync_complete()
+    session = buffer.begin_rest_resync()
+    resync = buffer.complete_rest_resync(
+        session,
+        snapshot_id="rest-expiry-recovery",
+        snapshot_cursor="position-update-1",
+    )
+    assert resync.certainty_restored
     assert buffer.health == "HEALTHY"
 
 
@@ -111,7 +121,12 @@ def test_dedupe_cache_and_queue_have_finite_limits() -> None:
         assert buffer.ingest(parse_user_stream_event(json.dumps(payload))).status == "ACCEPTED"
 
     assert len(buffer.drain()) == 3
-    buffer.mark_rest_resync_complete()
+    session = buffer.begin_rest_resync()
+    assert buffer.complete_rest_resync(
+        session,
+        snapshot_id="rest-after-eviction",
+        snapshot_cursor="position-update-2",
+    ).certainty_restored
     payload["E"] = 1000
     payload["T"] = 1000
     assert buffer.ingest(parse_user_stream_event(json.dumps(payload))).status == "ACCEPTED"
@@ -146,6 +161,79 @@ def test_stream_health_drives_existing_reconciliation_uncertainty_gate() -> None
     )
 
     degraded = apply_stream_health(request, "DISCONNECTED")
-    healthy = apply_stream_health(degraded, "HEALTHY")
     assert degraded.uncertainty_state == "DEGRADED"
-    assert healthy.uncertainty_state == "CERTAIN"
+
+
+def test_bare_resync_complete_cannot_restore_certainty() -> None:
+    buffer = BoundedUserEventBuffer()
+    with pytest.raises(RuntimeError, match="authoritative snapshot"):
+        buffer.mark_rest_resync_complete()
+
+
+def test_buffered_event_keeps_rest_resync_degraded_until_new_attempt() -> None:
+    buffer = BoundedUserEventBuffer()
+    first = parse_user_stream_event(_fixture("account_update.json"))
+    assert buffer.ingest(first).status == "ACCEPTED"
+
+    session = buffer.begin_rest_resync()
+    failed = buffer.complete_rest_resync(
+        session,
+        snapshot_id="rest-race-1",
+        snapshot_cursor="position-update-3",
+    )
+    assert failed.status == "DEGRADED"
+    assert failed.crossed_event_ids == (first.event_id,)
+    assert buffer.health == "DEGRADED"
+
+    fenced = buffer.fence_buffered_events(session)
+    assert fenced == (first.event_id,)
+    retry = buffer.begin_rest_resync()
+    recovered = buffer.complete_rest_resync(
+        retry,
+        snapshot_id="rest-race-2",
+        snapshot_cursor="position-update-4",
+    )
+    assert recovered.certainty_restored
+
+
+def test_event_arriving_during_rest_is_ambiguous_without_wall_clock_inference() -> None:
+    buffer = BoundedUserEventBuffer()
+    session = buffer.begin_rest_resync()
+    event = parse_user_stream_event(_fixture("account_update.json"))
+    assert buffer.ingest(event).status == "ACCEPTED"
+
+    result = buffer.complete_rest_resync(
+        session,
+        snapshot_id="rest-race-during",
+        snapshot_cursor="position-update-5",
+    )
+    assert result.status == "DEGRADED"
+    assert result.reason == "STREAM_ACTIVITY_CROSSED_REST_FENCE"
+    assert buffer.health == "DEGRADED"
+
+
+def test_resync_result_is_the_only_path_to_restore_reconciliation_certainty() -> None:
+    request = ReconciliationRequest(
+        identity=ManagedPositionIdentity("manual-main", "BTCUSDT", "LONG", 1),
+        position=PositionSnapshot(
+            symbol="BTCUSDT",
+            position_side="BOTH",
+            position_amount=Decimal("0.01"),
+            entry_price=Decimal("60000"),
+            mark_price=Decimal("61000"),
+            unrealized_profit=Decimal("10"),
+            update_time_ms=1,
+        ),
+        snapshot_event_id="snapshot",
+        event_time_ms=1,
+        created_at_ms=2,
+        protective_order_confirmed=True,
+    )
+    buffer = BoundedUserEventBuffer()
+    session = buffer.begin_rest_resync()
+    result = buffer.complete_rest_resync(
+        session,
+        snapshot_id="rest-authoritative",
+        snapshot_cursor="position-update-6",
+    )
+    assert apply_rest_resync_result(request, result).uncertainty_state == "CERTAIN"

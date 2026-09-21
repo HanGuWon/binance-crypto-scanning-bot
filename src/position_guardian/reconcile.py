@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Literal
 
 from position_guardian.domain import AdoptionCandidate, ManagedPositionIdentity
+from position_guardian.exchange.binance_user_stream import RestResyncResult
 from position_guardian.exchange.protocol import PositionSnapshot
 from position_guardian.persistence.repository import GuardianRepository
 
@@ -156,9 +157,22 @@ def apply_stream_health(
     request: ReconciliationRequest,
     health: Literal["HEALTHY", "DEGRADED", "DISCONNECTED", "EXPIRED"],
 ) -> ReconciliationRequest:
-    """Convert stream loss/expiry into the existing REST-resync uncertainty gate."""
+    """Convert stream loss into uncertainty; health alone cannot prove certainty."""
 
-    return replace(request, uncertainty_state="CERTAIN" if health == "HEALTHY" else "DEGRADED")
+    del health
+    return replace(request, uncertainty_state="DEGRADED")
+
+
+def apply_rest_resync_result(
+    request: ReconciliationRequest,
+    result: RestResyncResult,
+) -> ReconciliationRequest:
+    """Apply only the buffer's explicit authoritative REST fence result."""
+
+    return replace(
+        request,
+        uncertainty_state="CERTAIN" if result.certainty_restored else "DEGRADED",
+    )
 
 
 def _release(

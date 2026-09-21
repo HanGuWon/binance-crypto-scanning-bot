@@ -28,6 +28,9 @@ from position_guardian.exchange.signing import QueryPair, canonical_query, sign_
 Sleep = Callable[[float], Awaitable[None]]
 Clock = Callable[[], int]
 
+PRODUCTION_REST_BASE_URL = "https://fapi.binance.com"
+TESTNET_REST_BASE_URL = "https://demo-fapi.binance.com"
+
 
 def _utc_now_ms() -> int:
     return time.time_ns() // 1_000_000
@@ -65,9 +68,9 @@ class BinancePrivateReadClient:
         self._api_key = api_key
         self._api_secret = api_secret
         self._base_url = (
-            "https://fapi.binance.com"
+            PRODUCTION_REST_BASE_URL
             if exchange_environment == "production"
-            else "https://testnet.binancefuture.com"
+            else TESTNET_REST_BASE_URL
         )
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(10.0))
         self._owns_client = client is None
