@@ -66,17 +66,85 @@ def test_trailing_stop_waits_until_activation_excursion() -> None:
     assert ProtectiveStopPlanner().plan(snapshot, atr=1.0) is None
 
 
-def test_candidate_is_capped_away_from_current_price() -> None:
+def test_valid_candidate_inside_current_price_gap_is_gap_adjusted() -> None:
     planner = ProtectiveStopPlanner(
         ProtectiveStopPolicy(minimum_price_gap_bps=100.0, minimum_improvement_bps=0.0)
     )
-    snapshot = _snapshot(reference_price=100.5, highest_price=104.0)
+    snapshot = _snapshot(reference_price=103.5, highest_price=104.0)
 
     intent = planner.plan(snapshot, atr=0.5)
 
     assert intent is not None
-    assert intent.proposed_stop == pytest.approx(99.495)
+    assert intent.proposed_stop == pytest.approx(102.465)
     assert intent.proposed_stop < snapshot.reference_price
+
+
+@pytest.mark.parametrize("structure_stop", [105.0, 106.0])
+def test_long_crossed_structure_candidate_fails_closed(structure_stop: float) -> None:
+    snapshot = _snapshot(
+        active_stop=100.0,
+        protection_floor=100.0,
+        reference_price=105.0,
+        highest_price=106.0,
+    )
+
+    intent = ProtectiveStopPlanner().plan(
+        snapshot,
+        atr=1.0,
+        confirmed_structure_stop=structure_stop,
+        momentum_weakened=True,
+    )
+
+    assert intent is None
+
+
+@pytest.mark.parametrize("structure_stop", [95.0, 94.0])
+def test_short_crossed_structure_candidate_fails_closed(structure_stop: float) -> None:
+    snapshot = _snapshot(
+        position_ref="manual:BTCUSDT:short",
+        direction=Direction.SHORT,
+        entry_price=100.0,
+        initial_stop=102.0,
+        active_stop=100.0,
+        protection_floor=100.0,
+        reference_price=95.0,
+        highest_price=101.0,
+        lowest_price=94.0,
+    )
+
+    intent = ProtectiveStopPlanner().plan(
+        snapshot,
+        atr=1.0,
+        confirmed_structure_stop=structure_stop,
+        momentum_weakened=True,
+    )
+
+    assert intent is None
+
+
+def test_long_crossed_atr_candidate_fails_closed() -> None:
+    snapshot = _snapshot(
+        reference_price=105.0,
+        highest_price=110.0,
+        lowest_price=99.0,
+    )
+
+    assert ProtectiveStopPlanner().plan(snapshot, atr=1.0) is None
+
+
+def test_short_crossed_atr_candidate_fails_closed() -> None:
+    snapshot = _snapshot(
+        position_ref="manual:BTCUSDT:short",
+        direction=Direction.SHORT,
+        entry_price=100.0,
+        initial_stop=102.0,
+        active_stop=102.0,
+        reference_price=95.0,
+        highest_price=101.0,
+        lowest_price=90.0,
+    )
+
+    assert ProtectiveStopPlanner().plan(snapshot, atr=1.0) is None
 
 
 def test_same_observation_produces_same_intent_id() -> None:

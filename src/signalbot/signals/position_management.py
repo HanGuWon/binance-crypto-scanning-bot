@@ -210,6 +210,11 @@ class ProtectiveStopPlanner:
         if raw_candidate is None:
             return None
 
+        if snapshot.direction is Direction.LONG and raw_candidate >= snapshot.reference_price:
+            return None
+        if snapshot.direction is Direction.SHORT and raw_candidate <= snapshot.reference_price:
+            return None
+
         price_gap = snapshot.reference_price * self.policy.minimum_price_gap_bps / 10_000
         if snapshot.direction is Direction.LONG:
             proposed = max(raw_candidate, snapshot.protection_floor or raw_candidate)
