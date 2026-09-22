@@ -23,6 +23,7 @@ from signalbot.backtest.comparison import (
     read_trade_observations,
 )
 from signalbot.backtest.config import load_backtest_spec
+from signalbot.backtest.guardian_policy import run_guardian_policy_backtest
 from signalbot.backtest.outcomes import OutcomeEvaluator
 from signalbot.backtest.r2 import (
     analyze_r2_retrospective,
@@ -104,6 +105,11 @@ def _parser() -> argparse.ArgumentParser:
     backtest.add_argument("--spec", required=True)
     backtest.add_argument("--data-dir", required=True)
     backtest.add_argument("--output-dir", required=True)
+    guardian_policy = subs.add_parser("backtest-guardian-policy")
+    guardian_policy.add_argument("--config", required=True)
+    guardian_policy.add_argument("--contract", required=True)
+    guardian_policy.add_argument("--data-dir", required=True)
+    guardian_policy.add_argument("--output-dir", required=True)
     alert_replay = subs.add_parser("backtest-alert-replay")
     alert_replay.add_argument("--config", required=True)
     alert_replay.add_argument("--spec", required=True)
@@ -550,6 +556,18 @@ def main() -> None:
             config_path=args.config,
         )
         print(json.dumps(result, indent=2))
+        return
+    if args.command == "backtest-guardian-policy":
+        root = Path(__file__).resolve().parents[2]
+        result = run_guardian_policy_backtest(
+            settings,
+            args.contract,
+            args.data_dir,
+            args.output_dir,
+            workspace_root=root,
+            config_path=args.config,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
         return
     if args.command == "prospective-directional-validate":
         root = Path(__file__).resolve().parents[2]
