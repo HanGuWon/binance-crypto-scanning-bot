@@ -11,6 +11,55 @@ The read-only API exposes `/health/live`, `/health/ready`, and
 `/signals/recent`. Keep the host NTP-synchronized. Discord displays UTC and
 Asia/Seoul while internal timestamps remain UTC Unix milliseconds.
 
+## Position Guardian shadow alerts and operations report
+
+L60-05 keeps Guardian alerting strictly on the read/observe side. The alert and
+operations-report builders are pure projections over the already validated
+L60-04 shadow result and the existing reconciliation result. They do not send a
+Discord message, mutate the Guardian ledger, or place/amend/cancel an exchange
+order. A later delivery layer may transport these sanitized payloads, but it
+must not turn alert construction into execution capability.
+
+The frozen L60-05 alert set is:
+
+- `WOULD_UPDATE_STOP`: a validated shadow intent would tighten the protective
+  stop; the message explicitly states that no exchange order was sent.
+- `STALE_CONTEXT`: public protection context is stale, so stop planning remains
+  blocked.
+- `MANUAL_SIZE_INCREASE`: private reconciliation observed a manual position add;
+  Guardian does not expand protection automatically.
+- `SIDE_FLIP`: the managed side changed and the old adoption generation requires
+  release/re-approval.
+- `PROTECTION_MISSING`: the adopted position has no confirmed protective order.
+- `RECONCILIATION_UNCERTAIN`: private reconciliation or the persisted protection
+  context cursor is uncertain, so operator review is required before protection
+  changes.
+
+Alert IDs are deterministic hashes of the alert schema, durable managed identity,
+stable caller-supplied source reference, event time, and sanitized alert content.
+Identical alert-builder inputs therefore produce the same alert ID. The source
+reference itself is never rendered. Operations reports likewise hash their
+canonical sanitized content to a deterministic `report_id`.
+
+L60-05 does not claim durable exactly-once alert delivery across a restart.
+`ReconciliationResult.alerts` is an in-process projection and can differ after an
+already-applied snapshot is replayed; some alert facts (for example the current
+`protective_order_confirmed` observation) are not yet persisted as immutable
+ledger evidence. Restart/fault replay and recovery behavior is deliberately the
+next L60-06 task. Do not reconstruct an L60-05 alert after restart by treating a
+freshly recomputed `ReconciliationResult` as immutable historical authority.
+
+The rendered alert/report surface intentionally omits `account_alias`, canonical
+`position_ref`, API key/secret, database URL, wallet/account balances, and any
+free-form unknown reason text. Position quantity is allowed because it is the
+observed managed-position size, not an account balance. Unknown reconciliation
+alert strings are collapsed to `UNKNOWN_RECONCILIATION_ALERT`, and unknown shadow
+reason text becomes `UNSPECIFIED` rather than being echoed to an operator channel.
+
+Treat any non-zero `exchange_write_calls` or an already-placed shadow intent as a
+contract violation: alert/report construction fails closed. In shadow mode the
+expected report-level `exchange_write_calls` is always `0`.
+
 ## Preflight and rollout
 
 Validate the effective configuration before every rollout:
