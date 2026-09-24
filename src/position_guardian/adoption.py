@@ -87,6 +87,7 @@ def evaluate_adoption(
             quantity=quantity,
             entry_price=position.entry_price,
             mark_price=position.mark_price,
+            source_update_time_ms=position.update_time_ms,
             original_risk_stop=(exchange_stop.trigger_price if exchange_stop else None),
             protection_floor=floor,
             protection_source=source,

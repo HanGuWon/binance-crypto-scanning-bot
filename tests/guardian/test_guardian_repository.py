@@ -15,6 +15,7 @@ from position_guardian.persistence.repository import (
     GuardianEventConflictError,
     GuardianProjectionError,
     GuardianRepository,
+    GuardianSnapshotOrderError,
 )
 
 
@@ -27,12 +28,13 @@ def _identity() -> ManagedPositionIdentity:
     )
 
 
-def _candidate() -> AdoptionCandidate:
+def _candidate(*, source_update_time_ms: int = 1700000000000) -> AdoptionCandidate:
     return AdoptionCandidate(
         identity=_identity(),
         quantity=Decimal("0.01"),
         entry_price=Decimal("60000"),
         mark_price=Decimal("61000"),
+        source_update_time_ms=source_update_time_ms,
         original_risk_stop=Decimal("59000"),
         protection_floor=Decimal("60500"),
         protection_source="exchange_stop",
@@ -44,7 +46,12 @@ def _candidate() -> AdoptionCandidate:
     )
 
 
-def _position(*, mark: str, amount: str = "0.01") -> PositionSnapshot:
+def _position(
+    *,
+    mark: str,
+    amount: str = "0.01",
+    update_time_ms: int = 1700000000000,
+) -> PositionSnapshot:
     return PositionSnapshot(
         symbol="BTCUSDT",
         position_side="BOTH",
@@ -52,7 +59,7 @@ def _position(*, mark: str, amount: str = "0.01") -> PositionSnapshot:
         entry_price=Decimal("60000"),
         mark_price=Decimal(mark),
         unrealized_profit=Decimal("10"),
-        update_time_ms=1700000000000,
+        update_time_ms=update_time_ms,
     )
 
 
@@ -80,6 +87,52 @@ def test_adoption_persists_projection_and_active_protection(repository: Guardian
     assert projection.lowest_price_since_adoption == "61000"
 
 
+def test_adoption_accepts_matching_pre_adoption_private_cursor(
+    repository: GuardianRepository,
+) -> None:
+    identity = _identity()
+    assert repository.record_account_snapshot(
+        event_id="discovery-snapshot",
+        event_time_ms=900,
+        created_at_ms=901,
+        identity=identity,
+        position=_position(mark="61000", update_time_ms=1700000000001),
+    )
+
+    assert repository.record_adoption(
+        event_id="adopt-after-discovery",
+        event_time_ms=1000,
+        created_at_ms=1001,
+        candidate=_candidate(source_update_time_ms=1700000000001),
+    )
+    projection = repository.get_projection(identity)
+    assert projection is not None
+    assert projection.state == "ADOPTED"
+
+
+def test_adoption_rejects_source_older_than_pre_adoption_private_cursor(
+    repository: GuardianRepository,
+) -> None:
+    identity = _identity()
+    assert repository.record_account_snapshot(
+        event_id="discovery-newer",
+        event_time_ms=900,
+        created_at_ms=901,
+        identity=identity,
+        position=_position(mark="61000", update_time_ms=1700000000001),
+    )
+
+    with pytest.raises(GuardianSnapshotOrderError):
+        repository.record_adoption(
+            event_id="adopt-stale",
+            event_time_ms=1000,
+            created_at_ms=1001,
+            candidate=_candidate(source_update_time_ms=1700000000000),
+        )
+    assert repository.get_projection(identity) is None
+    assert repository.get_event("adopt-stale") is None
+
+
 def test_account_snapshots_update_extrema_and_partial_quantity(
     repository: GuardianRepository,
 ) -> None:
@@ -94,14 +147,16 @@ def test_account_snapshots_update_extrema_and_partial_quantity(
         event_time_ms=2000,
         created_at_ms=2001,
         identity=_identity(),
-        position=_position(mark="62000", amount="0.004"),
+        position=_position(
+            mark="62000", amount="0.004", update_time_ms=1700000000001
+        ),
     )
     assert repository.record_account_snapshot(
         event_id="snapshot-2",
         event_time_ms=3000,
         created_at_ms=3001,
         identity=_identity(),
-        position=_position(mark="58000", amount="0.002"),
+        position=_position(mark="58000", amount="0.002", update_time_ms=1700000000002),
     )
 
     projection = repository.get_projection(_identity())

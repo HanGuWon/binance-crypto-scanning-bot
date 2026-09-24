@@ -5,6 +5,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from position_guardian.alert_contract import (
+    GUARDIAN_SHADOW_CONTEXT_ALERT_SOURCE_V1,
+    GUARDIAN_SHADOW_INTENT_ALERT_SOURCE_V1,
+)
 from position_guardian.config import GuardianSettings, settings_summary
 from position_guardian.context_client import (
     ProtectionContextRejected,
@@ -105,7 +109,7 @@ def plan_shadow_once(
     )
     previous_cursor = repository.get_cursor(cursor_name)
     if previous_cursor is not None and previous_cursor.uncertainty_state != "CERTAIN":
-        return ShadowPlanningResult(
+        result = ShadowPlanningResult(
             disposition="CONTEXT_REJECTED",
             reason="CURSOR_UNCERTAIN",
             context_id=None,
@@ -113,6 +117,17 @@ def plan_shadow_once(
             intent_event_inserted=False,
             cursor_event_inserted=False,
         )
+        source_event_id = _record_shadow_context_alert_source(
+            repository,
+            request,
+            reason="CURSOR_UNCERTAIN",
+            source_material=previous_cursor.last_event_id,
+        )
+        _materialize_guardian_alerts(
+            repository,
+            source_event_id=source_event_id,
+        )
+        return result
 
     try:
         validated = validate_protection_context(
@@ -126,7 +141,7 @@ def plan_shadow_once(
         )
         shadow_plan = plan_shadow_stop(request.snapshot, validated)
     except ProtectionContextRejected as exc:
-        return ShadowPlanningResult(
+        result = ShadowPlanningResult(
             disposition="CONTEXT_REJECTED",
             reason=exc.reason,
             context_id=None,
@@ -134,6 +149,18 @@ def plan_shadow_once(
             intent_event_inserted=False,
             cursor_event_inserted=False,
         )
+        if exc.reason == "STALE_CONTEXT":
+            source_event_id = _record_shadow_context_alert_source(
+                repository,
+                request,
+                reason=exc.reason,
+                source_material=_context_source_material(request.context_payload),
+            )
+            _materialize_guardian_alerts(
+                repository,
+                source_event_id=source_event_id,
+            )
+        return result
     except ShadowPlanningError as exc:
         return ShadowPlanningResult(
             disposition="SNAPSHOT_REJECTED",
@@ -146,13 +173,18 @@ def plan_shadow_once(
 
     intent_inserted = False
     if shadow_plan.intent is not None:
+        intent_event_id = _planned_intent_event_id(request.identity, shadow_plan.intent.intent_id)
         intent_inserted = repository.record_planned_intent(
-            event_id=_planned_intent_event_id(request.identity, shadow_plan.intent.intent_id),
+            event_id=intent_event_id,
             event_time_ms=validated.context.candle_close_time_ms,
             created_at_ms=request.now_ms,
             identity=request.identity,
             intent_type="STOP_ADJUSTMENT_SHADOW",
             payload=_intent_payload(shadow_plan.intent, context_id=validated.context.context_id),
+        )
+        _materialize_guardian_alerts(
+            repository,
+            source_event_id=intent_event_id,
         )
 
     cursor_value = validated.cursor.serialize()
@@ -229,8 +261,85 @@ def _planned_intent_event_id(identity: ManagedPositionIdentity, intent_id: str) 
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _shadow_alert_source_event_id(
+    identity: ManagedPositionIdentity,
+    *,
+    reason: str,
+    observed_at_ms: int,
+    source_material: str,
+) -> str:
+    payload = "|".join(
+        (
+            identity.account_alias,
+            identity.symbol,
+            identity.position_side,
+            str(identity.adoption_generation),
+            reason,
+            str(observed_at_ms),
+            source_material,
+        )
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _record_shadow_context_alert_source(
+    repository: GuardianRepository,
+    request: ShadowPlanningRequest,
+    *,
+    reason: Literal["STALE_CONTEXT", "CURSOR_UNCERTAIN"],
+    source_material: str,
+) -> str:
+    event_id = _shadow_alert_source_event_id(
+        request.identity,
+        reason=reason,
+        observed_at_ms=request.snapshot.observed_at_ms,
+        source_material=source_material,
+    )
+    repository.record_shadow_alert_source(
+        event_id=event_id,
+        event_time_ms=request.snapshot.observed_at_ms,
+        created_at_ms=request.now_ms,
+        identity=request.identity,
+        payload={
+            "schema_version": GUARDIAN_SHADOW_CONTEXT_ALERT_SOURCE_V1,
+            "disposition": "CONTEXT_REJECTED",
+            "reason": reason,
+        },
+    )
+    return event_id
+
+
+def _context_source_material(
+    context_payload: Mapping[str, object] | ProtectionContext,
+) -> str:
+    if isinstance(context_payload, ProtectionContext):
+        return context_payload.context_id
+    context_id = context_payload.get("context_id")
+    if isinstance(context_id, str) and context_id.strip():
+        return context_id
+    close_time = context_payload.get("candle_close_time_ms")
+    decision_clock = context_payload.get("source_decision_clock_id")
+    return f"{close_time!s}|{decision_clock!s}"
+
+
+def _materialize_guardian_alerts(
+    repository: GuardianRepository,
+    *,
+    source_event_id: str,
+) -> None:
+    # Local import keeps the pure alert projection module free to type the
+    # ShadowPlanningResult without creating an import cycle at module load.
+    from position_guardian.alert_recovery import materialize_guardian_alerts_for_source_event
+
+    materialize_guardian_alerts_for_source_event(
+        repository,
+        source_event_id=source_event_id,
+    )
+
+
 def _intent_payload(intent: StopUpdateIntent, *, context_id: str) -> dict[str, object]:
     return {
+        "alert_source_schema_version": GUARDIAN_SHADOW_INTENT_ALERT_SOURCE_V1,
         "intent_id": intent.intent_id,
         "context_id": context_id,
         "policy_version": intent.policy_version,

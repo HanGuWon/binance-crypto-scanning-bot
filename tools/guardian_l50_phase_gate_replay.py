@@ -24,6 +24,7 @@ from position_guardian.domain import (
 )
 from position_guardian.exchange.binance_user_stream import (
     BoundedUserEventBuffer,
+    UserStreamEvent,
     parse_user_stream_event,
 )
 from position_guardian.exchange.protocol import PositionSnapshot
@@ -69,13 +70,17 @@ def _fixture_payload(name: str) -> dict[str, Any]:
     return json.loads((FIXTURE_ROOT / name).read_text(encoding="utf-8"))
 
 
-def _fixture_event(name: str) -> object:
+def _fixture_event(name: str) -> UserStreamEvent:
     return parse_user_stream_event(
         json.dumps(_fixture_payload(name), ensure_ascii=False, sort_keys=True)
     )
 
 
-def _position(amount: str = "0.01", mark: str = "61000") -> PositionSnapshot:
+def _position(
+    amount: str = "0.01",
+    mark: str = "61000",
+    update_time_ms: int = 1_700_000_000_001,
+) -> PositionSnapshot:
     return PositionSnapshot(
         symbol="BTCUSDT",
         position_side="BOTH",
@@ -83,7 +88,7 @@ def _position(amount: str = "0.01", mark: str = "61000") -> PositionSnapshot:
         entry_price=Decimal("60000"),
         mark_price=Decimal(mark),
         unrealized_profit=Decimal("10"),
-        update_time_ms=1_700_000_000_000,
+        update_time_ms=update_time_ms,
     )
 
 
@@ -97,6 +102,7 @@ def _candidate(identity: ManagedPositionIdentity) -> AdoptionCandidate:
         quantity=Decimal("0.01"),
         entry_price=Decimal("60000"),
         mark_price=Decimal("61000"),
+        source_update_time_ms=1_700_000_000_000,
         original_risk_stop=Decimal("59000"),
         protection_floor=Decimal("60500"),
         protection_source="exchange_stop",

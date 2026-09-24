@@ -89,10 +89,15 @@ class AdoptionCandidate:
     quantity: Decimal
     entry_price: Decimal
     mark_price: Decimal
+    source_update_time_ms: int
     original_risk_stop: Decimal | None
     protection_floor: Decimal
     protection_source: ProtectionSource
     protective_order: ProtectiveOrderReference | None
+
+    def __post_init__(self) -> None:
+        if self.source_update_time_ms < 0:
+            raise ValueError("source_update_time_ms must be non-negative")
 
 
 AdoptionRejectionReason = Literal[

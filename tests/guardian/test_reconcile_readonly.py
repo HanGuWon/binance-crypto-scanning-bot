@@ -33,6 +33,7 @@ def _candidate(identity: ManagedPositionIdentity | None = None) -> AdoptionCandi
         quantity=Decimal("0.01"),
         entry_price=Decimal("60000"),
         mark_price=Decimal("61000"),
+        source_update_time_ms=1700000000000,
         original_risk_stop=Decimal("59000"),
         protection_floor=Decimal("60500"),
         protection_source="exchange_stop",
@@ -40,7 +41,12 @@ def _candidate(identity: ManagedPositionIdentity | None = None) -> AdoptionCandi
     )
 
 
-def _position(*, amount: str = "0.01", mark: str = "61000") -> PositionSnapshot:
+def _position(
+    *,
+    amount: str = "0.01",
+    mark: str = "61000",
+    update_time_ms: int = 1700000000001,
+) -> PositionSnapshot:
     return PositionSnapshot(
         symbol="BTCUSDT",
         position_side="BOTH",
@@ -48,7 +54,7 @@ def _position(*, amount: str = "0.01", mark: str = "61000") -> PositionSnapshot:
         entry_price=Decimal("60000"),
         mark_price=Decimal(mark),
         unrealized_profit=Decimal("10"),
-        update_time_ms=1700000000000,
+        update_time_ms=update_time_ms,
     )
 
 
@@ -211,6 +217,34 @@ def test_uncertainty_degrades_without_release_or_write(repository: GuardianRepos
     assert result.operator_attention
     assert repository.get_projection(_identity()).state == "ADOPTED"  # type: ignore[union-attr]
     assert result.exchange_write_calls == 0
+
+
+@pytest.mark.parametrize("amount", ["0", "-0.01"])
+def test_uncertain_terminal_looking_snapshot_never_releases(
+    repository: GuardianRepository,
+    amount: str,
+) -> None:
+    _adopt(repository)
+
+    result = reconcile_once(
+        repository,
+        _request(
+            event_id=f"snapshot-degraded-{amount}",
+            position=_position(amount=amount),
+            uncertainty="DEGRADED",
+            release_event_id=f"release-degraded-{amount}",
+        ),
+    )
+
+    assert result.state == "DEGRADED"
+    assert result.alerts == ("RECONCILIATION_UNCERTAIN",)
+    projection = repository.get_projection(_identity())
+    assert projection is not None
+    assert projection.state == "ADOPTED"
+    assert all(
+        event.event_type != "RELEASE"
+        for event in repository.list_events(identity=_identity())
+    )
 
 
 def test_duplicate_snapshot_replay_is_deterministic(repository: GuardianRepository) -> None:

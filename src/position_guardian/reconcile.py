@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Literal
 
+from position_guardian.alert_contract import (
+    GUARDIAN_RECONCILIATION_REJECTION_ALERT_SOURCE_V1,
+)
 from position_guardian.domain import AdoptionCandidate, ManagedPositionIdentity
 from position_guardian.exchange.binance_user_stream import RestResyncResult
 from position_guardian.exchange.protocol import PositionSnapshot
-from position_guardian.persistence.repository import GuardianRepository
+from position_guardian.persistence.repository import (
+    GuardianRepository,
+    GuardianSnapshotOrderError,
+)
 
 ReconciliationState = Literal[
     "DISCOVERED",
@@ -56,13 +63,89 @@ def reconcile_once(
     """Reconcile one private snapshot without creating or changing an order."""
 
     projection = repository.get_projection(request.identity)
-    snapshot_accepted = repository.record_account_snapshot(
-        event_id=request.snapshot_event_id,
-        event_time_ms=request.event_time_ms,
-        created_at_ms=request.created_at_ms,
-        identity=request.identity,
-        position=request.position,
-    )
+    terminal_reason: str | None = None
+    if projection is not None and request.uncertainty_state == "CERTAIN":
+        quantity_before_write = _position_quantity(request.position)
+        actual_side_before_write = _actual_side(request.position)
+        terminal_reason = (
+            "POSITION_CLOSED"
+            if quantity_before_write == 0
+            else (
+                "SIDE_FLIP_REQUIRES_REAPPROVAL"
+                if actual_side_before_write != request.identity.position_side
+                else None
+            )
+        )
+        if (
+            projection.state not in {"RELEASED", "CLOSED"}
+            and terminal_reason is not None
+            and request.release_event_id is None
+        ):
+            raise ReconciliationError(f"{terminal_reason} requires release_event_id")
+        if projection.state in {"RELEASED", "CLOSED"} and request.release_event_id is None:
+            terminal_reason = None
+
+    try:
+        snapshot_accepted = repository.record_account_snapshot(
+            event_id=request.snapshot_event_id,
+            event_time_ms=request.event_time_ms,
+            created_at_ms=request.created_at_ms,
+            identity=request.identity,
+            position=request.position,
+            protective_order_confirmed=request.protective_order_confirmed,
+            uncertainty_state=request.uncertainty_state,
+            shadow_mode=request.shadow_mode,
+            terminal_release_event_id=(
+                request.release_event_id if terminal_reason is not None else None
+            ),
+            terminal_release_reason=terminal_reason,
+        )
+    except GuardianSnapshotOrderError as exc:
+        reason = (
+            "STALE_PRIVATE_SNAPSHOT"
+            if "regressed" in str(exc)
+            else (
+                "MISSING_PRIVATE_SNAPSHOT_CURSOR"
+                if "missing" in str(exc)
+                else "CONFLICTING_PRIVATE_SNAPSHOT_CURSOR"
+            )
+        )
+        source_event_id = hashlib.sha256(
+            (
+                "GUARDIAN_RECONCILIATION_REJECTION_V1\0"
+                f"{request.snapshot_event_id}|{request.event_time_ms}|{reason}"
+            ).encode()
+        ).hexdigest()
+        repository.record_reconciliation_alert_source(
+            event_id=source_event_id,
+            event_time_ms=request.event_time_ms,
+            created_at_ms=request.created_at_ms,
+            identity=request.identity,
+            payload={
+                "schema_version": GUARDIAN_RECONCILIATION_REJECTION_ALERT_SOURCE_V1,
+                "reason": reason,
+                "snapshot_event_id": request.snapshot_event_id,
+                "position_side": request.position.position_side,
+                "position_amount": str(request.position.position_amount),
+                "entry_price": str(request.position.entry_price),
+                "update_time_ms": request.position.update_time_ms,
+                "protective_order_confirmed": request.protective_order_confirmed,
+                "uncertainty_state": request.uncertainty_state,
+                "shadow_mode": request.shadow_mode,
+            },
+        )
+        _materialize_reconciliation_alerts_from_source(
+            repository,
+            source_event_id=source_event_id,
+        )
+        return _result(
+            state="DEGRADED",
+            quantity=_position_quantity(request.position),
+            alerts=("RECONCILIATION_UNCERTAIN",),
+            operator_attention=True,
+            snapshot_event_accepted=False,
+        )
+    _materialize_reconciliation_alerts(repository, request)
 
     if projection is None:
         if (
@@ -109,11 +192,6 @@ def reconcile_once(
     quantity = _position_quantity(request.position)
     actual_side = _actual_side(request.position)
     if quantity == 0:
-        _release(
-            repository,
-            request,
-            reason="POSITION_CLOSED",
-        )
         return _result(
             state="CLOSED",
             quantity=Decimal("0"),
@@ -122,11 +200,6 @@ def reconcile_once(
             snapshot_event_accepted=snapshot_accepted,
         )
     if actual_side != request.identity.position_side:
-        _release(
-            repository,
-            request,
-            reason="SIDE_FLIP_REQUIRES_REAPPROVAL",
-        )
         return _result(
             state="RELEASED",
             quantity=quantity,
@@ -220,4 +293,29 @@ def _result(
         alerts=alerts,
         operator_attention=operator_attention,
         snapshot_event_accepted=snapshot_event_accepted,
+    )
+
+
+def _materialize_reconciliation_alerts(
+    repository: GuardianRepository,
+    request: ReconciliationRequest,
+) -> None:
+    from position_guardian.alert_recovery import materialize_guardian_alerts_for_source_event
+
+    materialize_guardian_alerts_for_source_event(
+        repository,
+        source_event_id=request.snapshot_event_id,
+    )
+
+
+def _materialize_reconciliation_alerts_from_source(
+    repository: GuardianRepository,
+    *,
+    source_event_id: str,
+) -> None:
+    from position_guardian.alert_recovery import materialize_guardian_alerts_for_source_event
+
+    materialize_guardian_alerts_for_source_event(
+        repository,
+        source_event_id=source_event_id,
     )

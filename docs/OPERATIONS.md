@@ -11,14 +11,13 @@ The read-only API exposes `/health/live`, `/health/ready`, and
 `/signals/recent`. Keep the host NTP-synchronized. Discord displays UTC and
 Asia/Seoul while internal timestamps remain UTC Unix milliseconds.
 
-## Position Guardian shadow alerts and operations report
+## Position Guardian shadow alerts, durable authority, and restart recovery
 
-L60-05 keeps Guardian alerting strictly on the read/observe side. The alert and
-operations-report builders are pure projections over the already validated
-L60-04 shadow result and the existing reconciliation result. They do not send a
-Discord message, mutate the Guardian ledger, or place/amend/cancel an exchange
-order. A later delivery layer may transport these sanitized payloads, but it
-must not turn alert construction into execution capability.
+L60-06 keeps Guardian alerting strictly on the read/observe side while adding a
+restart-authoritative persistence boundary. Alert construction still never
+places, amends, cancels, or closes an exchange order. The existing operations
+report remains a pure projection; durable alert materialization is owned by the
+Guardian ledger/outbox path instead.
 
 The frozen L60-05 alert set is:
 
@@ -35,19 +34,44 @@ The frozen L60-05 alert set is:
   context cursor is uncertain, so operator review is required before protection
   changes.
 
-Alert IDs are deterministic hashes of the alert schema, durable managed identity,
-stable caller-supplied source reference, event time, and sanitized alert content.
-Identical alert-builder inputs therefore produce the same alert ID. The source
-reference itself is never rendered. Operations reports likewise hash their
-canonical sanitized content to a deterministic `report_id`.
+For new L60-06 observations, immutable Guardian ledger evidence is the alert
+authority. Reconciliation `ACCOUNT_SNAPSHOT` events seal the pre-update managed
+quantity/state plus the observed protection-confirmation and uncertainty state.
+The adoption event also binds the Binance private position `updateTime` and
+seeds a monotonic private-snapshot cursor before the identity becomes managed.
+An upgraded legacy projection with no such cursor fails closed instead of
+accepting an unfenced first private snapshot.
+Shadow stop intents carry an explicit alert-source schema marker, while stale
+context and uncertain-context rejections receive their own immutable
+`SHADOW_ALERT_SOURCE` event. A stale or conflicting private position snapshot is
+rejected before projection mutation and produces durable
+`RECONCILIATION_UNCERTAIN` evidence instead of rolling the managed state backward.
+A terminal side flip or full close seals the RELEASE event ID/reason into the
+snapshot evidence and commits the snapshot plus RELEASE transition atomically.
+The RELEASE carries the snapshot event as its causal parent, and ledger listing
+orders that parent before its same-time terminal child. Full closes persist
+`CLOSED`; side flips persist `RELEASED`.
 
-L60-05 does not claim durable exactly-once alert delivery across a restart.
-`ReconciliationResult.alerts` is an in-process projection and can differ after an
-already-applied snapshot is replayed; some alert facts (for example the current
-`protective_order_confirmed` observation) are not yet persisted as immutable
-ledger evidence. Restart/fault replay and recovery behavior is deliberately the
-next L60-06 task. Do not reconstruct an L60-05 alert after restart by treating a
-freshly recomputed `ReconciliationResult` as immutable historical authority.
+Alert IDs are rebuilt only from the persisted source event ID/time and sanitized
+content. Restart recovery therefore never treats a freshly recomputed
+`ReconciliationResult` as historical authority. It first quarantines any
+`sending` Guardian alert as `uncertain`, then scans immutable source events and
+idempotently restores any missing outbox intent. The outbox ordering timestamp is
+the original source-event persistence time, never the restart clock.
+
+L60-06 intentionally creates Guardian outbox rows as `disabled`: no Guardian
+Discord transport owner exists in this phase, so there is no automatic send or
+retry path to activate accidentally. The pending/sending/uncertain/delivered/dead
+state machinery is present for fault-model tests and the later transport phase,
+but moving L60-06 rows into a delivery-capable path requires a new explicit
+contract; the L60-06 repository API cannot transition a `disabled` row to
+`pending`. Pre-L60-06 in-process alerts are not backfilled because their complete
+alert-driving evidence was not durably preserved.
+
+This is restart-authoritative alert-intent recovery, not a claim of exactly-once
+Discord delivery. A future Guardian process owner must run recovery before it
+may drain any pending transport queue. `sending` is never reset to `pending` after
+restart, and `uncertain` is never retried blindly.
 
 The rendered alert/report surface intentionally omits `account_alias`, canonical
 `position_ref`, API key/secret, database URL, wallet/account balances, and any

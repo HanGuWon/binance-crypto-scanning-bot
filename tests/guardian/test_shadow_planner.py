@@ -63,6 +63,7 @@ def _candidate() -> AdoptionCandidate:
         quantity=Decimal("0.01"),
         entry_price=Decimal("40000"),
         mark_price=Decimal("42000"),
+        source_update_time_ms=1700000000000,
         original_risk_stop=Decimal("39000"),
         protection_floor=Decimal("39000"),
         protection_source="exchange_stop",
@@ -382,7 +383,9 @@ def test_restart_replay_with_same_database_does_not_duplicate_intent(tmp_path: P
         assert len(restarted_repository.list_events(identity=_identity())) == 2
 
 
-def test_stale_context_persists_neither_intent_nor_cursor(repository: GuardianRepository) -> None:
+def test_stale_context_persists_restart_authoritative_alert_source_only(
+    repository: GuardianRepository,
+) -> None:
     result = plan_shadow_once(
         repository,
         _request(now_ms=1700000305000, max_age_ms=4000),
@@ -394,7 +397,14 @@ def test_stale_context_persists_neither_intent_nor_cursor(repository: GuardianRe
     assert result.intent_event_inserted is False
     assert result.cursor_event_inserted is False
     assert result.exchange_write_calls == 0
-    assert [event.event_type for event in repository.list_events()] == ["ADOPTION"]
+    assert [event.event_type for event in repository.list_events()] == [
+        "ADOPTION",
+        "SHADOW_ALERT_SOURCE",
+    ]
+    outbox = repository.list_guardian_alert_outbox()
+    assert len(outbox) == 1
+    assert outbox[0].status == "disabled"
+    assert '"code":"STALE_CONTEXT"' in outbox[0].payload_json
 
 
 def test_uncertain_snapshot_produces_no_intent_but_consumes_valid_context(

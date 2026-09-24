@@ -60,3 +60,33 @@ class ReconciliationCursorRow(GuardianBase):
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_event_id: Mapped[str] = mapped_column(String(128))
     updated_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
+class PrivateSnapshotCursorRow(GuardianBase):
+    """Monotonic Binance position snapshot cursor per adopted identity."""
+
+    __tablename__ = "guardian_private_snapshot_cursors"
+
+    identity_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    update_time_ms: Mapped[int] = mapped_column(BigInteger)
+    position_sha256: Mapped[str] = mapped_column(String(64))
+    last_event_id: Mapped[str] = mapped_column(String(128))
+    updated_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
+class GuardianAlertOutboxRow(GuardianBase):
+    """Durable, sanitized Guardian alert intent derived from immutable ledger evidence."""
+
+    __tablename__ = "guardian_alert_outbox"
+
+    alert_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_event_id: Mapped[str] = mapped_column(String(128), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_sha256: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at_ms: Mapped[int] = mapped_column(BigInteger)
+    updated_at_ms: Mapped[int] = mapped_column(BigInteger)
+    response_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    detail_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
