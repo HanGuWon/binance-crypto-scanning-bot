@@ -258,10 +258,7 @@ class PaperPositionLifecycle:
         if checkpoint._state is None:
             self._states.pop(checkpoint.symbol, None)
             return
-        if (
-            checkpoint.symbol not in self._states
-            and len(self._states) >= self.maximum_symbols
-        ):
+        if checkpoint.symbol not in self._states and len(self._states) >= self.maximum_symbols:
             raise RuntimeError("paper lifecycle cannot restore beyond its symbol bound")
         self._states[checkpoint.symbol] = deepcopy(checkpoint._state)
 
@@ -323,17 +320,12 @@ class PaperPositionLifecycle:
             raise ValueError("paper lifecycle requires a closed primary candle")
         self._validate_feature(candle, feature)
         new_decisions = tuple(
-            SignalDecision.model_validate(
-                decision.model_dump(mode="python", warnings="none")
-            )
+            SignalDecision.model_validate(decision.model_dump(mode="python", warnings="none"))
             for decision in new_decisions
         )
         symbol = candle.symbol.upper()
         state = self._state(symbol)
-        if (
-            state.last_open_time_ms is not None
-            and candle.open_time_ms <= state.last_open_time_ms
-        ):
+        if state.last_open_time_ms is not None and candle.open_time_ms <= state.last_open_time_ms:
             return []
 
         exits: list[SignalDecision] = []
@@ -350,9 +342,7 @@ class PaperPositionLifecycle:
         self._open_pending_entry(state, candle, feature, exits)
 
         if state.position is not None:
-            opposite = self._has_opposite_confirmed(
-                state.position, candle, new_decisions
-            )
+            opposite = self._has_opposite_confirmed(state.position, candle, new_decisions)
             state.pending_exit = self.engine.after_close(
                 state.position,
                 candle,
@@ -387,9 +377,7 @@ class PaperPositionLifecycle:
             return
         prior_feature = state.last_closed_feature
         regime_source = (
-            "strict_prior_closed_primary"
-            if prior_feature is not None
-            else "entry_signal_fallback"
+            "strict_prior_closed_primary" if prior_feature is not None else "entry_signal_fallback"
         )
         regime_observed_at_ms = (
             prior_feature.event_time_ms
@@ -524,12 +512,13 @@ class PaperPositionLifecycle:
         return decision.family not in {
             SignalFamily.PUMP_RISK,
             SignalFamily.CRASH_RISK,
+            SignalFamily.TOP_GAINER,
+            SignalFamily.BOLLINGER_UPPER_TOUCH,
+            SignalFamily.BOLLINGER_LOWER_TOUCH,
             SignalFamily.TECHNICAL_EXIT,
         }
 
-    def _valid_entry_candidate(
-        self, decision: SignalDecision, candle: Candle
-    ) -> bool:
+    def _valid_entry_candidate(self, decision: SignalDecision, candle: Candle) -> bool:
         if (
             decision.market is not self.market
             or decision.symbol != candle.symbol
@@ -612,9 +601,7 @@ class PaperPositionLifecycle:
             ),
             invalidation=invalidation,
             regime=(
-                regime_feature.regime
-                if regime_feature is not None
-                else position.decision.regime
+                regime_feature.regime if regime_feature is not None else position.decision.regime
             ),
             rule_version=self.rule_version,
             metadata={

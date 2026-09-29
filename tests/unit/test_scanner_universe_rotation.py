@@ -28,17 +28,19 @@ def _universe(
     *,
     surveillance: tuple[str, ...] | None = None,
     context: tuple[str, ...] = ("BTCUSDT",),
+    priority: tuple[str, ...] = (),
 ) -> Universe:
     surveillance_symbols = surveillance or tradable
     instruments = {
         symbol: _instrument(symbol)
-        for symbol in {*tradable, *surveillance_symbols, *context}
+        for symbol in {*tradable, *surveillance_symbols, *context, *priority}
     }
     return Universe(
         market=Market.SPOT,
         tradable=tuple(instruments[symbol] for symbol in tradable),
         surveillance=tuple(instruments[symbol] for symbol in surveillance_symbols),
         context=tuple(instruments[symbol] for symbol in context),
+        priority_gainers=tuple(instruments[symbol] for symbol in priority),
     )
 
 
@@ -59,7 +61,13 @@ async def test_universe_change_requires_consecutive_confirmations() -> None:
             binance=SimpleNamespace(universe_change_confirmations=2)
         ),
     )
-    scanner.runtime = cast(Any, SimpleNamespace(set_active_symbols=lambda *args: None))
+    scanner.runtime = cast(
+        Any,
+        SimpleNamespace(
+            set_active_symbols=lambda *args: None,
+            set_priority_gainers=lambda *args: None,
+        ),
+    )
     scanner.selector = cast(Any, Selector())
     scanner.rest = cast(Any, object())
     scanner.universe = current
@@ -96,7 +104,8 @@ async def test_surveillance_only_change_applies_without_subscription_rotation() 
     scanner.runtime = cast(
         Any,
         SimpleNamespace(
-            set_active_symbols=lambda *args: active_calls.append(args)
+            set_active_symbols=lambda *args: active_calls.append(args),
+            set_priority_gainers=lambda *args: None,
         ),
     )
     scanner.selector = cast(Any, Selector())
@@ -108,6 +117,42 @@ async def test_surveillance_only_change_applies_without_subscription_rotation() 
     assert await scanner._poll_universe_candidate() is None
     assert scanner.universe is candidate
     assert len(active_calls) == 1
+    assert scanner._pending_universe_confirmations == 0
+
+
+@pytest.mark.asyncio
+async def test_new_priority_gainer_bypasses_normal_rotation_confirmation() -> None:
+    current = _universe(("ETHUSDT",), surveillance=("ETHUSDT", "BTCUSDT"))
+    candidate = _universe(
+        ("SOLUSDT",),
+        surveillance=("SOLUSDT", "BTCUSDT"),
+        priority=("SOLUSDT",),
+    )
+
+    class Selector:
+        async def select(self, _rest: Any) -> Universe:
+            return candidate
+
+    scanner = object.__new__(MarketScanner)
+    scanner.market = Market.SPOT
+    scanner.settings = cast(
+        Any,
+        SimpleNamespace(binance=SimpleNamespace(universe_change_confirmations=3)),
+    )
+    scanner.runtime = cast(
+        Any,
+        SimpleNamespace(
+            set_active_symbols=lambda *args: None,
+            set_priority_gainers=lambda *args: None,
+        ),
+    )
+    scanner.selector = cast(Any, Selector())
+    scanner.rest = cast(Any, object())
+    scanner.universe = current
+    scanner._pending_universe_signature = None
+    scanner._pending_universe_confirmations = 0
+
+    assert await scanner._poll_universe_candidate() is candidate
     assert scanner._pending_universe_confirmations == 0
 
 
@@ -125,7 +170,8 @@ async def test_activate_universe_bootstraps_only_new_detailed_symbols(
     scanner.runtime = cast(
         Any,
         SimpleNamespace(
-            set_active_symbols=lambda *args: active_calls.append(args)
+            set_active_symbols=lambda *args: active_calls.append(args),
+            set_priority_gainers=lambda *args: None,
         ),
     )
     scanner.universe = current

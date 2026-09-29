@@ -72,6 +72,33 @@ For duplicate alerts, compare the deterministic `event_id`, payload hash, and
 Discord message ID. A repeated identical event is an idempotent no-op; the same
 event ID with different content is a hard data conflict.
 
+### Focused Binance mover alerts
+
+`alerts.delivery_mode: focused` keeps every signal in SQLite but limits Discord
+delivery to confirmed directional entries, confirmed technical exits, and the
+focused market-watch events below. Informational WATCH/SETUP/INVALIDATED state
+changes plus intrabar `PUMP_RISK`/`CRASH_RISK` remain queryable without filling
+the operator channel.
+
+`alerts.market_watch` ranks the configured single market by Binance's 24-hour
+`priceChangePercent`. Only positive movers whose 24-hour `quoteVolume` is
+strictly greater than `min_quote_volume_usdt` are eligible. The OCI focused
+profile uses Futures, top 5, and `100000000` USDT, so exactly 100M is excluded.
+It has no listing-age cutoff; a newly listed contract is evaluated only after
+enough fully closed candles are available for the technical indicators.
+Priority gainers are forced into the detailed top-N universe and a newly added
+priority symbol bypasses the ordinary universe-rotation confirmation delay.
+
+Market-watch technical analysis is evaluated only on the fully closed primary
+candle. Bollinger levels are the standard 20-close mean plus/minus two
+population standard deviations. An upper touch uses the closed candle high; a
+lower touch uses its low. Trend is labelled rising, falling, or mixed/sideways
+from EMA20/EMA50 alignment, normalized EMA20 slope, MACD histogram, RSI14, and
+ADX14. One continuous event episode emits once and uses the configured cooldown
+to suppress rapid leave/re-enter flapping. The runtime also checks the last
+delivered market/symbol/family event in SQLite before creating a new Discord
+intent, so a service restart cannot reset the 30-minute delivery cooldown.
+
 ## Raw-event evidence capacity
 
 Raw capture is opt-in:

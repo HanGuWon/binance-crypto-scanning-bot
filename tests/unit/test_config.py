@@ -25,6 +25,32 @@ def test_example_configuration_loads() -> None:
     assert settings.signals.technical_exit.trailing_activation_r == 1.0
     assert settings.signals.technical_exit.trailing_atr_multiple == 2.0
     assert settings.signals.technical_exit.max_holding_bars == 72
+    assert settings.alerts.delivery_mode == "all"
+    assert settings.alerts.market_watch.enabled is False
+
+
+def test_oci_focused_configuration_loads_with_five_minute_rank_refresh() -> None:
+    settings = load_settings(ROOT / "config/settings.oci-focused.yaml")
+
+    assert settings.binance.universe_refresh_seconds == 300
+    assert settings.alerts.delivery_mode == "focused"
+    assert settings.alerts.market_watch.enabled is True
+    assert settings.alerts.market_watch.market.value == "futures"
+    assert settings.alerts.market_watch.top_n == 5
+    assert settings.alerts.market_watch.min_quote_volume_usdt == 100_000_000
+    assert settings.alerts.market_watch.event_cooldown_seconds == 1800
+
+
+def test_market_watch_top_n_cannot_exceed_detailed_universe() -> None:
+    with pytest.raises(ValidationError, match=r"market_watch\.top_n"):
+        Settings.model_validate(
+            {
+                "binance": {"top_n": 3},
+                "alerts": {
+                    "market_watch": {"enabled": True, "top_n": 5},
+                },
+            }
+        )
 
 
 def test_paper_technical_exit_lifecycle_is_disabled_by_default() -> None:

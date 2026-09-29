@@ -96,6 +96,7 @@ async def test_scanner_prepares_tradable_and_independent_context_market_data() -
     class FakeRuntime:
         def __init__(self) -> None:
             self.active: tuple[frozenset[str], frozenset[str], frozenset[str]] | None = None
+            self.priority: tuple[Instrument, ...] = ()
 
         def set_active_symbols(
             self,
@@ -104,6 +105,9 @@ async def test_scanner_prepares_tradable_and_independent_context_market_data() -
             context: frozenset[str],
         ) -> None:
             self.active = (tradable, surveillance, context)
+
+        def set_priority_gainers(self, instruments: tuple[Instrument, ...]) -> None:
+            self.priority = instruments
 
     bootstrapped: list[list[str]] = []
 

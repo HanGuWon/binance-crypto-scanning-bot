@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from signalbot.clock import Clock
-from signalbot.config import BinanceSettings
+from signalbot.config import BinanceSettings, MarketWatchSettings
 from signalbot.domain.enums import Market
 from signalbot.domain.models import Instrument
 from signalbot.exchange.binance.rest import (
@@ -26,6 +27,7 @@ class Universe:
     tradable: tuple[Instrument, ...]
     surveillance: tuple[Instrument, ...]
     context: tuple[Instrument, ...] = ()
+    priority_gainers: tuple[Instrument, ...] = ()
 
     @property
     def tradable_symbols(self) -> list[str]:
@@ -41,9 +43,15 @@ class Universe:
 
 
 class UniverseSelector:
-    def __init__(self, settings: BinanceSettings, clock: Clock) -> None:
+    def __init__(
+        self,
+        settings: BinanceSettings,
+        clock: Clock,
+        market_watch: MarketWatchSettings | None = None,
+    ) -> None:
         self.settings = settings
         self.clock = clock
+        self.market_watch = market_watch or MarketWatchSettings()
         self._spot_age_anchor_ms: dict[str, int] = {}
 
     def _surveillance_with_benchmark(
@@ -53,18 +61,32 @@ class UniverseSelector:
         required_symbols: frozenset[str],
     ) -> tuple[Instrument, ...]:
         selected = list(ranked[: self.settings.surveillance_n])
-        if benchmark is None or benchmark in selected:
-            return tuple(selected)
-        replaceable_index = next(
-            (
+        selected_symbols = {item.symbol for item in selected}
+        required_missing = [
+            item
+            for item in ranked
+            if item.symbol in required_symbols and item.symbol not in selected_symbols
+        ]
+        for item in required_missing:
+            replaceable_index = next(
                 index
                 for index in range(len(selected) - 1, -1, -1)
                 if selected[index].symbol not in required_symbols
-            ),
-            None,
-        )
-        if replaceable_index is not None:
-            selected[replaceable_index] = benchmark
+            )
+            selected_symbols.discard(selected[replaceable_index].symbol)
+            selected[replaceable_index] = item
+            selected_symbols.add(item.symbol)
+        if benchmark is not None and benchmark.symbol not in selected_symbols:
+            replaceable_index = next(
+                (
+                    index
+                    for index in range(len(selected) - 1, -1, -1)
+                    if selected[index].symbol not in required_symbols
+                ),
+                None,
+            )
+            if replaceable_index is not None:
+                selected[replaceable_index] = benchmark
         return tuple(selected)
 
     async def _spot_age_qualified(
@@ -111,9 +133,7 @@ class UniverseSelector:
 
             if now_ms - anchor_ms < min_age_ms:
                 continue
-            qualified.append(
-                item.model_copy(update={"onboard_time_ms": anchor_ms})
-            )
+            qualified.append(item.model_copy(update={"onboard_time_ms": anchor_ms}))
             if float(item.quote_volume) >= self.settings.min_quote_volume:
                 liquid_qualified += 1
             if (
@@ -127,7 +147,8 @@ class UniverseSelector:
     async def select(self, client: BinanceRestClient) -> Universe:
         info, rows = await client.exchange_info(), await client.tickers_24h()
         volumes = self._ticker_volumes(rows)
-        candidates = self._instruments(client.market, info, volumes)
+        changes = self._ticker_changes(rows)
+        candidates = self._instruments(client.market, info, volumes, changes)
         ranked = sorted(
             candidates,
             key=lambda item: (-item.quote_volume, item.symbol),
@@ -135,21 +156,45 @@ class UniverseSelector:
         if client.market is Market.SPOT:
             ranked = await self._spot_age_qualified(client, ranked)
         liquid = [
-            item
-            for item in ranked
-            if float(item.quote_volume) >= self.settings.min_quote_volume
+            item for item in ranked if float(item.quote_volume) >= self.settings.min_quote_volume
         ]
-        tradable = tuple(liquid[: self.settings.top_n])
-        benchmark = next(
-            (item for item in ranked if item.symbol == BENCHMARK_SYMBOL), None
-        )
+        priority_gainers: tuple[Instrument, ...] = ()
+        if self.market_watch.enabled and client.market is self.market_watch.market:
+            minimum_quote_volume = Decimal(str(self.market_watch.min_quote_volume_usdt))
+            priority_gainers = tuple(
+                sorted(
+                    (
+                        item
+                        for item in ranked
+                        if item.price_change_percent_24h > 0
+                        and item.quote_volume > minimum_quote_volume
+                    ),
+                    key=lambda item: (
+                        -item.price_change_percent_24h,
+                        -item.quote_volume,
+                        item.symbol,
+                    ),
+                )[: self.market_watch.top_n]
+            )
+        priority_symbols = {item.symbol for item in priority_gainers}
+        dynamic_slots = self.settings.top_n - len(priority_symbols)
+        dynamic = [item for item in liquid if item.symbol not in priority_symbols][:dynamic_slots]
+        tradable_symbols = priority_symbols | {item.symbol for item in dynamic}
+        tradable = tuple(item for item in ranked if item.symbol in tradable_symbols)
+        benchmark = next((item for item in ranked if item.symbol == BENCHMARK_SYMBOL), None)
         surveillance = self._surveillance_with_benchmark(
             ranked,
             benchmark,
             frozenset(item.symbol for item in tradable),
         )
         context = () if benchmark is None else (benchmark,)
-        return Universe(client.market, tradable, surveillance, context)
+        return Universe(
+            client.market,
+            tradable,
+            surveillance,
+            context,
+            priority_gainers,
+        )
 
     @staticmethod
     def _ticker_volumes(rows: list[dict[str, Any]]) -> dict[str, Decimal]:
@@ -159,13 +204,32 @@ class UniverseSelector:
             if not symbol:
                 continue
             try:
-                result[symbol] = Decimal(str(row.get("quoteVolume", "0")))
+                volume = Decimal(str(row.get("quoteVolume", "0")))
+                result[symbol] = volume if volume.is_finite() and volume >= 0 else Decimal("0")
             except (InvalidOperation, ValueError):
                 result[symbol] = Decimal("0")
         return result
 
+    @staticmethod
+    def _ticker_changes(rows: list[dict[str, Any]]) -> dict[str, float]:
+        result: dict[str, float] = {}
+        for row in rows:
+            symbol = str(row.get("symbol", "")).upper()
+            if not symbol:
+                continue
+            try:
+                change = float(row.get("priceChangePercent", 0) or 0)
+                result[symbol] = change if math.isfinite(change) else 0.0
+            except (TypeError, ValueError):
+                result[symbol] = 0.0
+        return result
+
     def _instruments(
-        self, market: Market, payload: dict[str, Any], volumes: dict[str, Decimal]
+        self,
+        market: Market,
+        payload: dict[str, Any],
+        volumes: dict[str, Decimal],
+        changes: dict[str, float],
     ) -> list[Instrument]:
         rows = payload.get("symbols", [])
         if not isinstance(rows, list):
@@ -208,6 +272,7 @@ class UniverseSelector:
                     quote_asset=quote_asset,
                     status=status,
                     quote_volume=volumes.get(symbol, Decimal("0")),
+                    price_change_percent_24h=changes.get(symbol, 0.0),
                     onboard_time_ms=onboard,
                     contract_type=contract,
                 )

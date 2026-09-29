@@ -40,7 +40,11 @@ class MarketScanner:
         self.rest = rest_client or BinanceRestClient(
             market, settings.binance.request_timeout_seconds
         )
-        self.selector = UniverseSelector(settings.binance, clock)
+        self.selector = UniverseSelector(
+            settings.binance,
+            clock,
+            settings.alerts.market_watch,
+        )
         self.consumer = WebSocketConsumer(settings.binance.max_connection_age_seconds)
         self.universe: Universe | None = None
         self._pending_universe_signature: tuple[frozenset[str], frozenset[str]] | None = None
@@ -61,14 +65,13 @@ class MarketScanner:
         if not universe.tradable:
             raise RuntimeError(f"no tradable symbols selected for {self.market.value}")
         self.universe = universe
-        market_data_symbols = sorted(
-            set(universe.tradable_symbols) | set(universe.context_symbols)
-        )
+        market_data_symbols = sorted(set(universe.tradable_symbols) | set(universe.context_symbols))
         self.runtime.set_active_symbols(
             frozenset(universe.tradable_symbols),
             universe.surveillance_symbols,
             universe.context_symbols,
         )
+        self.runtime.set_priority_gainers(universe.priority_gainers)
         if self.market is Market.FUTURES:
             await self._refresh_funding(universe.tradable_symbols, bootstrap=True)
         await self._bootstrap(market_data_symbols)
@@ -154,24 +157,48 @@ class MarketScanner:
                     candidate.surveillance_symbols,
                     candidate.context_symbols,
                 )
-                self.universe = candidate
+            self.runtime.set_priority_gainers(candidate.priority_gainers)
+            self.universe = candidate
             return None
 
-        outgoing = frozenset(current.tradable_symbols) - frozenset(
-            candidate.tradable_symbols
-        )
+        outgoing = frozenset(current.tradable_symbols) - frozenset(candidate.tradable_symbols)
         protected = self._paper_continuation_symbols() & outgoing
         if protected:
+            new_priority = {item.symbol for item in candidate.priority_gainers} - set(
+                current.tradable_symbols
+            )
+            if new_priority:
+                retained = self._retain_paper_symbols(candidate, current, protected)
+                if retained is not None:
+                    candidate = retained
+                    candidate_signature = self._universe_signature(candidate)
+                    protected = frozenset()
+            if protected:
+                self._pending_universe_signature = None
+                self._pending_universe_confirmations = 0
+                LOGGER.info(
+                    "deferring universe rotation while PAPER lifecycle is active",
+                    extra={
+                        "market": self.market.value,
+                        "protected_symbols": sorted(protected),
+                    },
+                )
+                return None
+
+        priority_additions = {item.symbol for item in candidate.priority_gainers} - set(
+            current.tradable_symbols
+        )
+        if priority_additions:
             self._pending_universe_signature = None
             self._pending_universe_confirmations = 0
             LOGGER.info(
-                "deferring universe rotation while PAPER lifecycle is active",
+                "prioritizing new Binance top-gainer market-data subscription",
                 extra={
                     "market": self.market.value,
-                    "protected_symbols": sorted(protected),
+                    "priority_symbols": sorted(priority_additions),
                 },
             )
-            return None
+            return candidate
 
         if candidate_signature == self._pending_universe_signature:
             self._pending_universe_confirmations += 1
@@ -189,14 +216,68 @@ class MarketScanner:
         )
         return candidate if self._pending_universe_confirmations >= required else None
 
+    def _retain_paper_symbols(
+        self,
+        candidate: Universe,
+        current: Universe,
+        protected: frozenset[str],
+    ) -> Universe | None:
+        """Make room for new mover subscriptions without dropping active PAPER state."""
+
+        priority = {item.symbol for item in candidate.priority_gainers}
+        required = priority | set(protected)
+        tradable = list(candidate.tradable)
+        selected = {item.symbol for item in tradable}
+        for item in current.tradable:
+            if item.symbol not in protected or item.symbol in selected:
+                continue
+            replaceable = next(
+                (
+                    index
+                    for index in range(len(tradable) - 1, -1, -1)
+                    if tradable[index].symbol not in required
+                ),
+                None,
+            )
+            if replaceable is None:
+                return None
+            selected.discard(tradable[replaceable].symbol)
+            tradable[replaceable] = item
+            selected.add(item.symbol)
+
+        surveillance = list(candidate.surveillance)
+        monitored = {item.symbol for item in surveillance}
+        for item in tradable:
+            if item.symbol in monitored:
+                continue
+            replaceable = next(
+                (
+                    index
+                    for index in range(len(surveillance) - 1, -1, -1)
+                    if surveillance[index].symbol not in selected
+                ),
+                None,
+            )
+            if replaceable is None:
+                return None
+            monitored.discard(surveillance[replaceable].symbol)
+            surveillance[replaceable] = item
+            monitored.add(item.symbol)
+
+        return Universe(
+            market=candidate.market,
+            tradable=tuple(tradable),
+            surveillance=tuple(surveillance),
+            context=candidate.context,
+            priority_gainers=candidate.priority_gainers,
+        )
+
     async def _activate_universe(self, candidate: Universe) -> None:
         previous = self.universe
         previous_market_data = (
             set() if previous is None else set(self._market_data_symbols(previous))
         )
-        previous_tradable = (
-            set() if previous is None else set(previous.tradable_symbols)
-        )
+        previous_tradable = set() if previous is None else set(previous.tradable_symbols)
         candidate_market_data = set(self._market_data_symbols(candidate))
         added_market_data = sorted(candidate_market_data - previous_market_data)
         added_tradable = sorted(set(candidate.tradable_symbols) - previous_tradable)
@@ -206,6 +287,7 @@ class MarketScanner:
             candidate.surveillance_symbols,
             candidate.context_symbols,
         )
+        self.runtime.set_priority_gainers(candidate.priority_gainers)
         if self.market is Market.FUTURES and added_tradable:
             await self._refresh_funding(added_tradable, bootstrap=True)
         if added_market_data:
@@ -256,16 +338,10 @@ class MarketScanner:
                 if stop_waiter in done:
                     break
                 if funding_task is not None and funding_task in done:
-                    self._raise_unexpected_task_exit(
-                        funding_task, "funding refresh loop"
-                    )
-                completed_websockets = [
-                    task for task in websocket_tasks if task in done
-                ]
+                    self._raise_unexpected_task_exit(funding_task, "funding refresh loop")
+                completed_websockets = [task for task in websocket_tasks if task in done]
                 for task in completed_websockets:
-                    self._raise_unexpected_task_exit(
-                        task, "Binance WebSocket consumer"
-                    )
+                    self._raise_unexpected_task_exit(task, "Binance WebSocket consumer")
                 if refresh_task in done:
                     replacement = await self._poll_universe_candidate()
                     if replacement is not None:
@@ -293,9 +369,7 @@ class MarketScanner:
     async def _handle_payload(self, payload: Any) -> None:
         if self.raw_recorder is not None:
             try:
-                await self.raw_recorder.append(
-                    self.market, payload, self.clock.now_ms()
-                )
+                await self.raw_recorder.append(self.market, payload, self.clock.now_ms())
             except RawEventCapacityError as exc:
                 LOGGER.critical(
                     "raw market-evidence quota exhausted; stopping scanner",

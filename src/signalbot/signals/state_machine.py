@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from signalbot.config import SignalSettings
-from signalbot.domain.enums import SignalStage
+from signalbot.domain.enums import Market, SignalFamily, SignalStage
 from signalbot.domain.models import RuleEvaluation, SignalDecision
 
 
@@ -32,12 +32,10 @@ class SignalStateMachine:
             del self._states[key]
         return len(stale)
 
-    def prune_directional_states(
-        self, tradable_symbols: Collection[str]
-    ) -> int:
+    def prune_directional_states(self, tradable_symbols: Collection[str]) -> int:
         """Drop non-risk family state for symbols outside the tradable universe.
 
-        Risk families (PUMP_RISK/CRASH_RISK) are driven by the all-market
+        Risk/market-watch families are driven outside the directional entry set
         mini-ticker and must survive for surveillance-only symbols. Directional
         entry families are only evaluated for tradable symbols, so their
         WATCH/SETUP/cooldown state outside tradable is stale and must not be
@@ -45,7 +43,13 @@ class SignalStateMachine:
         """
 
         tradable = {symbol.upper() for symbol in tradable_symbols}
-        risk_families = {"pump_risk", "crash_risk"}
+        risk_families = {
+            "pump_risk",
+            "crash_risk",
+            "top_gainer",
+            "bollinger_upper_touch",
+            "bollinger_lower_touch",
+        }
         stale = [
             key
             for key in self._states
@@ -54,6 +58,20 @@ class SignalStateMachine:
         for key in stale:
             del self._states[key]
         return len(stale)
+
+    def deactivate_event(
+        self,
+        market: Market,
+        symbol: str,
+        family: SignalFamily,
+        timeframe: str,
+    ) -> None:
+        """Re-arm an episodic alert while preserving its anti-flap cooldown."""
+
+        state = self._states.get((market.value, symbol.upper(), family.value, timeframe))
+        if state is not None:
+            state.stage = SignalStage.IDLE
+            state.invalidation = None
 
     def process(self, e: RuleEvaluation) -> SignalDecision | None:
         e = self._validated_evaluation(e)
@@ -66,15 +84,12 @@ class SignalStateMachine:
         if desired is SignalStage.IDLE:
             state.stage = SignalStage.IDLE
             state.invalidation = None
-            if (
-                previous in {SignalStage.WATCH, SignalStage.SETUP}
-                and not in_cooldown
-            ):
+            if e.metadata.get("event_only") is True:
+                return None
+            if previous in {SignalStage.WATCH, SignalStage.SETUP} and not in_cooldown:
                 invalidated = e
                 if previous_invalidation is not None:
-                    invalidated = e.model_copy(
-                        update={"invalidation": previous_invalidation}
-                    )
+                    invalidated = e.model_copy(update={"invalidation": previous_invalidation})
                 return self._decision(invalidated, SignalStage.INVALIDATED)
             return None
         if e.invalidation is not None:
@@ -84,7 +99,10 @@ class SignalStateMachine:
         state.stage = desired
         if in_cooldown:
             return None
-        if desired is SignalStage.CONFIRMED:
+        event_cooldown = e.metadata.get("event_cooldown_seconds")
+        if e.metadata.get("event_only") is True and isinstance(event_cooldown, int):
+            state.cooldown_until_ms = e.event_time_ms + max(0, event_cooldown) * 1000
+        elif desired is SignalStage.CONFIRMED:
             state.cooldown_until_ms = e.event_time_ms + self.settings.cooldown_seconds * 1000
         return self._decision(e, desired)
 
@@ -97,9 +115,7 @@ class SignalStateMachine:
             if evaluation.score >= self.settings.watch_score:
                 return SignalStage.WATCH
             return SignalStage.IDLE
-        if evaluation.score >= self.settings.confirmed_score and self._can_confirm(
-            evaluation
-        ):
+        if evaluation.score >= self.settings.confirmed_score and self._can_confirm(evaluation):
             return SignalStage.CONFIRMED
         if evaluation.score >= self.settings.setup_score:
             return SignalStage.SETUP
@@ -107,9 +123,7 @@ class SignalStateMachine:
             return SignalStage.WATCH
         return SignalStage.IDLE
 
-    def decision_for_confirmed_trigger(
-        self, evaluation: RuleEvaluation
-    ) -> SignalDecision:
+    def decision_for_confirmed_trigger(self, evaluation: RuleEvaluation) -> SignalDecision:
         """Materialize a research entry without applying alert cooldown state."""
 
         evaluation = self._validated_evaluation(evaluation)
@@ -119,9 +133,7 @@ class SignalStateMachine:
             )
         return self._decision(evaluation, SignalStage.CONFIRMED)
 
-    def decision_for_research_entry(
-        self, evaluation: RuleEvaluation
-    ) -> SignalDecision | None:
+    def decision_for_research_entry(self, evaluation: RuleEvaluation) -> SignalDecision | None:
         """Materialize a cooldown-free entry under the configured confirmation mode."""
 
         evaluation = self._validated_evaluation(evaluation)
@@ -136,16 +148,11 @@ class SignalStateMachine:
 
     @staticmethod
     def _can_confirm(evaluation: RuleEvaluation) -> bool:
-        return (
-            evaluation.eligible
-            and evaluation.metadata.get("informational_only") is not True
-        )
+        return evaluation.eligible and evaluation.metadata.get("informational_only") is not True
 
     @staticmethod
     def _validated_evaluation(evaluation: RuleEvaluation) -> RuleEvaluation:
-        return RuleEvaluation.model_validate(
-            evaluation.model_dump(mode="python", warnings="none")
-        )
+        return RuleEvaluation.model_validate(evaluation.model_dump(mode="python", warnings="none"))
 
     def _decision(self, e: RuleEvaluation, stage: SignalStage) -> SignalDecision:
         identity = "|".join(

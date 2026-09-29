@@ -24,6 +24,9 @@ class SignalFamily(StrEnum):
     CAPITULATION_LONG = "capitulation_long"
     PUMP_RISK = "pump_risk"
     CRASH_RISK = "crash_risk"
+    TOP_GAINER = "top_gainer"
+    BOLLINGER_UPPER_TOUCH = "bollinger_upper_touch"
+    BOLLINGER_LOWER_TOUCH = "bollinger_lower_touch"
     TECHNICAL_EXIT = "technical_exit"
 
 

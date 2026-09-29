@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from signalbot.alerts.embeds import build_discord_payload
+from signalbot.alerts.policy import should_deliver_discord
 from signalbot.clock import Clock
 from signalbot.config import Settings
 from signalbot.data.anomaly import AnomalyDetector
@@ -16,12 +17,13 @@ from signalbot.data.microstructure import (
     BookTickerConflictError,
     OrderFlowTracker,
 )
-from signalbot.domain.enums import Market
+from signalbot.domain.enums import Market, SignalFamily
 from signalbot.domain.models import (
     AggTrade,
     BookTicker,
     Candle,
     FeatureSnapshot,
+    Instrument,
     MiniTicker,
     RuleEvaluation,
     SignalDecision,
@@ -30,6 +32,7 @@ from signalbot.exchange.binance.schemas import PayloadError, parse_payload
 from signalbot.indicators.core import FeatureEngine
 from signalbot.persistence.repository import SqlRepository
 from signalbot.regime.market import MarketRegimeEngine
+from signalbot.signals.market_watch import MarketWatchEngine
 from signalbot.signals.positions import (
     PaperLifecycleCheckpoint,
     PaperPositionLifecycle,
@@ -80,15 +83,31 @@ class MarketRuntime:
             maximum_symbols=settings.binance.top_n,
         )
         self.anomaly = AnomalyDetector(settings.signals)
+        self.market_watch = MarketWatchEngine(settings.alerts.market_watch)
         self.tradable_symbols: frozenset[str] = frozenset()
         self.surveillance_symbols: frozenset[str] = frozenset()
         self.context_symbols: frozenset[str] = frozenset()
         self._features: dict[tuple[str, str], FeatureSnapshot] = {}
-        self._feature_history: dict[
-            tuple[str, str], deque[FeatureSnapshot]
-        ] = {}
+        self._feature_history: dict[tuple[str, str], deque[FeatureSnapshot]] = {}
         self.decision_count = 0
         self.parse_error_count = 0
+
+    def set_priority_gainers(self, instruments: tuple[Instrument, ...]) -> None:
+        """Refresh the bounded 24h gainer panel without emitting on the refresh clock."""
+
+        removed, _added = self.market_watch.set_priority_gainers(instruments)
+        for symbol in removed:
+            for family in (
+                SignalFamily.TOP_GAINER,
+                SignalFamily.BOLLINGER_UPPER_TOUCH,
+                SignalFamily.BOLLINGER_LOWER_TOUCH,
+            ):
+                self.state_machine.deactivate_event(
+                    self.market,
+                    symbol,
+                    family,
+                    self.settings.binance.primary_interval,
+                )
 
     def set_surveillance_symbols(self, symbols: frozenset[str]) -> None:
         """Backward-compatible replay helper that treats one set as both universes."""
@@ -177,8 +196,7 @@ class MarketRuntime:
         feature_count = 0
         for candles in series:
             regimes = [
-                self.regime.snapshot(self.market, candle.close_time_ms)
-                for candle in candles
+                self.regime.snapshot(self.market, candle.close_time_ms) for candle in candles
             ]
             for feature in self.feature_engine.compute_series(
                 candles,
@@ -291,6 +309,10 @@ class MarketRuntime:
             return
         contexts = self._context_features(candle.symbol, feature.event_time_ms)
         new_decisions: list[SignalDecision] = []
+        for evaluation in self.market_watch.evaluate(candle, feature):
+            decision = await self._process(evaluation)
+            if decision is not None:
+                new_decisions.append(decision)
         for evaluation in self.rule_engine.evaluate(feature, contexts):
             decision = await self._process(evaluation)
             if decision is not None:
@@ -324,9 +346,7 @@ class MarketRuntime:
             )
             return False
         step_ms = interval_to_milliseconds(gap.interval)
-        expected_opens = list(
-            range(gap.start_time_ms, gap.end_time_ms + 1, step_ms)
-        )
+        expected_opens = list(range(gap.start_time_ms, gap.end_time_ms + 1, step_ms))
         ordered = sorted(recovered, key=lambda item: item.open_time_ms)
         valid = [item.open_time_ms for item in ordered] == expected_opens and all(
             item.market is gap.market
@@ -399,9 +419,7 @@ class MarketRuntime:
 
     def _store_feature(self, feature: FeatureSnapshot) -> None:
         key = (feature.symbol, feature.interval)
-        history = self._feature_history.setdefault(
-            key, deque(maxlen=FEATURE_HISTORY_LIMIT)
-        )
+        history = self._feature_history.setdefault(key, deque(maxlen=FEATURE_HISTORY_LIMIT))
         by_time = {item.event_time_ms: item for item in history}
         by_time[feature.event_time_ms] = feature
         ordered = sorted(by_time.values(), key=lambda item: item.event_time_ms)
@@ -446,9 +464,7 @@ class MarketRuntime:
             return None
         return await self._publish_decision(decision)
 
-    async def _publish_decision(
-        self, decision: SignalDecision
-    ) -> SignalDecision | None:
+    async def _publish_decision(self, decision: SignalDecision) -> SignalDecision | None:
         if not self._persist_decision(decision):
             return None
         self.decision_count += 1
@@ -461,7 +477,15 @@ class MarketRuntime:
         delivery_enabled = (
             self.settings.alerts.discord_enabled
             and self.settings.alerts.discord_webhook_url is not None
+            and should_deliver_discord(decision, self.settings.alerts)
         )
+        if delivery_enabled and decision.metadata.get("market_watch") is True:
+            previous_ms = self.repository.latest_delivered_signal_time(
+                decision.market, decision.symbol, decision.family
+            )
+            cooldown_ms = self.settings.alerts.market_watch.event_cooldown_seconds * 1000
+            if previous_ms is not None and decision.event_time_ms - previous_ms < cooldown_ms:
+                delivery_enabled = False
         payload = build_discord_payload(
             decision,
             self.settings.alerts.discord_username,

@@ -24,6 +24,9 @@ _FAMILY_DIRECTIONS: dict[SignalFamily, frozenset[Direction]] = {
     SignalFamily.CAPITULATION_LONG: frozenset({Direction.LONG}),
     SignalFamily.PUMP_RISK: frozenset({Direction.RISK_UP}),
     SignalFamily.CRASH_RISK: frozenset({Direction.RISK_DOWN}),
+    SignalFamily.TOP_GAINER: frozenset({Direction.RISK_UP}),
+    SignalFamily.BOLLINGER_UPPER_TOUCH: frozenset({Direction.RISK_UP}),
+    SignalFamily.BOLLINGER_LOWER_TOUCH: frozenset({Direction.RISK_DOWN}),
     SignalFamily.TECHNICAL_EXIT: frozenset({Direction.LONG, Direction.SHORT}),
 }
 
@@ -46,6 +49,7 @@ class Instrument(FrozenModel):
     quote_asset: str
     status: str
     quote_volume: Decimal = Decimal("0")
+    price_change_percent_24h: float = 0.0
     onboard_time_ms: int | None = None
     contract_type: str | None = None
 
@@ -184,9 +188,7 @@ class GateEvaluation(FrozenModel):
 class ChartStructureSnapshot(FrozenModel):
     """Point-in-time chart structure built only from previously confirmed pivots."""
 
-    method: Literal["confirmed_fractal_2x2_tminus1_v1"] = (
-        "confirmed_fractal_2x2_tminus1_v1"
-    )
+    method: Literal["confirmed_fractal_2x2_tminus1_v1"] = "confirmed_fractal_2x2_tminus1_v1"
     state: Literal["bullish", "bearish", "mixed", "unavailable"] = "unavailable"
     qualified_high_count: int = Field(default=0, ge=0)
     qualified_low_count: int = Field(default=0, ge=0)
@@ -207,9 +209,9 @@ class ChartStructureSnapshot(FrozenModel):
     support_broken: bool = False
     resistance_broken: bool = False
     pullback_direction: Literal["long", "short", "none"] = "none"
-    pullback_status: Literal[
-        "unavailable", "none", "developing", "ready", "invalid"
-    ] = "unavailable"
+    pullback_status: Literal["unavailable", "none", "developing", "ready", "invalid"] = (
+        "unavailable"
+    )
     impulse_start: float | None = None
     impulse_end: float | None = None
     impulse_size_atr: float | None = None
@@ -243,6 +245,9 @@ class FeatureSnapshot(FrozenModel):
     adx: float
     bollinger_width: float
     bollinger_width_percentile: float
+    bollinger_middle: float | None = None
+    bollinger_upper: float | None = None
+    bollinger_lower: float | None = None
     relative_volume: float
     recent_high: float
     recent_low: float
@@ -357,16 +362,19 @@ class SignalDecision(FrozenModel):
     @model_validator(mode="after")
     def validate_decision_semantics(self) -> SignalDecision:
         _require_family_direction(self.family, self.direction)
-        if (
-            self.metadata.get("informational_only") is True
-            and self.stage is SignalStage.CONFIRMED
-        ):
+        if self.metadata.get("informational_only") is True and self.stage is SignalStage.CONFIRMED:
             raise ValueError("informational-only decisions cannot be CONFIRMED")
         return self
 
     @property
     def action_label(self) -> str:
         if self.metadata.get("informational_only") is True:
+            if self.family in {
+                SignalFamily.TOP_GAINER,
+                SignalFamily.BOLLINGER_UPPER_TOUCH,
+                SignalFamily.BOLLINGER_LOWER_TOUCH,
+            }:
+                return "MARKET_WATCH"
             return "INFORMATION_ONLY"
         if self.family is SignalFamily.PUMP_RISK:
             return "PUMP_RISK"
@@ -375,11 +383,7 @@ class SignalDecision(FrozenModel):
         if self.family is SignalFamily.TECHNICAL_EXIT:
             if self.market is Market.SPOT:
                 return "SPOT_EXIT"
-            return (
-                "FUTURES_LONG_EXIT"
-                if self.direction is Direction.LONG
-                else "FUTURES_SHORT_EXIT"
-            )
+            return "FUTURES_LONG_EXIT" if self.direction is Direction.LONG else "FUTURES_SHORT_EXIT"
         if self.market is Market.SPOT:
             return "SPOT_BUY" if self.direction is Direction.LONG else "SPOT_EXIT"
         return "FUTURES_LONG" if self.direction is Direction.LONG else "FUTURES_SHORT"

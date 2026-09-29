@@ -117,30 +117,22 @@ class SignalSettings(StrictModel):
     completeness_gate: int = Field(default=95, ge=0, le=100)
     book_maximum_age_ms: int = Field(default=2000, ge=0, le=60_000)
     funding_maximum_age_ms: int = Field(default=32_400_000, ge=0, le=604_800_000)
-    funding_zscore_lookback_ms: int = Field(
-        default=2_592_000_000, ge=86_400_000, le=31_536_000_000
-    )
+    funding_zscore_lookback_ms: int = Field(default=2_592_000_000, ge=86_400_000, le=31_536_000_000)
     funding_zscore_minimum_history: int = Field(default=20, ge=2, le=999)
     gate_use_participation: bool = True
     gate_use_crowding: bool = True
     gate_use_higher_timeframes: bool = True
-    entry_policy: Literal[
-        "legacy_gates", "r2_pit_htf_exec", "shadow_er_context_v1"
-    ] = "legacy_gates"
+    entry_policy: Literal["legacy_gates", "r2_pit_htf_exec", "shadow_er_context_v1"] = (
+        "legacy_gates"
+    )
     execution_notional_usdt: float = Field(default=100.0, gt=0, le=1_000_000)
     confirmation_mode: Literal["score", "explicit_trigger"] = "explicit_trigger"
-    volume_feature_set: Literal[
-        "none", "kline_taker_delta", "normalized_vpci"
-    ] = "none"
+    volume_feature_set: Literal["none", "kline_taker_delta", "normalized_vpci"] = "none"
     volume: VolumeFeatureSettings = VolumeFeatureSettings()
     technical_exit: TechnicalExitSettings = TechnicalExitSettings()
-    reversal_intervals: list[str] = Field(
-        default_factory=lambda: ["5m", "15m", "1h", "4h"]
-    )
+    reversal_intervals: list[str] = Field(default_factory=lambda: ["5m", "15m", "1h", "4h"])
     pullback_alert_mode: Literal["off", "informational"] = "off"
-    pullback_intervals: list[str] = Field(
-        default_factory=lambda: ["5m", "15m", "1h", "4h"]
-    )
+    pullback_intervals: list[str] = Field(default_factory=lambda: ["5m", "15m", "1h", "4h"])
 
     @field_validator("reversal_intervals", "pullback_intervals")
     @classmethod
@@ -167,10 +159,22 @@ class StorageSettings(StrictModel):
     echo_sql: bool = False
 
 
+class MarketWatchSettings(StrictModel):
+    """Focused Binance mover alerts evaluated from public market data only."""
+
+    enabled: bool = False
+    market: Market = Market.FUTURES
+    top_n: int = Field(default=5, ge=1, le=20)
+    min_quote_volume_usdt: float = Field(default=100_000_000, ge=0)
+    event_cooldown_seconds: int = Field(default=1800, ge=0, le=86_400)
+
+
 class AlertSettings(StrictModel):
     discord_enabled: bool = False
     discord_webhook_url: SecretStr | None = None
     discord_username: str = Field(default="Binance Signal Bot", min_length=1, max_length=80)
+    delivery_mode: Literal["all", "focused"] = "all"
+    market_watch: MarketWatchSettings = Field(default_factory=MarketWatchSettings)
     max_attempts: int = Field(default=3, ge=1, le=10)
     timeout_seconds: float = Field(default=10, ge=1, le=60)
     outbox_max_active_items: int = Field(default=10_000, ge=100, le=1_000_000)
@@ -182,9 +186,7 @@ class AlertSettings(StrictModel):
 
     @field_validator("discord_webhook_url")
     @classmethod
-    def validate_discord_webhook_url(
-        cls, value: SecretStr | None
-    ) -> SecretStr | None:
+    def validate_discord_webhook_url(cls, value: SecretStr | None) -> SecretStr | None:
         if value is None:
             return None
         raw = value.get_secret_value().strip()
@@ -193,9 +195,7 @@ class AlertSettings(StrictModel):
             hostname = parsed.hostname
             _port = parsed.port
         except ValueError as exc:
-            raise ValueError(
-                "discord_webhook_url must be an absolute HTTPS URL"
-            ) from exc
+            raise ValueError("discord_webhook_url must be an absolute HTTPS URL") from exc
         if (
             parsed.scheme.lower() != "https"
             or not hostname
@@ -237,33 +237,30 @@ class Settings(StrictModel):
     def validate_funding_history_capacity(self) -> Settings:
         required = self.signals.funding_zscore_minimum_history + 1
         if self.binance.funding_history_points < required:
-            raise ValueError(
-                "funding_history_points must exceed funding_zscore_minimum_history"
-            )
+            raise ValueError("funding_history_points must exceed funding_zscore_minimum_history")
         if self.signals.entry_policy == "r2_pit_htf_exec":
             if self.signals.confirmation_mode != "explicit_trigger":
-                raise ValueError(
-                    "r2_pit_htf_exec requires confirmation_mode=explicit_trigger"
-                )
+                raise ValueError("r2_pit_htf_exec requires confirmation_mode=explicit_trigger")
             if self.binance.primary_interval != "5m":
                 raise ValueError("r2_pit_htf_exec requires primary_interval=5m")
             required_intervals = {"5m", "15m", "1h"}
             missing = sorted(required_intervals.difference(self.binance.intervals))
             if missing:
                 raise ValueError(
-                    "r2_pit_htf_exec requires subscribed intervals: "
-                    + ", ".join(missing)
+                    "r2_pit_htf_exec requires subscribed intervals: " + ", ".join(missing)
                 )
         if self.signals.entry_policy == "shadow_er_context_v1":
             required_intervals = {"5m", "15m", "1h"}
-            missing = sorted(
-                required_intervals.difference(self.binance.intervals)
-            )
+            missing = sorted(required_intervals.difference(self.binance.intervals))
             if missing:
                 raise ValueError(
-                    "shadow_er_context_v1 requires subscribed intervals: "
-                    + ", ".join(missing)
+                    "shadow_er_context_v1 requires subscribed intervals: " + ", ".join(missing)
                 )
+        if self.alerts.market_watch.enabled:
+            if self.alerts.market_watch.market not in self.binance.markets:
+                raise ValueError("market_watch.market must be enabled in binance.markets")
+            if self.alerts.market_watch.top_n > self.binance.top_n:
+                raise ValueError("market_watch.top_n must be <= binance.top_n")
         return self
 
     @field_validator("log_level")

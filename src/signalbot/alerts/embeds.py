@@ -61,9 +61,7 @@ def _fit_discord_embed(embed: dict[str, Any]) -> dict[str, Any]:
     )
     footer = embed.get("footer")
     if isinstance(footer, dict):
-        footer["text"] = _truncate_text(
-            footer.get("text", ""), DISCORD_EMBED_FOOTER_LIMIT
-        )
+        footer["text"] = _truncate_text(footer.get("text", ""), DISCORD_EMBED_FOOTER_LIMIT)
 
     raw_fields = embed.get("fields")
     fields: list[dict[str, Any]] = []
@@ -138,6 +136,12 @@ def _times(timestamp_ms: int) -> str:
 def _color(d: SignalDecision) -> int:
     if d.stage is SignalStage.INVALIDATED:
         return 0x808080
+    if d.family is SignalFamily.TOP_GAINER:
+        return 0x2ECC71
+    if d.family is SignalFamily.BOLLINGER_UPPER_TOUCH:
+        return 0xF1C40F
+    if d.family is SignalFamily.BOLLINGER_LOWER_TOUCH:
+        return 0xE74C3C
     if d.metadata.get("informational_only") is True:
         return 0x3498DB
     if d.family is SignalFamily.TECHNICAL_EXIT:
@@ -158,6 +162,16 @@ def _recommendation_summary(d: SignalDecision) -> str:
     risk events remain explicit no-entry recommendations.
     """
 
+    if d.family is SignalFamily.TOP_GAINER:
+        rank = d.metadata.get("gainer_rank", "?")
+        trend = d.metadata.get("trend_label", "추세 판정 없음")
+        return f"🚀 Binance 24h 급상승 #{rank} · {trend}"
+    if d.family is SignalFamily.BOLLINGER_UPPER_TOUCH:
+        trend = d.metadata.get("trend_label", "추세 판정 없음")
+        return f"📈 Bollinger 상단 터치 · {trend}"
+    if d.family is SignalFamily.BOLLINGER_LOWER_TOUCH:
+        trend = d.metadata.get("trend_label", "추세 판정 없음")
+        return f"📉 Bollinger 하단 터치 · {trend}"
     if d.family is SignalFamily.TECHNICAL_EXIT:
         if d.market is Market.SPOT:
             return "🟠 추천: 보유 포지션 정리 검토 · 신규 매수 보류"
@@ -170,18 +184,10 @@ def _recommendation_summary(d: SignalDecision) -> str:
     if d.stage is SignalStage.INVALIDATED:
         return "⏸️ 추천: 진입 보류 · 직전 진입 조건 무효화"
     if d.metadata.get("informational_only") is True:
-        bias = (
-            "상승 조건 관찰 중"
-            if d.direction is Direction.LONG
-            else "하락 조건 관찰 중"
-        )
+        bias = "상승 조건 관찰 중" if d.direction is Direction.LONG else "하락 조건 관찰 중"
         return f"⏸️ 추천: 진입 보류 · {bias}"
     if d.stage is not SignalStage.CONFIRMED:
-        bias = (
-            "상승 조건 형성 중"
-            if d.direction is Direction.LONG
-            else "하락 조건 형성 중"
-        )
+        bias = "상승 조건 형성 중" if d.direction is Direction.LONG else "하락 조건 형성 중"
         return f"⏸️ 추천: 진입 보류 · {bias}"
     if d.direction is Direction.LONG:
         action = "매수 후보" if d.market is Market.SPOT else "LONG 후보"
@@ -202,6 +208,47 @@ _FAMILY_LABELS = {
     SignalFamily.EXHAUSTION_SHORT: "과열 소진",
     SignalFamily.CAPITULATION_LONG: "투매 반등",
 }
+
+
+def _market_watch_fields(d: SignalDecision) -> list[dict[str, object]]:
+    if d.metadata.get("market_watch") is not True:
+        return []
+    rank = d.metadata.get("gainer_rank")
+    change = d.metadata.get("price_change_percent_24h")
+    quote_volume = d.metadata.get("quote_volume_24h_usdt")
+    trend = d.metadata.get("trend_label", "unknown")
+    trend_evidence = d.metadata.get("trend_evidence", ())
+    if isinstance(trend_evidence, (list, tuple)):
+        trend_lines = [str(item) for item in trend_evidence]
+    else:
+        trend_lines = [str(trend_evidence)]
+    rendered_change = (
+        _percent(float(change), signed=True) if isinstance(change, (int, float)) else "n/a"
+    )
+    rendered_volume = (
+        _compact_number(float(quote_volume) / 1_000_000)
+        if isinstance(quote_volume, (int, float))
+        else "n/a"
+    )
+    ranking = (
+        f"24h 상승 순위 #{rank} · 상승률 {rendered_change}\n"
+        f"24h quote volume {rendered_volume}M USDT"
+    )
+    bands = (
+        "Bollinger(20, 2 stdev) "
+        f"하단 {_compact_number(d.metadata.get('bollinger_lower'))} · "
+        f"중심 {_compact_number(d.metadata.get('bollinger_middle'))} · "
+        f"상단 {_compact_number(d.metadata.get('bollinger_upper'))}\n"
+        f"봉 L/H/C {_compact_number(d.metadata.get('candle_low'))} / "
+        f"{_compact_number(d.metadata.get('candle_high'))} / "
+        f"{_compact_number(d.metadata.get('candle_close'))}"
+    )
+    analysis = "\n".join((f"판정: **{trend}**", *trend_lines))
+    return [
+        {"name": "급상승 우선순위", "value": ranking[:1024], "inline": False},
+        {"name": "Bollinger 위치", "value": bands[:1024], "inline": False},
+        {"name": "폐봉 기술 추세", "value": analysis[:1024], "inline": False},
+    ]
 
 
 def _compact_number(value: float | None, *, signed: bool = False) -> str:
@@ -248,9 +295,7 @@ def _setup_line(label: str, setup: DirectionalSetupScore) -> str:
         if setup.decision_score == setup.raw_score
         else f" · 게이트 반영 {setup.decision_score}/100"
     )
-    return (
-        f"**{label} {setup.raw_score}/100** · {family} · {state} · {gate}{adjusted}"
-    )
+    return f"**{label} {setup.raw_score}/100** · {family} · {state} · {gate}{adjusted}"
 
 
 def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
@@ -308,10 +353,7 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
                 f"RSI14 {feature.rsi:.1f} (Δ {feature.rsi - feature.rsi_previous:+.1f}) · "
                 f"ADX14 {feature.adx:.1f}"
             ),
-            (
-                f"MACD hist {_compact_number(feature.macd_histogram, signed=True)} "
-                f"(Δ {macd_delta})"
-            ),
+            (f"MACD hist {_compact_number(feature.macd_histogram, signed=True)} (Δ {macd_delta})"),
             (
                 f"직전 20봉 범위 {_compact_number(feature.recent_low)} - "
                 f"{_compact_number(feature.recent_high)}"
@@ -345,9 +387,7 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
         ),
     ]
     if feature.funding_rate is not None or feature.funding_zscore is not None:
-        funding = (
-            None if feature.funding_rate is None else feature.funding_rate * 100
-        )
+        funding = None if feature.funding_rate is None else feature.funding_rate * 100
         risk_lines.append(
             f"Funding {_percent(funding, signed=True, digits=4)} · "
             f"z {_compact_number(feature.funding_zscore, signed=True)}"
@@ -355,20 +395,12 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
     risk_lines.append(f"데이터 완전성 {feature.data_completeness:.0%} · 폐봉 기준")
 
     structure = feature.chart_structure
-    pullback_depth = (
-        None if structure.pullback_depth is None else structure.pullback_depth * 100
-    )
+    pullback_depth = None if structure.pullback_depth is None else structure.pullback_depth * 100
     pullback_duration = (
-        "n/a"
-        if structure.pullback_duration_bars is None
-        else str(structure.pullback_duration_bars)
+        "n/a" if structure.pullback_duration_bars is None else str(structure.pullback_duration_bars)
     )
-    support_distance = _compact_number(
-        structure.price_minus_support_atr, signed=True
-    )
-    resistance_distance = _compact_number(
-        structure.resistance_minus_price_atr, signed=True
-    )
+    support_distance = _compact_number(structure.price_minus_support_atr, signed=True)
+    resistance_distance = _compact_number(structure.resistance_minus_price_atr, signed=True)
     swing_value = "\n".join(
         (
             (
@@ -435,11 +467,16 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
 def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]:
     d = SignalDecision.model_validate(d.model_dump(mode="python", warnings="none"))
     reasons = "\n".join(f"• {reason}" for reason in d.reasons[:10]) or "• No details"
-    invalidation = str(d.invalidation) if d.invalidation is not None else "n/a"
+    invalidation = (
+        str(d.invalidation)
+        if d.invalidation is not None
+        else str(d.metadata.get("invalidation_condition", "n/a"))
+    )
     fields = [
         {"name": "Price", "value": str(d.price), "inline": True},
         {"name": "Timeframe", "value": d.timeframe, "inline": True},
         {"name": "Invalidation", "value": invalidation, "inline": True},
+        *_market_watch_fields(d),
         *_directional_fields(d),
         {"name": "Evidence", "value": reasons[:1024], "inline": False},
         {
@@ -451,10 +488,7 @@ def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]
         },
         {"name": "Time", "value": _times(d.event_time_ms), "inline": False},
     ]
-    paper_exit = (
-        d.family is SignalFamily.TECHNICAL_EXIT
-        and d.metadata.get("paper_only") is True
-    )
+    paper_exit = d.family is SignalFamily.TECHNICAL_EXIT and d.metadata.get("paper_only") is True
     informational_only = d.metadata.get("informational_only") is True
     if informational_only and d.stage is SignalStage.CONFIRMED:
         raise ValueError("informational-only decisions cannot be CONFIRMED")
@@ -476,12 +510,8 @@ def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]
                 f"Alert observation (closed candle): {_times(observed_at_ms)}"
             )
         regime_timing = "unavailable"
-        if isinstance(regime_observed_at_ms, int) and isinstance(
-            regime_context_source, str
-        ):
-            regime_timing = (
-                f"{regime_context_source}: {_times(regime_observed_at_ms)}"
-            )
+        if isinstance(regime_observed_at_ms, int) and isinstance(regime_context_source, str):
+            regime_timing = f"{regime_context_source}: {_times(regime_observed_at_ms)}"
         fields.insert(
             0,
             {

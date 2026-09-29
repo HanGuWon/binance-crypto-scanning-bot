@@ -108,6 +108,13 @@ alerts:
   discord_enabled: false
   discord_webhook_url: null
   discord_username: Binance Signal Bot
+  delivery_mode: all
+  market_watch:
+    enabled: false
+    market: futures
+    top_n: 5
+    min_quote_volume_usdt: 100000000
+    event_cooldown_seconds: 1800
   max_attempts: 3
   timeout_seconds: 10
   outbox_max_active_items: 10000

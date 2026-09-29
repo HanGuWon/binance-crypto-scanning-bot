@@ -11,6 +11,7 @@ from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from signalbot.domain.enums import Market, SignalFamily
 from signalbot.domain.models import Candle, SignalDecision
 from signalbot.persistence.models import (
     AlertOutboxRow,
@@ -45,9 +46,7 @@ class OutboxItem:
 
 
 def _signal_payload(decision: SignalDecision) -> str:
-    return json.dumps(
-        decision.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False
-    )
+    return json.dumps(decision.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False)
 
 
 def _outbox_item(row: AlertOutboxRow) -> OutboxItem:
@@ -217,11 +216,7 @@ class SqlRepository:
                 active = session.scalar(
                     select(func.count())
                     .select_from(AlertOutboxRow)
-                    .where(
-                        AlertOutboxRow.status.in_(
-                            ("pending", "sending", "uncertain")
-                        )
-                    )
+                    .where(AlertOutboxRow.status.in_(("pending", "sending", "uncertain")))
                 )
                 if int(active or 0) >= maximum_active_items:
                     raise OutboxCapacityError(
@@ -411,6 +406,23 @@ class SqlRepository:
                 select(SignalRow).order_by(desc(SignalRow.event_time_ms)).limit(limit)
             ).all()
         return [SignalDecision.model_validate(json.loads(row.payload_json)) for row in rows]
+
+    def latest_delivered_signal_time(
+        self, market: Market, symbol: str, family: SignalFamily
+    ) -> int | None:
+        """Find the last delivered event for a bounded market-watch cooldown."""
+
+        with Session(self.engine) as session:
+            return session.scalar(
+                select(func.max(SignalRow.event_time_ms))
+                .join(AlertOutboxRow, AlertOutboxRow.event_id == SignalRow.event_id)
+                .where(
+                    SignalRow.market == market.value,
+                    SignalRow.symbol == symbol.upper(),
+                    SignalRow.family == family.value,
+                    AlertOutboxRow.status == "delivered",
+                )
+            )
 
     def save_outcome(
         self,

@@ -430,6 +430,11 @@ class FeatureEngine:
         if width_value is None:
             return None
         width = float(width_value)
+        bollinger_window = arrays.closes[index - 19 : index + 1]
+        bollinger_middle = statistics.fmean(bollinger_window)
+        bollinger_std = statistics.pstdev(bollinger_window)
+        bollinger_upper = bollinger_middle + 2 * bollinger_std
+        bollinger_lower = bollinger_middle - 2 * bollinger_std
         valid = [float(v) for v in widths[max(0, index - 119) : index + 1] if v is not None]
         percentile = 100 * sum(v <= width for v in valid) / len(valid) if valid else 50
         candle_range = max(float(current.high - current.low), 1e-12)
@@ -485,14 +490,9 @@ class FeatureEngine:
         efficiency_window = arrays.closes[index - 20 : index + 1]
         efficiency_distance = abs(efficiency_window[-1] - efficiency_window[0])
         efficiency_path = sum(
-            abs(current - previous)
-            for previous, current in pairwise(efficiency_window)
+            abs(current - previous) for previous, current in pairwise(efficiency_window)
         )
-        efficiency_ratio_20 = (
-            efficiency_distance / efficiency_path
-            if efficiency_path > 0
-            else None
-        )
+        efficiency_ratio_20 = efficiency_distance / efficiency_path if efficiency_path > 0 else None
         taker_delta_reason = (
             None
             if taker_delta is not None
@@ -524,6 +524,9 @@ class FeatureEngine:
             adx=_required_at(adx, index),
             bollinger_width=width,
             bollinger_width_percentile=percentile,
+            bollinger_middle=bollinger_middle,
+            bollinger_upper=bollinger_upper,
+            bollinger_lower=bollinger_lower,
             relative_volume=relative,
             recent_high=recent_high,
             recent_low=recent_low,
@@ -542,15 +545,9 @@ class FeatureEngine:
             taker_delta_3=None if taker_delta is None else taker_delta.d3,
             taker_delta_12=None if taker_delta is None else taker_delta.d12,
             taker_delta_unavailable_reason=taker_delta_reason,
-            normalized_vpci=(
-                None if normalized_vpci is None else normalized_vpci.value
-            ),
-            normalized_vpci_signal=(
-                None if normalized_vpci is None else normalized_vpci.signal
-            ),
-            normalized_vpci_slope_3=(
-                None if normalized_vpci is None else normalized_vpci.slope_3
-            ),
+            normalized_vpci=(None if normalized_vpci is None else normalized_vpci.value),
+            normalized_vpci_signal=(None if normalized_vpci is None else normalized_vpci.signal),
+            normalized_vpci_slope_3=(None if normalized_vpci is None else normalized_vpci.slope_3),
             normalized_vpci_unavailable_reason=normalized_vpci_reason,
             spread_bps=None if spread_bps is None else max(0, spread_bps),
             spread_is_proxy=spread_is_proxy,
@@ -558,16 +555,12 @@ class FeatureEngine:
             previous_low=float(candles[index - 1].low),
             previous_ema20=_required_at(e20, index - 1),
             ema20_distance_atr=(
-                (price - _required_at(e20, index)) / current_atr
-                if current_atr > 0
-                else None
+                (price - _required_at(e20, index)) / current_atr if current_atr > 0 else None
             ),
             efficiency_ratio_20=efficiency_ratio_20,
             chart_structure=chart_structure,
             data_completeness=(
-                70
-                + (20 if canonical_flow.available else 0)
-                + (10 if spread_bps is not None else 0)
+                70 + (20 if canonical_flow.available else 0) + (10 if spread_bps is not None else 0)
             )
             / 100,
             regime=regime,
