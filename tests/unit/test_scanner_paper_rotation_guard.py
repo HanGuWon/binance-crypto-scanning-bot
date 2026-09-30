@@ -97,6 +97,15 @@ async def test_new_gainer_keeps_active_paper_symbol_and_updates_after_activation
 
     priority_updates: list[tuple[Instrument, ...]] = []
     active_updates: list[frozenset[str]] = []
+    watch_updates: list[tuple[tuple[Instrument, ...], tuple[Any, ...], int]] = []
+
+    def set_priority(
+        priority: tuple[Instrument, ...], retained: tuple[Instrument, ...],
+        states: tuple[Any, ...], observed_ms: int,
+    ) -> None:
+        priority_updates.append(priority)
+        watch_updates.append((retained, states, observed_ms))
+
     scanner = object.__new__(MarketScanner)
     scanner.market = Market.SPOT
     scanner.settings = cast(
@@ -107,7 +116,7 @@ async def test_new_gainer_keeps_active_paper_symbol_and_updates_after_activation
         Any,
         SimpleNamespace(
             paper_positions=SimpleNamespace(continuation_symbols=frozenset({"AAAUSDT"})),
-            set_priority_gainers=priority_updates.append,
+            set_priority_gainers=set_priority,
             set_active_symbols=lambda tradable, *_args: active_updates.append(tradable),
         ),
     )
@@ -132,3 +141,6 @@ async def test_new_gainer_keeps_active_paper_symbol_and_updates_after_activation
     await scanner._activate_universe(rotation)
     assert active_updates == [frozenset({"AAAUSDT", "BBBUSDT", "DDDUSDT"})]
     assert priority_updates == [rotation.priority_gainers]
+    assert watch_updates == [
+        (rotation.retained_watch, rotation.watch_states, rotation.observed_at_ms)
+    ]

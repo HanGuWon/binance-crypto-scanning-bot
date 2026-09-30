@@ -210,8 +210,9 @@ class MarketScanner:
                 )
                 if self._universe_signature(watch_candidate) != current_signature:
                     return watch_candidate
-                self._apply_runtime_universe(watch_candidate)
-                self.universe = watch_candidate
+                if watch_candidate != current:
+                    self._apply_runtime_universe(watch_candidate)
+                    self.universe = watch_candidate
                 return None
 
         priority_additions = {item.symbol for item in candidate.priority_gainers} - set(

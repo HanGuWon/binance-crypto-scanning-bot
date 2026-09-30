@@ -29,3 +29,5 @@ Independent A audit `/root/audit_alert_focus`: PASS. 순위 스냅샷 최대4개
 운영 기준 확인: OCI /opt/signalbot/releases/8450522, service active, NRestarts=0, root 여유17GB. 검증 중 기존 서비스를 유지한다.
 
 구현 재감사: `/root/audit_alert_focus` GO-WITH-FIXES, blockers=0. 불완전 REST snapshot 거부, 오래된 intent 복원 범위 제한, 현재 유동성 배달 조건, 동시 사건 표시, 이탈 시각 장벽을 수정하고 관련 회귀 테스트를 추가했다. 마지막 표현 제안도 수용했다. 변경 전 원본 테스트는 수정하지 않았다. 통합 검증에서 발견한 선택 인자 전달 문제는 비시장 알림의 기존 저장 호출 계약을 보존하는 방식으로 수정했다. 관련 단위·통합 69개 테스트 통과 (2.82s). 전체 검증은 최종 코드 고정 후 실행한다.
+
+전체 검증 후 보강: 3922 passed, 29 skipped, 3 failed (997.47s). prepare 테스트의 SimpleNamespace 대역을 실제 scanner 객체로 바꾸고, 확장된 runtime 인자에 맞춰 두 테스트 대역을 수정했다. 기존 행동 assertions는 유지하고 새 전달값 assertions를 추가했다. PAPER 회전 보류 중 완전히 같은 watch snapshot은 불필요하게 다시 적용하지 않는다. 관련 단위·통합 42개 테스트 통과 (2.17s). 운영 서비스는 교체하지 않았으며 수정 후 전체 검증을 다시 실행한다.

@@ -1,12 +1,12 @@
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
 from conftest import make_candle
 from signalbot.domain.enums import Market
-from signalbot.domain.models import Candle, Instrument
+from signalbot.domain.models import Candle, GainerWatchState, Instrument
 from signalbot.exchange.binance.universe import Universe
 from signalbot.scanner import MarketScanner
 
@@ -97,16 +97,23 @@ async def test_scanner_prepares_tradable_and_independent_context_market_data() -
         def __init__(self) -> None:
             self.active: tuple[frozenset[str], frozenset[str], frozenset[str]] | None = None
             self.priority: tuple[Instrument, ...] = ()
+            self.watch: frozenset[str] = frozenset()
 
         def set_active_symbols(
             self,
             tradable: frozenset[str],
             surveillance: frozenset[str],
             context: frozenset[str],
+            watch: frozenset[str],
         ) -> None:
             self.active = (tradable, surveillance, context)
+            self.watch = watch
 
-        def set_priority_gainers(self, instruments: tuple[Instrument, ...]) -> None:
+        def set_priority_gainers(
+            self, instruments: tuple[Instrument, ...], retained: tuple[Instrument, ...],
+            states: tuple[GainerWatchState, ...], observed_ms: int,
+        ) -> None:
+            assert retained == () and states == () and observed_ms == 0
             self.priority = instruments
 
     bootstrapped: list[list[str]] = []
@@ -115,17 +122,13 @@ async def test_scanner_prepares_tradable_and_independent_context_market_data() -
         bootstrapped.append(symbols)
 
     runtime = FakeRuntime()
-    scanner = cast(
-        MarketScanner,
-        SimpleNamespace(
-            selector=FakeSelector(),
-            rest=object(),
-            runtime=runtime,
-            market=Market.SPOT,
-            universe=None,
-            _bootstrap=bootstrap,
-        ),
-    )
+    scanner = object.__new__(MarketScanner)
+    scanner.selector = cast(Any, FakeSelector())
+    scanner.rest = cast(Any, object())
+    scanner.runtime = cast(Any, runtime)
+    scanner.market = Market.SPOT
+    scanner.universe = None
+    scanner._bootstrap = cast(Any, bootstrap)
 
     universe = await MarketScanner.prepare(scanner)
 
@@ -136,3 +139,4 @@ async def test_scanner_prepares_tradable_and_independent_context_market_data() -
         frozenset({"BTCUSDT"}),
     )
     assert bootstrapped == [["BTCUSDT", "ETHUSDT"]]
+    assert runtime.watch == frozenset()
