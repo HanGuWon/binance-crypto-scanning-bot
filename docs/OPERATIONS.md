@@ -99,6 +99,46 @@ to suppress rapid leave/re-enter flapping. The runtime also checks the last
 delivered market/symbol/family event in SQLite before creating a new Discord
 intent, so a service restart cannot reset the 30-minute delivery cooldown.
 
+The OCI profile additionally enables `retention_enabled`: a top-5 coin observed
+with quote turnover **>=1 billion USDT** qualifies for retained monitoring until
+48 hours after its last top-5 observation, even if turnover subsequently falls.
+The rolling 24h turnover is an observed snapshot, not cumulative trading volume.
+At most 10 alumni are kept (newest top-5 observation, then symbol); cap eviction
+ends qualification. Qualification, expiry and event episodes survive restart in
+SQLite. Delisted/excluded contracts and expired qualifications are pruned.
+Retained symbols receive candle-only subscriptions independently of the tradable
+20-symbol R2/PAPER panel. Expiry still applies if REST refreshes fail. Below or
+equal to 100M current turnover, monitoring continues but new watch alerts stop.
+
+`context_alerts_enabled` adds rising/falling trend observations (existing trend
+votes plus ADX>=25) and informational range LONG/SHORT candidates. Range rules
+require 20 contiguous prior closed candles, repeated tests of both edges,
+ADX<20, ER20<=0.30, EMA20 slope <=0.25 ATR in absolute value and width>=2 ATR.
+The current candle must reject an edge, close inside the corresponding 20-35%
+zone, have the matching candle body and closed-kline aggressive buy share
+>=55% for LONG or <=45% for SHORT. Candles touching both edge zones are excluded.
+The first target is the range midpoint; distance must cover twice the configured
+estimated round-trip cost (26bps by default). Invalidation is lower edge-0.25ATR
+or upper edge+0.25ATR. These are **unvalidated observation candidates**, not
+confirmed entries, probabilities or production orders. Aggressive trade share
+does not measure order-book resting liquidity.
+
+Ranking snapshots never apply to earlier candle closes. Up to four snapshots
+are retained; older delayed candles without matching evidence are skipped.
+True event episodes and their signal/outbox intent commit atomically, including
+pending intents; false observations re-arm without sending a message, preserve
+cooldowns and cannot rewind newer state. Departing symbols are also re-armed.
+The episode is preserved across rule-version updates. Only one new market-watch
+message per symbol/closed candle is delivered, preferring range, band, trend,
+then ranking. Every message carries trend, band and aggressive-flow context;
+other coincident event decisions remain stored with disabled delivery intent.
+Incomplete exchange/ticker snapshots cannot erase qualification. The current
+snapshot's volume floor also acts as an operational notification gate for
+delayed candles, while their evidence remains from the causal older snapshot.
+Membership exit stamps a time barrier once; repeated refreshes do not keep
+expired episode records alive. First-upgrade cooldown recovery is limited to
+recent delivery intents; old historical messages cannot block re-entry.
+
 ## Raw-event evidence capacity
 
 Raw capture is opt-in:

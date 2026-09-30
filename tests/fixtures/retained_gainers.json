@@ -1,0 +1,17 @@
+{
+  "exchange_info": {"symbols": [
+    {"symbol":"TESTUSDT","baseAsset":"TEST","quoteAsset":"USDT","status":"TRADING","contractType":"PERPETUAL"},
+    {"symbol":"ETHUSDT","baseAsset":"ETH","quoteAsset":"USDT","status":"TRADING","contractType":"PERPETUAL"},
+    {"symbol":"BTCUSDT","baseAsset":"BTC","quoteAsset":"USDT","status":"TRADING","contractType":"PERPETUAL"}
+  ]},
+  "initial": [
+    {"symbol":"TESTUSDT","quoteVolume":"1000000000","priceChangePercent":"40"},
+    {"symbol":"ETHUSDT","quoteVolume":"300000000","priceChangePercent":"5"},
+    {"symbol":"BTCUSDT","quoteVolume":"200000000","priceChangePercent":"1"}
+  ],
+  "rotated": [
+    {"symbol":"TESTUSDT","quoteVolume":"200000000","priceChangePercent":"-5"},
+    {"symbol":"ETHUSDT","quoteVolume":"2000000000","priceChangePercent":"50"},
+    {"symbol":"BTCUSDT","quoteVolume":"300000000","priceChangePercent":"2"}
+  ]
+}

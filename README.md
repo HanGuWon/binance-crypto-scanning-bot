@@ -9,6 +9,10 @@ This repository intentionally **does not place orders**. Spot sell/exit suggesti
 - Binance Spot and USDⓈ-M public REST adapters.
 - Current routed Futures WebSocket endpoints (`/public` and `/market`).
 - Liquidity-ranked tradable universe plus broad surveillance universe.
+- Focused top-5 Futures mover alerts with optional durable 48h retention for
+  billion-USDT turnover movers, trend/Bollinger context and informational range
+  candidates. Retained monitoring is separate from the R2/PAPER entry panel;
+  see [operation rules](docs/OPERATIONS.md#focused-binance-mover-alerts).
 - Closed-candle-only calculation for 1m, 5m, 15m, and 1h; feature and structure APIs reject an open candle anywhere in the prefix they use.
 - EMA, RSI, MACD histogram, ATR, ADX, Bollinger-width percentile, relative volume, candle structure, divergence, spread, and canonical closed-kline taker-flow features.
 - Causal HH/HL or LH/LL structure from prominence-qualified 2x2 pivots, low-confidence projected trendline diagnostics, and ATR-normalized pullback/recovery measurements. Pivot references are frozen at `t-1`; impulse ATR is frozen at pivot confirmation and EMA/ATR confluence at the pullback extremum; active ZigZag legs are never used.

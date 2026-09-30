@@ -172,6 +172,12 @@ def _recommendation_summary(d: SignalDecision) -> str:
     if d.family is SignalFamily.BOLLINGER_LOWER_TOUCH:
         trend = d.metadata.get("trend_label", "추세 판정 없음")
         return f"📉 Bollinger 하단 터치 · {trend}"
+    if d.family in {SignalFamily.WATCH_TREND_UP, SignalFamily.WATCH_TREND_DOWN}:
+        trend = d.metadata.get("trend_label", "추세 판정 없음")
+        return f"🔎 추세 관찰 · {trend}"
+    if d.family in {SignalFamily.RANGE_LONG, SignalFamily.RANGE_SHORT}:
+        side = "LONG 매수" if d.family is SignalFamily.RANGE_LONG else "SHORT 매도"
+        return f"🔎 박스권 {side} 후보 · 검증 전 관찰 신호"
     if d.family is SignalFamily.TECHNICAL_EXIT:
         if d.market is Market.SPOT:
             return "🟠 추천: 보유 포지션 정리 검토 · 신규 매수 보류"
@@ -234,6 +240,18 @@ def _market_watch_fields(d: SignalDecision) -> list[dict[str, object]]:
         f"24h 상승 순위 #{rank} · 상승률 {rendered_change}\n"
         f"24h quote volume {rendered_volume}M USDT"
     )
+    if d.metadata.get("retained_gainer") is True:
+        peak = d.metadata.get("peak_quote_volume_usdt")
+        expiry = d.metadata.get("watch_expires_at_ms")
+        peak_text = (
+            f"{float(peak) / 1_000_000_000:.2f}B" if isinstance(peak, (int, float)) else "n/a"
+        )
+        expiry_text = _times(expiry) if isinstance(expiry, int) else "n/a"
+        ranking = (
+            f"이전 급상승 종목 유지 추적 · 현재 상위 5개 밖\n"
+            f"관측 최대 거래대금 {peak_text} USDT · 현재 {rendered_volume}M USDT\n"
+            f"추적 만료: {expiry_text}"
+        )
     bands = (
         "Bollinger(20, 2 stdev) "
         f"하단 {_compact_number(d.metadata.get('bollinger_lower'))} · "
@@ -244,11 +262,44 @@ def _market_watch_fields(d: SignalDecision) -> list[dict[str, object]]:
         f"{_compact_number(d.metadata.get('candle_close'))}"
     )
     analysis = "\n".join((f"판정: **{trend}**", *trend_lines))
-    return [
+    fields: list[dict[str, object]] = [
         {"name": "급상승 우선순위", "value": ranking[:1024], "inline": False},
         {"name": "Bollinger 위치", "value": bands[:1024], "inline": False},
         {"name": "폐봉 기술 추세", "value": analysis[:1024], "inline": False},
     ]
+    ratio = d.metadata.get("taker_buy_ratio")
+    pressure = "데이터 없음"
+    if isinstance(ratio, (int, float)):
+        label = "매수 체결 우세" if ratio >= 0.55 else "매도 체결 우세" if ratio <= 0.45 else "균형"
+        pressure = f"{d.metadata.get('flow_interval')} 폐봉 주도 매수 {ratio:.1%} · {label}"
+    fields.append({
+        "name": "매수·매도 압력", "value": pressure + "\n체결 방향 기준 (호가 잔량 아님)",
+        "inline": False,
+    })
+    simultaneous = d.metadata.get("concurrent_watch_events")
+    if isinstance(simultaneous, (list, tuple)):
+        labels = {
+            "top_gainer": "급상승 상위 5개",
+            "bollinger_upper_touch": "볼린저 상단 접촉",
+            "bollinger_lower_touch": "볼린저 하단 접촉",
+            "watch_trend_up": "상승 추세", "watch_trend_down": "하락 추세",
+            "range_long": "박스권 LONG 매수 후보", "range_short": "박스권 SHORT 매도 후보",
+        }
+        fields.append({
+            "name": "같은 폐봉에서 관측한 사건",
+            "value": " · ".join(labels.get(str(item), str(item)) for item in simultaneous)[:1024],
+            "inline": False,
+        })
+    if d.family in {SignalFamily.RANGE_LONG, SignalFamily.RANGE_SHORT}:
+        fields.append({
+            "name": "박스권 후보 기준",
+            "value": (
+                f"범위 {d.metadata.get('range_low')} ~ {d.metadata.get('range_high')}\n"
+                f"중간 목표 {d.metadata.get('range_target')}\n"
+                f"추정 왕복 비용 {d.metadata.get('range_round_trip_cost_bps')}bps · 검증 전 후보"
+            ), "inline": False,
+        })
+    return fields
 
 
 def _compact_number(value: float | None, *, signed: bool = False) -> str:
@@ -299,6 +350,8 @@ def _setup_line(label: str, setup: DirectionalSetupScore) -> str:
 
 
 def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
+    if d.metadata.get("market_watch") is True:
+        return []
     raw = d.metadata.get(DIRECTIONAL_DIAGNOSTICS_METADATA_KEY)
     if raw is None:
         return []
@@ -498,6 +551,8 @@ def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]
         if paper_exit
         else f"상태: {d.stage.value.upper()} · 근거 강도: {d.score}/100"
     )
+    if d.metadata.get("market_watch") is True:
+        status_line = "폐봉 조건 관찰 · 수익률·정확도 검증 전"
     if paper_exit:
         fill_time_ms = d.metadata.get("fill_time_ms")
         observed_at_ms = d.metadata.get("observed_at_closed_candle_ms")

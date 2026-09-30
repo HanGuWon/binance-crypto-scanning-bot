@@ -31,6 +31,27 @@ class CandleRow(Base):
     is_closed: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class GainerWatchRow(Base):
+    __tablename__ = "gainer_watch"
+    market: Mapped[str] = mapped_column(String(16), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_top5_observed_ms: Mapped[int] = mapped_column(BigInteger)
+    expires_at_ms: Mapped[int] = mapped_column(BigInteger)
+    peak_quote_volume_usdt: Mapped[float] = mapped_column(Float)
+
+
+class MarketWatchEpisodeRow(Base):
+    __tablename__ = "market_watch_episodes"
+    market: Mapped[str] = mapped_column(String(16), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    family: Mapped[str] = mapped_column(String(32), primary_key=True)
+    timeframe: Mapped[str] = mapped_column(String(16), primary_key=True)
+    active: Mapped[bool] = mapped_column(Boolean)
+    last_event_ms: Mapped[int] = mapped_column(BigInteger)
+    cooldown_until_ms: Mapped[int] = mapped_column(BigInteger)
+    membership_end_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
 class SignalRow(Base):
     __tablename__ = "signals"
     event_id: Mapped[str] = mapped_column(String(32), primary_key=True)

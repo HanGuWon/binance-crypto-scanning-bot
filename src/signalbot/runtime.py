@@ -23,6 +23,7 @@ from signalbot.domain.models import (
     BookTicker,
     Candle,
     FeatureSnapshot,
+    GainerWatchState,
     Instrument,
     MiniTicker,
     RuleEvaluation,
@@ -87,15 +88,25 @@ class MarketRuntime:
         self.tradable_symbols: frozenset[str] = frozenset()
         self.surveillance_symbols: frozenset[str] = frozenset()
         self.context_symbols: frozenset[str] = frozenset()
+        self.watch_symbols: frozenset[str] = frozenset()
         self._features: dict[tuple[str, str], FeatureSnapshot] = {}
         self._feature_history: dict[tuple[str, str], deque[FeatureSnapshot]] = {}
         self.decision_count = 0
         self.parse_error_count = 0
 
-    def set_priority_gainers(self, instruments: tuple[Instrument, ...]) -> None:
+    def set_priority_gainers(
+        self, instruments: tuple[Instrument, ...], retained: tuple[Instrument, ...] = (),
+        states: tuple[GainerWatchState, ...] = (), observed_ms: int = 0,
+    ) -> None:
         """Refresh the bounded 24h gainer panel without emitting on the refresh clock."""
 
-        removed, _added = self.market_watch.set_priority_gainers(instruments)
+        removed, _added = self.market_watch.set_priority_gainers(
+            instruments, retained, states, observed_ms,
+        )
+        self.repository.prune_market_watch_episodes(
+            self.market, self.market_watch.monitored_symbols(self.clock.now_ms()),
+            self.clock.now_ms(),
+        )
         for symbol in removed:
             for family in (
                 SignalFamily.TOP_GAINER,
@@ -119,12 +130,17 @@ class MarketRuntime:
         tradable_symbols: frozenset[str],
         surveillance_symbols: frozenset[str],
         context_symbols: frozenset[str] = frozenset(),
+        watch_symbols: frozenset[str] = frozenset(),
     ) -> None:
         """Apply one bounded universe rotation and prune all runtime-owned state."""
 
         tradable = frozenset(symbol.upper() for symbol in tradable_symbols)
         surveillance = frozenset(symbol.upper() for symbol in surveillance_symbols)
         context = frozenset(symbol.upper() for symbol in context_symbols)
+        watch = frozenset(symbol.upper() for symbol in watch_symbols)
+        watch_settings = self.settings.alerts.market_watch
+        if len(watch) > watch_settings.max_retained_symbols + watch_settings.top_n:
+            raise ValueError("retained watch exceeds configured maximum")
         if len(tradable) > self.settings.binance.top_n:
             raise ValueError("tradable universe exceeds configured top_n")
         if len(surveillance) > self.settings.binance.surveillance_n:
@@ -134,14 +150,15 @@ class MarketRuntime:
         self.tradable_symbols = tradable
         self.surveillance_symbols = surveillance
         self.context_symbols = context
-        retained_market_data = tradable | context
+        self.watch_symbols = watch
+        retained_market_data = tradable | context | watch
         self.candles.retain_symbols(self.market, retained_market_data)
         self.order_flow.retain_symbols(self.market, tradable)
         self.books.retain_symbols(self.market, tradable)
         self.funding.retain_symbols(tradable)
         self.anomaly.retain_symbols(surveillance)
         self.regime.retain_symbols(self.market, retained_market_data)
-        self.state_machine.prune_symbols(surveillance)
+        self.state_machine.prune_symbols(surveillance | watch)
         self.state_machine.prune_directional_states(tradable)
         self.paper_positions.prune_symbols(tradable)
         self._features = {
@@ -161,7 +178,7 @@ class MarketRuntime:
             for candle in candles
             if candle.is_closed
             and candle.market is self.market
-            and candle.symbol in (self.tradable_symbols | self.context_symbols)
+            and candle.symbol in (self.tradable_symbols | self.context_symbols | self.watch_symbols)
             and candle.interval in self.settings.binance.intervals
         ]
         inserted = self.candles.add_many(accepted)
@@ -240,7 +257,9 @@ class MarketRuntime:
                 await self._process(evaluation)
             return
         if isinstance(event, Candle):
-            if event.symbol not in (self.tradable_symbols | self.context_symbols):
+            if event.symbol not in (
+                self.tradable_symbols | self.context_symbols | self.watch_symbols
+            ):
                 return
         elif event.symbol not in self.tradable_symbols:
             return
@@ -305,14 +324,26 @@ class MarketRuntime:
             return
         if candle.interval != self.settings.binance.primary_interval:
             return
+        new_decisions: list[SignalDecision] = []
+        prior_candles = self.candles.get(candle.market, candle.symbol, candle.interval)
+        observations = self.market_watch.evaluate(
+            candle, feature, prior_candles, now_ms=self.clock.now_ms()
+        )
+        preference = {
+            SignalFamily.RANGE_LONG: 0, SignalFamily.RANGE_SHORT: 0,
+            SignalFamily.BOLLINGER_UPPER_TOUCH: 1, SignalFamily.BOLLINGER_LOWER_TOUCH: 1,
+            SignalFamily.WATCH_TREND_UP: 2, SignalFamily.WATCH_TREND_DOWN: 2,
+            SignalFamily.TOP_GAINER: 3,
+        }
+        emitted_observation = False
+        for evaluation in sorted(observations, key=lambda item: preference[item.family]):
+            decision = await self._process(evaluation, delivery_allowed=not emitted_observation)
+            if decision is not None:
+                emitted_observation = True
+                new_decisions.append(decision)
         if candle.symbol not in self.tradable_symbols:
             return
         contexts = self._context_features(candle.symbol, feature.event_time_ms)
-        new_decisions: list[SignalDecision] = []
-        for evaluation in self.market_watch.evaluate(candle, feature):
-            decision = await self._process(evaluation)
-            if decision is not None:
-                new_decisions.append(decision)
         for evaluation in self.rule_engine.evaluate(feature, contexts):
             decision = await self._process(evaluation)
             if decision is not None:
@@ -458,7 +489,21 @@ class MarketRuntime:
                 contexts[interval] = snapshot
         return contexts
 
-    async def _process(self, evaluation: RuleEvaluation) -> SignalDecision | None:
+    async def _process(
+        self, evaluation: RuleEvaluation, *, delivery_allowed: bool = True,
+    ) -> SignalDecision | None:
+        if evaluation.metadata.get("market_watch") is True:
+            if not evaluation.triggered:
+                self.repository.rearm_market_watch(evaluation)
+                return None
+            decision = self.state_machine.decision_for_observation(evaluation)
+            if not self._persist_decision(
+                decision, observation=evaluation, delivery_allowed=delivery_allowed,
+            ):
+                return None
+            self.decision_count += 1
+            await self.decision_handler(decision)
+            return decision
         decision = self.state_machine.process(evaluation)
         if decision is None:
             return None
@@ -471,11 +516,14 @@ class MarketRuntime:
         await self.decision_handler(decision)
         return decision
 
-    def _persist_decision(self, decision: SignalDecision) -> bool:
+    def _persist_decision(
+        self, decision: SignalDecision, *, observation: RuleEvaluation | None = None,
+        delivery_allowed: bool = True,
+    ) -> bool:
         """Durably store one immutable signal/outbox intent without dispatching it."""
 
         delivery_enabled = (
-            self.settings.alerts.discord_enabled
+            delivery_allowed and self.settings.alerts.discord_enabled
             and self.settings.alerts.discord_webhook_url is not None
             and should_deliver_discord(decision, self.settings.alerts)
         )
@@ -490,6 +538,13 @@ class MarketRuntime:
             decision,
             self.settings.alerts.discord_username,
         )
+        if observation is not None:
+            return self.repository.save_signal_and_enqueue(
+                decision, payload, self.clock.now_ms(),
+                delivery_enabled=delivery_enabled,
+                maximum_active_items=self.settings.alerts.outbox_max_active_items,
+                observation=observation,
+            )
         return self.repository.save_signal_and_enqueue(
             decision,
             payload,

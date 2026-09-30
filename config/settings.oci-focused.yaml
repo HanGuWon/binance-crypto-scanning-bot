@@ -1,6 +1,6 @@
 app_name: binance-signal-bot
 log_level: INFO
-rule_version: v4.4.0-focused-market-watch
+rule_version: v4.5.0-retained-market-watch
 binance:
   markets: [futures]
   quote_asset: USDT
@@ -122,6 +122,12 @@ alerts:
     min_quote_volume_usdt: 100000000
     # One alert per continuous event episode, with 30m anti-flap cooldown.
     event_cooldown_seconds: 1800
+    retention_enabled: true
+    retention_quote_volume_usdt: 1000000000
+    retention_hours: 48
+    max_retained_symbols: 10
+    context_alerts_enabled: true
+    range_round_trip_cost_bps: 26
   max_attempts: 3
   timeout_seconds: 10
   outbox_max_active_items: 10000

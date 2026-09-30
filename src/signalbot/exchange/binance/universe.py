@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 from signalbot.clock import Clock
 from signalbot.config import BinanceSettings, MarketWatchSettings
 from signalbot.domain.enums import Market
-from signalbot.domain.models import Instrument
+from signalbot.domain.models import GainerWatchState, Instrument
 from signalbot.exchange.binance.rest import (
     BinanceRateLimitError,
     BinanceRestClient,
@@ -28,6 +29,16 @@ class Universe:
     surveillance: tuple[Instrument, ...]
     context: tuple[Instrument, ...] = ()
     priority_gainers: tuple[Instrument, ...] = ()
+    retained_watch: tuple[Instrument, ...] = ()
+    watch_states: tuple[GainerWatchState, ...] = ()
+    observed_at_ms: int = 0
+
+    @property
+    def watch_symbols(self) -> frozenset[str]:
+        return frozenset(item.symbol for item in self.retained_watch) | (
+            frozenset(item.symbol for item in self.priority_gainers)
+            - frozenset(self.tradable_symbols)
+        )
 
     @property
     def tradable_symbols(self) -> list[str]:
@@ -48,10 +59,14 @@ class UniverseSelector:
         settings: BinanceSettings,
         clock: Clock,
         market_watch: MarketWatchSettings | None = None,
+        watch_updater: Callable[
+            [Market, tuple[Instrument, ...], frozenset[str], int], tuple[GainerWatchState, ...]
+        ] | None = None,
     ) -> None:
         self.settings = settings
         self.clock = clock
         self.market_watch = market_watch or MarketWatchSettings()
+        self.watch_updater = watch_updater
         self._spot_age_anchor_ms: dict[str, int] = {}
 
     def _surveillance_with_benchmark(
@@ -158,6 +173,24 @@ class UniverseSelector:
         liquid = [
             item for item in ranked if float(item.quote_volume) >= self.settings.min_quote_volume
         ]
+        if (
+            self.market_watch.enabled and self.market_watch.retention_enabled
+            and client.market is self.market_watch.market
+        ):
+            info_symbols = {
+                str(row.get("symbol", "")).upper()
+                for row in info.get("symbols", []) if isinstance(row, dict)
+            }
+            ticker_symbols = frozenset(volumes)
+            candidate_symbols = {item.symbol for item in ranked}
+            if (
+                not liquid or not candidate_symbols
+                or not candidate_symbols.issubset(ticker_symbols)
+                or not ticker_symbols.issubset(info_symbols)
+            ):
+                raise BinanceRestError(
+                    "incomplete ranking snapshot; retaining durable gainer qualifications"
+                )
         priority_gainers: tuple[Instrument, ...] = ()
         if self.market_watch.enabled and client.market is self.market_watch.market:
             minimum_quote_volume = Decimal(str(self.market_watch.min_quote_volume_usdt))
@@ -176,7 +209,21 @@ class UniverseSelector:
                     ),
                 )[: self.market_watch.top_n]
             )
+        observed_at_ms = self.clock.now_ms()
+        watch_states: tuple[GainerWatchState, ...] = ()
+        if (
+            self.market_watch.enabled and self.market_watch.retention_enabled
+            and client.market is self.market_watch.market
+        ):
+            if self.watch_updater is None:
+                raise RuntimeError("retained-gainer monitoring requires a durable watch updater")
+            watch_states = self.watch_updater(
+                client.market, priority_gainers,
+                frozenset(item.symbol for item in ranked), observed_at_ms,
+            )
         priority_symbols = {item.symbol for item in priority_gainers}
+        alumni = {row.symbol for row in watch_states} - priority_symbols
+        retained_watch = tuple(item for item in ranked if item.symbol in alumni)
         dynamic_slots = self.settings.top_n - len(priority_symbols)
         dynamic = [item for item in liquid if item.symbol not in priority_symbols][:dynamic_slots]
         tradable_symbols = priority_symbols | {item.symbol for item in dynamic}
@@ -194,6 +241,9 @@ class UniverseSelector:
             surveillance,
             context,
             priority_gainers,
+            retained_watch,
+            watch_states,
+            observed_at_ms,
         )
 
     @staticmethod

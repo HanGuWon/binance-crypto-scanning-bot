@@ -167,6 +167,21 @@ class MarketWatchSettings(StrictModel):
     top_n: int = Field(default=5, ge=1, le=20)
     min_quote_volume_usdt: float = Field(default=100_000_000, ge=0)
     event_cooldown_seconds: int = Field(default=1800, ge=0, le=86_400)
+    retention_enabled: bool = False
+    retention_quote_volume_usdt: float = Field(default=1_000_000_000, gt=0)
+    retention_hours: int = Field(default=48, ge=1, le=48)
+    max_retained_symbols: int = Field(default=10, ge=1, le=20)
+    context_alerts_enabled: bool = False
+    range_round_trip_cost_bps: float = Field(default=26, gt=0, le=1000)
+
+    @model_validator(mode="after")
+    def retained_market(self) -> MarketWatchSettings:
+        if (
+            (self.retention_enabled or self.context_alerts_enabled)
+            and self.market is not Market.FUTURES
+        ):
+            raise ValueError("retained/context market alerts require USDT perpetual futures")
+        return self
 
 
 class AlertSettings(StrictModel):

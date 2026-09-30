@@ -27,6 +27,10 @@ _FAMILY_DIRECTIONS: dict[SignalFamily, frozenset[Direction]] = {
     SignalFamily.TOP_GAINER: frozenset({Direction.RISK_UP}),
     SignalFamily.BOLLINGER_UPPER_TOUCH: frozenset({Direction.RISK_UP}),
     SignalFamily.BOLLINGER_LOWER_TOUCH: frozenset({Direction.RISK_DOWN}),
+    SignalFamily.WATCH_TREND_UP: frozenset({Direction.RISK_UP}),
+    SignalFamily.WATCH_TREND_DOWN: frozenset({Direction.RISK_DOWN}),
+    SignalFamily.RANGE_LONG: frozenset({Direction.LONG}),
+    SignalFamily.RANGE_SHORT: frozenset({Direction.SHORT}),
     SignalFamily.TECHNICAL_EXIT: frozenset({Direction.LONG, Direction.SHORT}),
 }
 
@@ -57,6 +61,14 @@ class Instrument(FrozenModel):
     @classmethod
     def uppercase_text(cls, value: str) -> str:
         return value.upper()
+
+
+class GainerWatchState(FrozenModel):
+    market: Market
+    symbol: str
+    last_top5_observed_ms: int
+    expires_at_ms: int
+    peak_quote_volume_usdt: float
 
 
 class Candle(FrozenModel):
@@ -373,6 +385,10 @@ class SignalDecision(FrozenModel):
                 SignalFamily.TOP_GAINER,
                 SignalFamily.BOLLINGER_UPPER_TOUCH,
                 SignalFamily.BOLLINGER_LOWER_TOUCH,
+                SignalFamily.WATCH_TREND_UP,
+                SignalFamily.WATCH_TREND_DOWN,
+                SignalFamily.RANGE_LONG,
+                SignalFamily.RANGE_SHORT,
             }:
                 return "MARKET_WATCH"
             return "INFORMATION_ONLY"

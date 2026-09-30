@@ -49,6 +49,10 @@ class SignalStateMachine:
             "top_gainer",
             "bollinger_upper_touch",
             "bollinger_lower_touch",
+            "watch_trend_up",
+            "watch_trend_down",
+            "range_long",
+            "range_short",
         }
         stale = [
             key
@@ -132,6 +136,17 @@ class SignalStateMachine:
                 "confirmed trigger decisions require triggered, confirmation-eligible input"
             )
         return self._decision(evaluation, SignalStage.CONFIRMED)
+
+    def decision_for_observation(self, evaluation: RuleEvaluation) -> SignalDecision:
+        """Build an informational event; its episode is owned by the durable outbox."""
+        evaluation = self._validated_evaluation(evaluation)
+        if (
+            not evaluation.triggered or evaluation.eligible
+            or evaluation.metadata.get("informational_only") is not True
+            or evaluation.metadata.get("event_only") is not True
+        ):
+            raise ValueError("market observation must be triggered and informational only")
+        return self._decision(evaluation, SignalStage.SETUP)
 
     def decision_for_research_entry(self, evaluation: RuleEvaluation) -> SignalDecision | None:
         """Materialize a cooldown-free entry under the configured confirmation mode."""

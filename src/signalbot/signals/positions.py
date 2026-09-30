@@ -515,6 +515,10 @@ class PaperPositionLifecycle:
             SignalFamily.TOP_GAINER,
             SignalFamily.BOLLINGER_UPPER_TOUCH,
             SignalFamily.BOLLINGER_LOWER_TOUCH,
+            SignalFamily.WATCH_TREND_UP,
+            SignalFamily.WATCH_TREND_DOWN,
+            SignalFamily.RANGE_LONG,
+            SignalFamily.RANGE_SHORT,
             SignalFamily.TECHNICAL_EXIT,
         }
 

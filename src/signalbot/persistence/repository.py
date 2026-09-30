@@ -12,12 +12,20 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from signalbot.domain.enums import Market, SignalFamily
-from signalbot.domain.models import Candle, SignalDecision
+from signalbot.domain.models import (
+    Candle,
+    GainerWatchState,
+    Instrument,
+    RuleEvaluation,
+    SignalDecision,
+)
 from signalbot.persistence.models import (
     AlertOutboxRow,
     AlertRow,
     Base,
     CandleRow,
+    GainerWatchRow,
+    MarketWatchEpisodeRow,
     OutcomeRow,
     SignalRow,
 )
@@ -184,6 +192,7 @@ class SqlRepository:
         *,
         delivery_enabled: bool,
         maximum_active_items: int | None = None,
+        observation: RuleEvaluation | None = None,
     ) -> bool:
         """Atomically persist a decision and one immutable delivery intent.
 
@@ -198,6 +207,19 @@ class SqlRepository:
         )
         fingerprint = hashlib.sha256(outbox_payload.encode()).hexdigest()
         with Session(self.engine) as session:
+            if observation is not None:
+                episode = self._load_market_watch_episode(session, observation)
+                if observation.event_time_ms <= episode.last_event_ms:
+                    return False
+                emit = not episode.active and observation.event_time_ms >= episode.cooldown_until_ms
+                episode.active = True
+                episode.last_event_ms = observation.event_time_ms
+                if not emit:
+                    session.commit()
+                    return False
+                episode.cooldown_until_ms = observation.event_time_ms + int(
+                    observation.metadata["event_cooldown_seconds"]
+                ) * 1000
             signal = session.get(SignalRow, decision.event_id)
             if signal is not None and signal.payload_json != signal_payload:
                 raise EventIdConflictError(
@@ -257,6 +279,139 @@ class SqlRepository:
             )
             session.commit()
             return True
+
+    @staticmethod
+    def _episode_key(evaluation: RuleEvaluation) -> tuple[str, str, str, str]:
+        return (
+            evaluation.market.value, evaluation.symbol,
+            evaluation.family.value, evaluation.timeframe,
+        )
+
+    def _load_market_watch_episode(
+        self, session: Session, evaluation: RuleEvaluation,
+    ) -> MarketWatchEpisodeRow:
+        row = session.get(MarketWatchEpisodeRow, self._episode_key(evaluation))
+        if row is not None:
+            return row
+        # Include pending/uncertain delivery intents when upgrading the old release.
+        last_intent = session.scalar(
+            select(func.max(SignalRow.event_time_ms))
+            .join(AlertOutboxRow, SignalRow.event_id == AlertOutboxRow.event_id)
+            .where(
+                SignalRow.market == evaluation.market.value,
+                SignalRow.symbol == evaluation.symbol,
+                SignalRow.family == evaluation.family.value,
+                SignalRow.timeframe == evaluation.timeframe,
+                SignalRow.event_time_ms >= evaluation.event_time_ms
+                - int(evaluation.metadata["event_cooldown_seconds"]) * 1000,
+                AlertOutboxRow.status != "disabled",
+            )
+        )
+        row = MarketWatchEpisodeRow(
+            market=evaluation.market.value, symbol=evaluation.symbol,
+            family=evaluation.family.value, timeframe=evaluation.timeframe,
+            active=(last_intent is not None and int(last_intent)
+                    + int(evaluation.metadata["event_cooldown_seconds"]) * 1000
+                    > evaluation.event_time_ms),
+            last_event_ms=int(last_intent) if last_intent is not None else -1,
+            cooldown_until_ms=(
+                int(last_intent) + int(evaluation.metadata["event_cooldown_seconds"]) * 1000
+                if last_intent is not None else 0
+            ),
+        )
+        session.add(row)
+        return row
+
+    def rearm_market_watch(self, evaluation: RuleEvaluation) -> None:
+        """Persist a false observation, without rewinding a newer event."""
+        with Session(self.engine) as session:
+            row = self._load_market_watch_episode(session, evaluation)
+            if evaluation.event_time_ms > row.last_event_ms:
+                row.active = False
+                row.last_event_ms = evaluation.event_time_ms
+                session.commit()
+
+    def prune_market_watch_episodes(
+        self, market: Market, active_symbols: frozenset[str], now_ms: int
+    ) -> None:
+        """Re-arm departing symbols, keep cooldowns, prune records older than 48h."""
+        with Session(self.engine) as session:
+            rows = session.scalars(
+                select(MarketWatchEpisodeRow).where(MarketWatchEpisodeRow.market == market.value)
+            ).all()
+            for row in rows:
+                if row.last_event_ms < now_ms - 48 * 3_600_000:
+                    session.delete(row)
+                    continue
+                if row.symbol not in active_symbols:
+                    row.active = False
+                    if row.membership_end_ms is None:
+                        # Stamp an exit once, so repeated refreshes cannot defeat pruning.
+                        row.last_event_ms = max(row.last_event_ms, now_ms)
+                        row.membership_end_ms = now_ms
+                else:
+                    row.membership_end_ms = None
+            session.commit()
+
+    def update_gainer_watch(
+        self,
+        market: Market,
+        gainers: tuple[Instrument, ...],
+        valid_symbols: frozenset[str],
+        observed_ms: int,
+        *,
+        qualifying_quote_volume: float,
+        retention_ms: int,
+        maximum_retained: int,
+    ) -> tuple[GainerWatchState, ...]:
+        """Update one successful ranking snapshot; cap eviction ends qualification."""
+        with Session(self.engine) as session:
+            rows = session.scalars(
+                select(GainerWatchRow).where(GainerWatchRow.market == market.value)
+            ).all()
+            live: dict[str, GainerWatchRow] = {}
+            for row in rows:
+                if row.expires_at_ms <= observed_ms or row.symbol not in valid_symbols:
+                    session.delete(row)
+                else:
+                    live[row.symbol] = row
+            current = {item.symbol for item in gainers}
+            for item in gainers:
+                row = live.get(item.symbol)
+                volume = float(item.quote_volume)
+                if row is None:
+                    if volume < qualifying_quote_volume:
+                        continue
+                    row = GainerWatchRow(
+                        market=market.value, symbol=item.symbol,
+                        last_top5_observed_ms=observed_ms,
+                        expires_at_ms=observed_ms + retention_ms,
+                        peak_quote_volume_usdt=volume,
+                    )
+                    session.add(row)
+                    live[item.symbol] = row
+                if observed_ms >= row.last_top5_observed_ms:
+                    row.last_top5_observed_ms = observed_ms
+                    row.expires_at_ms = observed_ms + retention_ms
+                    row.peak_quote_volume_usdt = max(row.peak_quote_volume_usdt, volume)
+            alumni = sorted(
+                (row for row in live.values() if row.symbol not in current),
+                key=lambda row: (-row.last_top5_observed_ms, row.symbol),
+            )
+            for row in alumni[maximum_retained:]:
+                session.delete(row)
+                del live[row.symbol]
+            result = tuple(
+                GainerWatchState(
+                    market=market, symbol=row.symbol,
+                    last_top5_observed_ms=row.last_top5_observed_ms,
+                    expires_at_ms=row.expires_at_ms,
+                    peak_quote_volume_usdt=row.peak_quote_volume_usdt,
+                )
+                for row in sorted(live.values(), key=lambda row: row.symbol)
+            )
+            session.commit()
+            return result
 
     def get_outbox(self, event_id: str) -> OutboxItem | None:
         with Session(self.engine) as session:

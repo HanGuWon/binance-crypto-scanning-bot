@@ -27,6 +27,10 @@ class SignalFamily(StrEnum):
     TOP_GAINER = "top_gainer"
     BOLLINGER_UPPER_TOUCH = "bollinger_upper_touch"
     BOLLINGER_LOWER_TOUCH = "bollinger_lower_touch"
+    WATCH_TREND_UP = "watch_trend_up"
+    WATCH_TREND_DOWN = "watch_trend_down"
+    RANGE_LONG = "range_long"
+    RANGE_SHORT = "range_short"
     TECHNICAL_EXIT = "technical_exit"
 
 

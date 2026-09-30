@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from typing import Any
 
 from signalbot.clock import Clock
@@ -10,7 +11,7 @@ from signalbot.data.candles import CandleGap, interval_to_milliseconds
 from signalbot.data.funding import FundingRateCapacityError, FundingRatePayloadError
 from signalbot.data.raw_events import RawEventCapacityError, RawEventRecorder
 from signalbot.domain.enums import Market
-from signalbot.domain.models import Candle
+from signalbot.domain.models import Candle, GainerWatchState, Instrument
 from signalbot.exchange.binance.endpoints import build_websocket_plans
 from signalbot.exchange.binance.rest import BinanceRestClient, BinanceRestError
 from signalbot.exchange.binance.universe import Universe, UniverseSelector
@@ -44,6 +45,7 @@ class MarketScanner:
             settings.binance,
             clock,
             settings.alerts.market_watch,
+            self._update_gainer_watch,
         )
         self.consumer = WebSocketConsumer(settings.binance.max_connection_age_seconds)
         self.universe: Universe | None = None
@@ -57,6 +59,28 @@ class MarketScanner:
             )
         runtime.gap_recoverer = self._recover_gap
 
+    def _update_gainer_watch(
+        self, market: Market, gainers: tuple[Instrument, ...],
+        valid_symbols: frozenset[str], observed_ms: int,
+    ) -> tuple[GainerWatchState, ...]:
+        watch = self.settings.alerts.market_watch
+        return self.runtime.repository.update_gainer_watch(
+            market, gainers, valid_symbols, observed_ms,
+            qualifying_quote_volume=watch.retention_quote_volume_usdt,
+            retention_ms=watch.retention_hours * 3_600_000,
+            maximum_retained=watch.max_retained_symbols,
+        )
+
+    def _apply_runtime_universe(self, universe: Universe) -> None:
+        self.runtime.set_active_symbols(
+            frozenset(universe.tradable_symbols), universe.surveillance_symbols,
+            universe.context_symbols, universe.watch_symbols,
+        )
+        self.runtime.set_priority_gainers(
+            universe.priority_gainers, universe.retained_watch,
+            universe.watch_states, universe.observed_at_ms,
+        )
+
     async def close(self) -> None:
         await self.rest.close()
 
@@ -65,13 +89,8 @@ class MarketScanner:
         if not universe.tradable:
             raise RuntimeError(f"no tradable symbols selected for {self.market.value}")
         self.universe = universe
-        market_data_symbols = sorted(set(universe.tradable_symbols) | set(universe.context_symbols))
-        self.runtime.set_active_symbols(
-            frozenset(universe.tradable_symbols),
-            universe.surveillance_symbols,
-            universe.context_symbols,
-        )
-        self.runtime.set_priority_gainers(universe.priority_gainers)
+        market_data_symbols = self._market_data_symbols(universe)
+        self._apply_runtime_universe(universe)
         if self.market is Market.FUTURES:
             await self._refresh_funding(universe.tradable_symbols, bootstrap=True)
         await self._bootstrap(market_data_symbols)
@@ -80,13 +99,18 @@ class MarketScanner:
 
     @staticmethod
     def _market_data_symbols(universe: Universe) -> list[str]:
-        return sorted(set(universe.tradable_symbols) | set(universe.context_symbols))
+        return sorted(
+            set(universe.tradable_symbols)
+            | set(universe.context_symbols) | set(universe.watch_symbols)
+        )
 
     @staticmethod
     def _universe_signature(
         universe: Universe,
     ) -> tuple[frozenset[str], frozenset[str]]:
-        return frozenset(universe.tradable_symbols), universe.context_symbols
+        return (
+            frozenset(universe.tradable_symbols), universe.context_symbols | universe.watch_symbols
+        )
 
     def _paper_continuation_symbols(self) -> frozenset[str]:
         paper_positions = getattr(self.runtime, "paper_positions", None)
@@ -95,7 +119,9 @@ class MarketScanner:
         return frozenset(paper_positions.continuation_symbols)
 
     def _start_websocket_tasks(self, universe: Universe) -> list[asyncio.Task[None]]:
-        context_only = universe.context_symbols - frozenset(universe.tradable_symbols)
+        context_only = (
+            universe.context_symbols | universe.watch_symbols
+        ) - frozenset(universe.tradable_symbols)
         plans = build_websocket_plans(
             self.market,
             self._market_data_symbols(universe),
@@ -151,13 +177,7 @@ class MarketScanner:
         if candidate_signature == current_signature:
             self._pending_universe_signature = None
             self._pending_universe_confirmations = 0
-            if candidate.surveillance_symbols != current.surveillance_symbols:
-                self.runtime.set_active_symbols(
-                    frozenset(candidate.tradable_symbols),
-                    candidate.surveillance_symbols,
-                    candidate.context_symbols,
-                )
-            self.runtime.set_priority_gainers(candidate.priority_gainers)
+            self._apply_runtime_universe(candidate)
             self.universe = candidate
             return None
 
@@ -183,12 +203,22 @@ class MarketScanner:
                         "protected_symbols": sorted(protected),
                     },
                 )
+                # Keep the existing PAPER entry panel, but apply independent watch changes.
+                watch_candidate = replace(
+                    candidate, tradable=current.tradable,
+                    surveillance=current.surveillance, context=current.context,
+                )
+                if self._universe_signature(watch_candidate) != current_signature:
+                    return watch_candidate
+                self._apply_runtime_universe(watch_candidate)
+                self.universe = watch_candidate
                 return None
 
         priority_additions = {item.symbol for item in candidate.priority_gainers} - set(
             current.tradable_symbols
         )
-        if priority_additions:
+        watch_changed = candidate.watch_symbols != current.watch_symbols
+        if priority_additions or watch_changed:
             self._pending_universe_signature = None
             self._pending_universe_confirmations = 0
             LOGGER.info(
@@ -270,6 +300,9 @@ class MarketScanner:
             surveillance=tuple(surveillance),
             context=candidate.context,
             priority_gainers=candidate.priority_gainers,
+            retained_watch=candidate.retained_watch,
+            watch_states=candidate.watch_states,
+            observed_at_ms=candidate.observed_at_ms,
         )
 
     async def _activate_universe(self, candidate: Universe) -> None:
@@ -282,12 +315,7 @@ class MarketScanner:
         added_market_data = sorted(candidate_market_data - previous_market_data)
         added_tradable = sorted(set(candidate.tradable_symbols) - previous_tradable)
 
-        self.runtime.set_active_symbols(
-            frozenset(candidate.tradable_symbols),
-            candidate.surveillance_symbols,
-            candidate.context_symbols,
-        )
-        self.runtime.set_priority_gainers(candidate.priority_gainers)
+        self._apply_runtime_universe(candidate)
         if self.market is Market.FUTURES and added_tradable:
             await self._refresh_funding(added_tradable, bootstrap=True)
         if added_market_data:
