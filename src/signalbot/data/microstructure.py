@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
+from itertools import pairwise
+from math import isfinite
 
 from signalbot.domain.enums import Market
 from signalbot.domain.models import AggTrade, BookTicker, Candle
@@ -33,6 +35,98 @@ class BookSnapshot:
 
 class BookTickerConflictError(RuntimeError):
     """Raised when one Binance source cursor maps to different BBO content."""
+
+
+@dataclass(frozen=True, slots=True)
+class MinutePressureSnapshot:
+    """Explanation only: three closed minute bars, never an entry gate."""
+
+    market: str
+    symbol: str
+    as_of_ms: int
+    available: bool = False
+    reason: str = "insufficient_bars"
+    start_ms: int | None = None
+    end_ms: int | None = None
+    lag_ms: int | None = None
+    buy_ratio: float | None = None
+    last_buy_ratio: float | None = None
+    price_change_percent: float | None = None
+    summary: str = "1분 체결 자료 부족"
+    version: str = "closed-minute-pressure-v1"
+
+
+def minute_pressure_snapshot(
+    candles: list[Candle],
+    market: Market,
+    symbol: str,
+    as_of_ms: int,
+) -> MinutePressureSnapshot:
+    """Use the latest three contiguous minutes at most one minute behind as-of.
+
+    Other series, future rows and intrabar rows are ignored. Selected rows must
+    be unique, contiguous and valid; missing observations never imply balance.
+    Price changes at exactly +/-0.05% are flat. These are observation seeds.
+    """
+
+    base = MinutePressureSnapshot(market.value, symbol, as_of_ms)
+    rows = sorted(
+        (
+            c
+            for c in candles
+            if c.market is market
+            and c.symbol == symbol
+            and c.interval == "1m"
+            and c.is_closed
+            and c.close_time_ms <= as_of_ms
+        ),
+        key=lambda c: c.open_time_ms,
+    )[-3:]
+    if len(rows) != 3:
+        return base
+    if any(
+        c.close_time_ms - c.open_time_ms != 59_999 or c.open_time_ms % 60_000 for c in rows
+    ) or any(a.close_time_ms + 1 != b.open_time_ms for a, b in pairwise(rows)):
+        return replace(base, reason="noncontiguous_bars")
+    lag = as_of_ms - rows[-1].close_time_ms
+    if lag > 60_000:
+        return replace(base, reason="stale_bars")
+    try:
+        for candle in rows:
+            Candle.model_validate(candle.model_dump(mode="python"))
+        flows = [closed_kline_flow(c) for c in rows]
+    except ValueError:
+        return replace(base, reason="invalid_candle")
+    if not all(flow.available for flow in flows):
+        return replace(base, reason="missing_flow")
+    total = sum((c.quote_volume for c in rows), Decimal(0))
+    buys = sum((c.taker_buy_quote_volume for c in rows), Decimal(0))
+    ratio = float(buys / total)
+    change = rows[-1].close / rows[0].open - 1
+    percent = float(change * 100)
+    if not isfinite(percent):
+        return replace(base, reason="invalid_price_change")
+    up, down = change > Decimal("0.0005"), change < Decimal("-0.0005")
+    if ratio >= 0.55:
+        summary = "매수 체결 우세 · 가격 상승" if up else "매수 체결 우세지만 가격은 상승하지 않음"
+    elif ratio <= 0.45:
+        summary = (
+            "매도 체결 우세 · 가격 하락" if down else "매도 체결 우세지만 가격은 하락하지 않음"
+        )
+    else:
+        summary = "매수·매도 체결이 비슷함"
+    return replace(
+        base,
+        available=True,
+        reason="available",
+        start_ms=rows[0].open_time_ms,
+        end_ms=rows[-1].close_time_ms,
+        lag_ms=lag,
+        buy_ratio=ratio,
+        last_buy_ratio=flows[-1].taker_buy_ratio,
+        price_change_percent=percent,
+        summary=summary,
+    )
 
 
 def closed_kline_flow(candle: Candle) -> OrderFlowSnapshot:

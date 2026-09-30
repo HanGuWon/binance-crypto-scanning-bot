@@ -72,6 +72,35 @@ For duplicate alerts, compare the deterministic `event_id`, payload hash, and
 Discord message ID. A repeated identical event is an idempotent no-op; the same
 event ID with different content is a hard data conflict.
 
+### Readable Discord messages
+
+`alerts.message_style` defaults to `simple`: Korean event title, at most four
+fields, explicit candidate/PAPER scope, invalidation or observation-release
+condition, UTC/KST event time and event/rule identifiers. Market-watch messages
+show situation, trade pressure, and what to re-check. Retained symbols add expiry.
+Set `detailed` to restore the existing indicator/evidence layout. The public
+formatter helper retains its detailed default for existing callers; both actual
+payload producers pass the configured style. Previously queued payloads are sent
+unchanged. Original reasons and diagnostic metadata remain in `signals.payload_json`.
+
+The OCI configuration enables `alerts.market_watch.minute_pressure_enabled`.
+This is explanatory context using three contiguous, fully closed 1m candles,
+with no rows later than the 5m decision and at most 60 seconds of lag. Other
+series, unfinished and future candles are excluded; duplicates, gaps, invalid
+volumes, zero-volume bars and insufficient/stale history produce unavailable
+context. It uses quote-volume-weighted buyer-initiated share, last-minute share,
+and price change over the same three-minute window. Ratios >=55%/<=45% label
+buyer/seller initiative; price change >+0.05%/<-0.05% labels movement, with both
+boundaries flat. These are unvalidated descriptive seeds, not probabilities.
+
+The message shows the actual KST window and labels a one-minute lag. Missing
+minute context falls back to explicitly labelled 5m flow if available; it never
+implies neutral flow. Disagreement between trade initiative and price movement
+is an observation, not proof of absorption or reversal. There is no L2 order-book
+analysis in this addition. It changes no event IDs, ranking/retention logic,
+entry/exit rule, eligibility, PAPER behavior or delivery frequency. A valid
+historical minute snapshot is shared by coincident market-watch events.
+
 ### Focused Binance mover alerts
 
 `alerts.delivery_mode: focused` keeps every signal in SQLite but limits Discord

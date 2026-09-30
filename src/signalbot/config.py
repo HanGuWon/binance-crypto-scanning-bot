@@ -172,6 +172,7 @@ class MarketWatchSettings(StrictModel):
     retention_hours: int = Field(default=48, ge=1, le=48)
     max_retained_symbols: int = Field(default=10, ge=1, le=20)
     context_alerts_enabled: bool = False
+    minute_pressure_enabled: bool = False
     range_round_trip_cost_bps: float = Field(default=26, gt=0, le=1000)
 
     @model_validator(mode="after")
@@ -189,6 +190,7 @@ class AlertSettings(StrictModel):
     discord_webhook_url: SecretStr | None = None
     discord_username: str = Field(default="Binance Signal Bot", min_length=1, max_length=80)
     delivery_mode: Literal["all", "focused"] = "all"
+    message_style: Literal["simple", "detailed"] = "simple"
     market_watch: MarketWatchSettings = Field(default_factory=MarketWatchSettings)
     max_attempts: int = Field(default=3, ge=1, le=10)
     timeout_seconds: float = Field(default=10, ge=1, le=60)

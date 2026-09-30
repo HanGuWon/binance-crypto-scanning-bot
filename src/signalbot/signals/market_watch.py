@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from decimal import Decimal
 
 from signalbot.config import MarketWatchSettings
+from signalbot.data.microstructure import MinutePressureSnapshot
 from signalbot.domain.enums import Direction, SignalFamily
 from signalbot.domain.models import (
     Candle,
@@ -111,6 +112,7 @@ class MarketWatchEngine:
     def evaluate(
         self, candle: Candle, feature: FeatureSnapshot, history: list[Candle] | None = None,
         *, now_ms: int | None = None,
+        minute_pressure: MinutePressureSnapshot | None = None,
     ) -> tuple[RuleEvaluation, ...]:
         if (
             not self.settings.enabled or candle.market is not self.settings.market
@@ -171,6 +173,14 @@ class MarketWatchEngine:
             ),
             "flow_interval": candle.interval,
         }
+        if minute_pressure is not None:
+            if (
+                minute_pressure.market != candle.market.value
+                or minute_pressure.symbol != candle.symbol
+                or minute_pressure.as_of_ms != candle.close_time_ms
+            ):
+                raise ValueError("minute pressure does not match the closed candle")
+            common["minute_pressure"] = asdict(minute_pressure)
         top = RuleEvaluation(
             market=candle.market,
             symbol=candle.symbol,

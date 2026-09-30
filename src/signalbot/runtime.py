@@ -16,6 +16,7 @@ from signalbot.data.microstructure import (
     BookState,
     BookTickerConflictError,
     OrderFlowTracker,
+    minute_pressure_snapshot,
 )
 from signalbot.domain.enums import Market, SignalFamily
 from signalbot.domain.models import (
@@ -326,8 +327,14 @@ class MarketRuntime:
             return
         new_decisions: list[SignalDecision] = []
         prior_candles = self.candles.get(candle.market, candle.symbol, candle.interval)
+        pressure = None
+        if self.settings.alerts.market_watch.minute_pressure_enabled:
+            pressure = minute_pressure_snapshot(
+                self.candles.get(candle.market, candle.symbol, "1m"),
+                candle.market, candle.symbol, candle.close_time_ms,
+            )
         observations = self.market_watch.evaluate(
-            candle, feature, prior_candles, now_ms=self.clock.now_ms()
+            candle, feature, prior_candles, now_ms=self.clock.now_ms(), minute_pressure=pressure,
         )
         preference = {
             SignalFamily.RANGE_LONG: 0, SignalFamily.RANGE_SHORT: 0,
@@ -537,6 +544,7 @@ class MarketRuntime:
         payload = build_discord_payload(
             decision,
             self.settings.alerts.discord_username,
+            message_style=self.settings.alerts.message_style,
         )
         if observation is not None:
             return self.repository.save_signal_and_enqueue(

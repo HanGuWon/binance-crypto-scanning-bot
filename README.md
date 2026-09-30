@@ -19,7 +19,7 @@ This repository intentionally **does not place orders**. Spot sell/exit suggesti
 - Optional point-in-time volume ablations: normalized 3/12-bar taker delta and ATR-normalized quote-volume VPCI. Last-60s `aggTrade` flow remains separately labeled intrabar evidence.
 - Squeeze, breakout, breakdown, exhaustion, capitulation, pump-risk, and crash-risk rules, plus informational-only causal pullback WATCH/SETUP alerts.
 - Weighted scoring, state transitions, cooldown, deterministic event IDs, SQL persistence, optional Discord, replay, and MFE/MAE evaluation.
-- Discord candle alerts show one promotion-safe representative long and short rule beside the closed-candle EMA, RSI, MACD, ADX, ATR, volume, flow, spread, funding, confirmed swings, projected lines, and pullback values used at decision time. Different rule scores are not subtracted into a directional edge.
+- Discord defaults to a concise Korean summary: situation, trade pressure, and the condition to re-check. `alerts.message_style: detailed` restores indicator-level output. Original reasons and diagnostics remain in saved decisions. Optional mover context compares the latest three closed minute bars' quote-weighted buying share with their price response; it changes no entry or notification rule. See [message rules](docs/OPERATIONS.md#readable-discord-messages).
 - Discord payloads enforce component limits and the shared 6,000-character embed budget; usernames and HTTPS webhook URLs are validated at configuration time.
 - SQLite for zero-setup local runs; PostgreSQL through Docker Compose.
 

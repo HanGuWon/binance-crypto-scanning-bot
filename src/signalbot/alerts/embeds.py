@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from math import isfinite
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from signalbot.domain.enums import Direction, Market, SignalFamily, SignalStage
@@ -517,8 +519,253 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
     ]
 
 
-def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]:
+def _finite_number(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and isfinite(value) else None
+
+
+def _simple_pressure(d: SignalDecision) -> str:
+    pressure = d.metadata.get("minute_pressure")
+    if isinstance(pressure, dict) and pressure.get("available") is True:
+        ratio = _finite_number(pressure.get("buy_ratio"))
+        change = _finite_number(pressure.get("price_change_percent"))
+        last = _finite_number(pressure.get("last_buy_ratio"))
+        start, end = pressure.get("start_ms"), pressure.get("end_ms")
+        lag = pressure.get("lag_ms")
+        if (
+            ratio is not None
+            and 0 <= ratio <= 1
+            and change is not None
+            and last is not None
+            and 0 <= last <= 1
+            and isinstance(start, int)
+            and isinstance(end, int)
+            and isinstance(lag, int)
+            and pressure.get("market") == d.market.value
+            and pressure.get("symbol") == d.symbol
+            and pressure.get("as_of_ms") == d.event_time_ms
+            and pressure.get("version") == "closed-minute-pressure-v1"
+            and end - start + 1 == 180_000
+            and start <= end <= d.event_time_ms
+            and 0 <= lag <= 60_000
+            and d.event_time_ms - end == lag
+        ):
+            start_time = datetime.fromtimestamp(start / 1000, tz=UTC).astimezone(KST)
+            end_time = datetime.fromtimestamp(end / 1000, tz=UTC).astimezone(KST)
+            delay = "" if lag == 0 else " · 1분 전까지의 자료"
+            return (
+                f"{pressure.get('summary', '체결 방향 확인 중')}\n"
+                f"최근 3분 매수 {ratio:.0%} · 마지막 1분 {last:.0%}\n"
+                f"같은 3분 가격 {change:+.2f}% · "
+                f"KST {start_time:%H:%M}-{end_time:%H:%M}{delay}"
+            )
+    ratio = _finite_number(d.metadata.get("taker_buy_ratio"))
+    if ratio is not None and 0 <= ratio <= 1:
+        label = (
+            "매수 체결 우세"
+            if ratio >= 0.55
+            else "매도 체결 우세"
+            if ratio <= 0.45
+            else "체결 균형"
+        )
+        prefix = "1분 자료 부족 · " if pressure is not None else ""
+        interval = str(d.metadata.get("flow_interval", d.timeframe))
+        interval = interval.replace("m", "분").replace("h", "시간")
+        return f"{prefix}{interval}봉 기준 {label}\n매수 비중 {ratio:.0%} (체결 기준)"
+    return "체결 자료 부족 — 매수·매도 우세를 판단할 수 없습니다."
+
+
+def _readable_reason(reason: str) -> str:
+    labels = {
+        "closed above range": "봉이 범위 상단 위에서 마감",
+        "closed below range": "봉이 범위 하단 아래에서 마감",
+        "positive and improving MACD histogram": "상승 동력이 강화됨",
+        "negative and weakening MACD histogram": "하락 동력이 강화됨",
+        "EMA20 above EMA50": "단기 추세가 중기 추세보다 위에 있음",
+        "EMA20 below EMA50": "단기 추세가 중기 추세보다 아래에 있음",
+        "15m trend confirms direction": "15분봉 추세도 같은 방향",
+        "1h price confirms direction": "1시간봉 가격도 같은 방향",
+        "all independent entry gates passed": "진입 조건 검사를 통과",
+    }
+    text = labels.get(reason, reason)
+    breakout = re.fullmatch(r"closed (above|below) (\d+)-bar (high|low)", reason)
+    volume = re.fullmatch(r"relative volume ([\d.]+)x", reason)
+    if breakout:
+        boundary = "고점 위" if breakout[1] == "above" else "저점 아래"
+        text = f"최근 {breakout[2]}개 봉의 {boundary}에서 마감"
+    elif volume:
+        text = f"거래량이 비교 기준의 {volume[1]}배"
+    return _truncate_text(text, 160)
+
+
+def _simple_payload(d: SignalDecision, username: str) -> dict[str, object]:
+    watch = d.metadata.get("market_watch") is True
+    paper = d.metadata.get("paper_only") is True
+    recommendation = _recommendation_summary(d)
+    fields: list[dict[str, object]] = []
+    if watch:
+        names = {
+            SignalFamily.TOP_GAINER: "급상승 종목 관찰",
+            SignalFamily.BOLLINGER_UPPER_TOUCH: "볼린저 상단 접촉",
+            SignalFamily.BOLLINGER_LOWER_TOUCH: "볼린저 하단 접촉",
+            SignalFamily.WATCH_TREND_UP: "상승 추세 관찰",
+            SignalFamily.WATCH_TREND_DOWN: "하락 추세 관찰",
+            SignalFamily.RANGE_LONG: "박스권 매수 후보",
+            SignalFamily.RANGE_SHORT: "박스권 숏 후보",
+        }
+        recommendation = names.get(d.family, "시장 관찰")
+        trend = str(d.metadata.get("trend_label", "추세 자료 부족"))
+        change = _finite_number(d.metadata.get("price_change_percent_24h"))
+        volume = _finite_number(d.metadata.get("quote_volume_24h_usdt"))
+        rank = d.metadata.get("gainer_rank")
+        member = (
+            "이전 급등 종목 · 유지 추적"
+            if d.metadata.get("retained_gainer")
+            else f"상승률 {rank}위"
+            if isinstance(rank, int)
+            else "현재 급등 종목"
+        )
+        situation = f"{trend} · {member}\n기준 가격 {d.price} USDT"
+        if change is not None:
+            situation += f" · 24시간 {change:+.2f}%"
+        if volume is not None:
+            situation += f"\n24시간 거래대금 {volume / 100_000_000:.2f}억 USDT"
+        fields.extend(
+            [
+                {"name": "시장 상황", "value": situation, "inline": False},
+                {"name": "매수·매도 힘", "value": _simple_pressure(d), "inline": False},
+            ]
+        )
+        condition = str(d.metadata.get("invalidation_condition", "조건 자료 부족"))
+        if d.family in {SignalFamily.RANGE_LONG, SignalFamily.RANGE_SHORT}:
+            target = _finite_number(d.metadata.get("range_target"))
+            condition = (
+                f"관찰 목표 {_compact_number(target)} USDT\n"
+                f"후보 무효화 가격 {d.invalidation} USDT\n{condition}"
+            )
+            description = "범위 경계에서 되돌아온 **검증 전 후보**입니다."
+        else:
+            description = "**관찰 알림** · 진입 확정 신호가 아닙니다."
+            if d.family in {SignalFamily.BOLLINGER_UPPER_TOUCH, SignalFamily.BOLLINGER_LOWER_TOUCH}:
+                side = "상단" if d.family is SignalFamily.BOLLINGER_UPPER_TOUCH else "하단"
+                band = _finite_number(
+                    d.metadata.get(f"bollinger_{'upper' if side == '상단' else 'lower'}")
+                )
+                condition = f"접촉한 {side} {_compact_number(band)} USDT\n조건 해제: {condition}"
+                description += " 밴드 접촉만으로 반전을 판단하지 않습니다."
+            else:
+                condition = f"조건 해제: {condition}"
+        fields.append({"name": "확인할 조건", "value": condition, "inline": False})
+        simultaneous = d.metadata.get("concurrent_watch_events")
+        if isinstance(simultaneous, (list, tuple)):
+            bands = {
+                "bollinger_upper_touch": "볼린저 상단 접촉",
+                "bollinger_lower_touch": "볼린저 하단 접촉",
+            }
+            other_bands = [
+                label for family, label in bands.items()
+                if family in simultaneous and family != d.family.value
+            ]
+            if other_bands:
+                description += " 함께 감지: " + " · ".join(other_bands)
+        expiry = d.metadata.get("watch_expires_at_ms")
+        if d.metadata.get("retained_gainer") is True and isinstance(expiry, int):
+            fields.append({"name": "추적 기한", "value": _times(expiry), "inline": False})
+    else:
+        description = (
+            "모의 포지션 알림 · 실제 거래소 주문 없음"
+            if paper
+            else "규칙 조건에 따른 후보·위험 알림"
+        )
+        if not paper and d.metadata.get("informational_only") is True:
+            description = "검증 전 관찰 신호 · 진입 보류"
+        family = _FAMILY_LABELS.get(d.family, "시장 위험")
+        reasons = f"{family} 조건을 관찰했습니다."
+        if d.family is SignalFamily.TECHNICAL_EXIT:
+            reasons = (
+                "모의 포지션의 종료 조건이 충족됐습니다."
+                if paper
+                else "기존 포지션의 종료 조건을 관찰했습니다."
+            )
+            if paper:
+                side = "매수" if d.direction is Direction.LONG else "숏"
+                recommendation = f"모의 {side} 포지션 종료"
+        elif d.family in {SignalFamily.PUMP_RISK, SignalFamily.CRASH_RISK}:
+            reasons = "짧은 구간의 가격 변동이 급격합니다. 추격 진입에 주의하세요."
+        elif d.stage is SignalStage.INVALIDATED:
+            reasons = "직전 후보의 조건이 유지되지 않습니다."
+        elif d.gate is not None:
+            reasons += (
+                " 조건 검사를 통과했습니다." if d.gate.passed else " 조건 검사에서 보류됐습니다."
+            )
+        if d.reasons:
+            reasons = "\n".join(_readable_reason(reason) for reason in d.reasons[:2])
+        fields = [
+            {"name": "가격과 기준", "value": f"{d.price} USDT · {d.timeframe}", "inline": False},
+            {"name": "알림 이유", "value": reasons, "inline": False},
+            {
+                "name": "조건 무효화",
+                "value": str(
+                    d.invalidation or d.metadata.get("invalidation_condition", "자료 없음")
+                ),
+                "inline": False,
+            },
+        ]
+        if paper:
+            exit_labels = {
+                "initial_stop": "처음 정한 손절 조건에 도달",
+                "trailing_stop": "추적 손절 조건에 도달",
+                "opposite_signal": "반대 방향 신호 감지",
+                "trend_failure": "추세 유지 조건이 깨짐",
+                "time_exit": "최대 관찰 기간 종료",
+                "split_boundary": "모의 분석 구간 종료",
+                "data_gap": "봉 누락으로 추적 중단",
+                "end_of_data": "분석 자료 구간 종료",
+            }
+            fields[2] = {
+                "name": "모의 종료 이유",
+                "value": exit_labels.get(str(d.metadata.get("exit_reason")), "종료 조건 관찰"),
+                "inline": False,
+            }
+            fill = d.metadata.get("fill_time_ms")
+            if isinstance(fill, int):
+                fields.append({"name": "모의 체결 시각", "value": _times(fill), "inline": False})
+    basis = (
+        "실시간 위험 관찰"
+        if d.family in {SignalFamily.PUMP_RISK, SignalFamily.CRASH_RISK}
+        else f"{d.timeframe} 폐봉"
+    )
+    embed: dict[str, Any] = {
+        "title": f"{d.symbol} · {recommendation}",
+        "description": description,
+        "color": _color(d),
+        "fields": fields,
+        "footer": {
+            "text": (
+                f"{basis} · {_times(d.event_time_ms)}\n"
+                f"event {d.event_id} · rules {d.rule_version}"
+            )
+        },
+        "timestamp": datetime.fromtimestamp(d.event_time_ms / 1000, tz=UTC).isoformat(),
+    }
+    return {
+        "username": _truncate_text(
+            username.strip() or "Binance Signal Bot", DISCORD_USERNAME_LIMIT
+        ),
+        "allowed_mentions": {"parse": []},
+        "embeds": [_fit_discord_embed(embed)],
+    }
+
+
+def build_discord_payload(
+    d: SignalDecision, username: str, *, message_style: Literal["simple", "detailed"] = "detailed",
+) -> dict[str, object]:
     d = SignalDecision.model_validate(d.model_dump(mode="python", warnings="none"))
+    if message_style not in {"simple", "detailed"}:
+        raise ValueError("unknown Discord message style")
+    if d.metadata.get("informational_only") is True and d.stage is SignalStage.CONFIRMED:
+        raise ValueError("informational-only decisions cannot be CONFIRMED")
+    if message_style == "simple":
+        return _simple_payload(d, username)
     reasons = "\n".join(f"• {reason}" for reason in d.reasons[:10]) or "• No details"
     invalidation = (
         str(d.invalidation)

@@ -113,6 +113,7 @@ alerts:
   # WATCH/SETUP/INVALIDATED and intrabar PUMP/CRASH messages from Discord while
   # preserving them in SQLite for research/audit.
   delivery_mode: focused
+  message_style: simple
   market_watch:
     enabled: true
     # Use one market for the ranking so Spot/Futures do not duplicate the same coin.
@@ -127,6 +128,7 @@ alerts:
     retention_hours: 48
     max_retained_symbols: 10
     context_alerts_enabled: true
+    minute_pressure_enabled: true
     range_round_trip_cost_bps: 26
   max_attempts: 3
   timeout_seconds: 10

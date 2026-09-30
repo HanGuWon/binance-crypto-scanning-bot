@@ -1,0 +1,13 @@
+# 구현과 합격 조건
+
+1. config.py MODIFY: alerts.message_style literal simple/detailed, default simple; market_watch.minute_pressure_enabled default false. OCI config MODIFY: simple+minute pressure 활성화. strict settings 직렬화/load와 invalid style 테스트. 기존 rule_version 유지.
+2. alerts/embeds.py MODIFY 먼저: keyword-only message_style default detailed. simple branch는 한국어 제목·최대4개 짧은 필드·UTC/KST·event/rule footer 유지. 시장 요약에 추세·가격·24h 변화와 거래대금. 체결 우세가 없으면 자료없음. range 후보 목표·numeric invalidation, 다른 watch는 조건해제·밴드접촉으로 역방향 확정하지 않음. PAPER 종료는 모의매매 명시. CONFIRMED informational 거부를 모든 스타일에서 유지. non-watch도 간단 요약·원본 이유최대2개·무효화·모의 범위 명시. detailed 기존경로 보존.
+3. alerts/discord.py, runtime.py MODIFY: 두 payload 생성 지점에 settings.message_style 전달. 오래된 저장 payload는 그대로 재시도. DB payload/serialization을 유지하고 알림 가능 여부는 변경하지 않음.
+4. data/microstructure.py MODIFY 다음: typed immutable MinutePressureSnapshot + 순수 minute_pressure_snapshot(candles, market,symbol,as_of_ms). 다른 series와 미완성·미래봉은 입력에서 제외한다. 선택한 동일시장/종목/1m 폐봉의 최근3봉은 중복·60초 duration/연속성을 검증하고 lag<=60000. 부족/0거래/잘못된volume·price는 available=False와 reason. closed_kline_flow 재사용, Σ매수quote/Σquote, 마지막1m비율, 마지막종가/첫시가−1. 55/45%를 각각매수/매도우세에 포함. 가격은 Decimal로 >+0.05% 상승, <-0.05% 하락, 경계포함 나머지보합. 관찰 seed이며 불일치를 흡수/반전 확정이라 부르지 않음.
+5. runtime.py MODIFY: primary 폐봉 평가 시 활성flag에서 기존1m CandleStore 조회하여 snapshot 계산. signals/market_watch.py MODIFY: optional typed snapshot를 metadata.minute_pressure에 asdict 직렬화, 모든watch family 공유. 기존 결정조건/eventIDs unchanged. Formatter는 snapshot.available true만 신선한1m 수급으로 표시; unavailable은 명시하고 5m 자료 있으면 구분해서 대체표시. 구간/lag를 표시해 과거자료를 현재로 오인하지 않게 함.
+6. tests/unit/test_simple_alerts.py NEW: concise/detailed, 모든watch family/양방향/PAPER/CONFIRMED reject, 가격·무효화·UTC/KST·ID·version, 원본 metadata 비변경, mention제거/최대문자수, 부족수급fallback. tests/unit/test_minute_pressure.py NEW: 가중비율 vs 단순평균, 상승·하락·불일치·균형, 55/45와±0.05%, lag60000/60001, 부족/중복/gap/0volume/미래극단봉. runtime 실제 테스트로 pressure metadata, event ID/알림수·R2 불변 비교. 기존 테스트는 상세 API 기본 경로로 유지.
+7. README/OPERATIONS MODIFY: 간결 기본/상세 복귀, 1분3봉압력은 설명용이고 L2가 아님, freshness/fallback, 저장원본 경로와 알림빈도 불변. preview Markdown NEW(ignored var): synthetic 사례를 실제 formatter 결과로 추출하고 제목·필드수·읽기순서 검토.
+
+필드 연결: message_style YAML/StrictModel -> runtime/notifier -> formatter; 저장outbox는 rendered JSON을 복원하여 그대로 전달. minute_pressure candle data -> typed dataclass -> metadata dict -> SignalDecision JSON -> formatter; unavailable reason 포함. 소비자 외부 매매·PAPER·R2에 연결하지 않음.
+
+운영 proof: 기존 release b92a981 active/NRestarts0 확인. 새 immutable archive SHA 확인과 signalbot 사용자 validate-config/dry-run. stop 후 SQLite backup, 설정 backup, symlink atomic replace/start. 최신폐봉·일분자료 유무표시·HTTP200 delivered와 0재시작 확인. 박스권/불일치가 실제시장에 없으면 fixture proof로 구분하고 강제 알림을 전송하지 않는다.

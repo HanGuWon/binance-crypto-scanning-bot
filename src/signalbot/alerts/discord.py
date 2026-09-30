@@ -47,7 +47,9 @@ class DiscordNotifier:
         delivery_enabled = (
             self.settings.discord_enabled and self.settings.discord_webhook_url is not None
         )
-        payload = build_discord_payload(d, self.settings.discord_username)
+        payload = build_discord_payload(
+            d, self.settings.discord_username, message_style=self.settings.message_style,
+        )
         created = self.repository.save_signal_and_enqueue(
             d,
             payload,
