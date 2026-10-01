@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import asdict, dataclass
 from decimal import Decimal
+from math import isfinite
 
 from signalbot.config import MarketWatchSettings
 from signalbot.data.microstructure import MinutePressureSnapshot
@@ -58,6 +59,107 @@ def classify_trend(feature: FeatureSnapshot) -> tuple[str, tuple[str, ...]]:
         f"ADX14 {feature.adx:.1f} ({strength})",
     )
     return label, evidence
+
+
+_BAND_MA_NOTES: dict[str, tuple[str, str, str]] = {
+    "up_continuation": (
+        "상승 배열에서 상단 접촉 · 상승 지속 관찰",
+        "20봉선 위에서 종가를 유지하는지 확인", "ema20",
+    ),
+    "up_upper_weakening": (
+        "상단 접촉했지만 20봉선 아래 마감 · 상승 근거 약화",
+        "20봉선 회복 여부 확인", "ema20",
+    ),
+    "up_pullback": (
+        "상승 배열 속 하단 접촉 · 눌림 반등 확인",
+        "50봉선 유지와 반등 여부 확인", "ema50",
+    ),
+    "up_lower_weakening": (
+        "상승 배열이지만 50봉선 아래 마감 · 상승 근거 약화",
+        "50봉선 회복 전에는 상승 유지 판단 보류", "ema50",
+    ),
+    "down_continuation": (
+        "하락 배열에서 하단 접촉 · 하락 지속 관찰",
+        "20봉선 아래에서 종가를 유지하는지 확인", "ema20",
+    ),
+    "down_lower_weakening": (
+        "하단 접촉했지만 20봉선 위 마감 · 하락 근거 약화",
+        "20봉선 재이탈 여부 확인", "ema20",
+    ),
+    "down_rebound": (
+        "하락 배열 속 상단 접촉 · 반등 저항 확인",
+        "50봉선 저항과 반등 약화 여부 확인", "ema50",
+    ),
+    "down_upper_weakening": (
+        "하락 배열이지만 50봉선 위 마감 · 하락 근거 약화",
+        "50봉선 재이탈 전에는 하락 지속 판단 보류", "ema50",
+    ),
+    "mixed": ("이평 배열·기울기가 불분명 · 접촉 방향 판단 보류", "다음 폐봉 방향 확인", ""),
+    "both": ("양쪽 밴드 접촉 · 방향 판단 보류", "다음 폐봉의 배열과 방향 확인", ""),
+    "unavailable": ("이평 자료 부족 · 접촉 해석 보류", "자료가 갖춰진 폐봉에서 재확인", ""),
+    "none": ("", "", ""),
+}
+
+
+def _price_position(price: float, reference: float | None) -> str:
+    if reference is None or not isfinite(reference):
+        return "unavailable"
+    return "above" if price > reference else "below" if price < reference else "equal"
+
+
+def _moving_average_context(candle: Candle, feature: FeatureSnapshot) -> dict[str, str | int]:
+    """Describe current MA conditions; do not infer a crossover or change event rules."""
+
+    price, fast, slow, slope = (
+        float(candle.close), feature.ema20, feature.ema50, feature.ema20_slope_atr,
+    )
+    available = all(isfinite(value) for value in (price, fast, slow, slope))
+    available = available and min(price, fast, slow) > 0
+    alignment = (
+        "unavailable" if not available
+        else "up" if fast > slow and slope > 0
+        else "down" if fast < slow and slope < 0
+        else "mixed"
+    )
+    upper, lower = feature.bollinger_upper, feature.bollinger_lower
+    upper_touch = upper is not None and isfinite(upper) and float(candle.high) >= upper
+    lower_touch = lower is not None and isfinite(lower) and float(candle.low) <= lower
+    setup = "none"
+    if upper_touch and lower_touch:
+        setup = "both"
+    elif upper_touch or lower_touch:
+        if alignment in {"mixed", "unavailable"}:
+            setup = alignment
+        elif alignment == "up":
+            setup = (
+                "up_continuation" if price >= fast else "up_upper_weakening"
+            ) if upper_touch else (
+                "up_pullback" if price >= slow else "up_lower_weakening"
+            )
+        else:
+            setup = (
+                "down_rebound" if price <= slow else "down_upper_weakening"
+            ) if upper_touch else (
+                "down_continuation" if price <= fast else "down_lower_weakening"
+            )
+    interpretation, check, reference = _BAND_MA_NOTES[setup]
+    summaries = {
+        "up": "이평선: 상승 배열 · 20봉선도 상승",
+        "down": "이평선: 하락 배열 · 20봉선도 하락",
+        "mixed": "이평선: 방향 판단 보류(혼조·평탄)",
+        "unavailable": "이평선: 자료 부족",
+    }
+    return {
+        "version": "bb-ma-context-v1", "as_of_ms": feature.event_time_ms,
+        "timeframe": feature.interval, "alignment": alignment,
+        "price_vs_ema20": _price_position(price, fast) if available else "unavailable",
+        "price_vs_ema50": _price_position(price, slow) if available else "unavailable",
+        "price_vs_sma20": (
+            _price_position(price, feature.bollinger_middle) if available else "unavailable"
+        ),
+        "summary": summaries[alignment], "band_setup": setup,
+        "band_interpretation": interpretation, "band_check": check, "reference": reference,
+    }
 
 
 class MarketWatchEngine:
@@ -150,6 +252,7 @@ class MarketWatchEngine:
             "market_watch": True,
             "trend_label": trend_label,
             "trend_evidence": trend_evidence,
+            "ma_context": _moving_average_context(candle, feature),
             "gainer_rank": gainer.rank,
             "retained_gainer": gainer.rank is None,
             "watch_expires_at_ms": gainer.expires_at_ms,

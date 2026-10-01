@@ -228,3 +228,26 @@ new evaluation. For unexpected Futures silence, verify `/market` and `/public`
 routes rather than legacy unrouted URLs. For unexpected candidate silence,
 inspect gate reasons first: a missing strict-prior context or BBO is an expected
 fail-closed rejection, not evidence that the score should be lowered.
+## Bollinger contacts and moving averages
+
+Market-watch observations now include `ma_context` (`bb-ma-context-v1`). On the
+same fully closed primary candle, EMA20 above EMA50 with positive EMA20 slope
+is an upward array; the opposite is downward. Equality, zero slope or conflicting
+array/slope is mixed. This is separate from the existing composite trend label.
+The 20/50 periods count candles: on 5m charts they represent 100/250 minutes.
+The EMA20 slope compares the current value with three closed candles earlier.
+
+Band contact plus this array and the close's position distinguishes continuation,
+pullback/rebound and weakening observations. Both-band contact takes precedence
+and defers direction judgment. Price equality is preserved as equality. The
+original Bollinger center stays SMA20; it is not replaced by EMA20. These related
+price indicators do not add independent confidence points or claim a newly
+formed golden/death cross, a confirmed reversal, or validated profitability.
+
+Simple messages keep three fields (four for retained watches). The market field
+adds one array line; the conditions field adds the band interpretation and the
+MA price to check on subsequent closed candles. Existing episode reset and
+candidate invalidation conditions remain distinct. Detailed messages include
+price relations to EMA20, EMA50 and SMA20. Missing/invalid/older context preserves
+the previous message. Signal families, IDs, delivery counts and entry rules stay
+unchanged. MA analysis is lagging descriptive context, not order execution.

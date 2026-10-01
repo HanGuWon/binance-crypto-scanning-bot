@@ -264,6 +264,17 @@ def _market_watch_fields(d: SignalDecision) -> list[dict[str, object]]:
         f"{_compact_number(d.metadata.get('candle_close'))}"
     )
     analysis = "\n".join((f"판정: **{trend}**", *trend_lines))
+    ma_context = _ma_context(d)
+    if ma_context is not None:
+        positions = {"above": "위", "below": "아래", "equal": "일치", "unavailable": "자료 없음"}
+        analysis += (
+            f"\n{ma_context['summary']}\n종가 위치: "
+            f"EMA20 {positions[ma_context['price_vs_ema20']]} · "
+            f"EMA50 {positions[ma_context['price_vs_ema50']]} · "
+            f"BB 중심 SMA20 {positions[ma_context['price_vs_sma20']]}"
+        )
+        if ma_context.get("band_interpretation"):
+            analysis += f"\n{ma_context['band_interpretation']}"
     fields: list[dict[str, object]] = [
         {"name": "급상승 우선순위", "value": ranking[:1024], "inline": False},
         {"name": "Bollinger 위치", "value": bands[:1024], "inline": False},
@@ -523,6 +534,27 @@ def _finite_number(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) and isfinite(value) else None
 
 
+def _ma_context(d: SignalDecision) -> dict[str, Any] | None:
+    context = d.metadata.get("ma_context")
+    if (
+        isinstance(context, dict)
+        and context.get("version") == "bb-ma-context-v1"
+        and context.get("as_of_ms") == d.event_time_ms
+        and context.get("timeframe") == d.timeframe
+        and all(isinstance(context.get(key), str) for key in (
+            "summary", "alignment", "band_setup", "band_interpretation", "band_check", "reference",
+            "price_vs_ema20", "price_vs_ema50", "price_vs_sma20",
+        ))
+        and context.get("alignment") in ("up", "down", "mixed", "unavailable")
+        and context.get("reference") in ("", "ema20", "ema50")
+        and all(context.get(key) in ("above", "below", "equal", "unavailable") for key in (
+            "price_vs_ema20", "price_vs_ema50", "price_vs_sma20",
+        ))
+    ):
+        return context
+    return None
+
+
 def _simple_pressure(d: SignalDecision) -> str:
     pressure = d.metadata.get("minute_pressure")
     if isinstance(pressure, dict) and pressure.get("available") is True:
@@ -629,6 +661,9 @@ def _simple_payload(d: SignalDecision, username: str) -> dict[str, object]:
             situation += f" · 24시간 {change:+.2f}%"
         if volume is not None:
             situation += f"\n24시간 거래대금 {volume / 100_000_000:.2f}억 USDT"
+        ma_context = _ma_context(d)
+        if ma_context is not None:
+            situation += f"\n{ma_context['summary']}"
         fields.extend(
             [
                 {"name": "시장 상황", "value": situation, "inline": False},
@@ -654,6 +689,14 @@ def _simple_payload(d: SignalDecision, username: str) -> dict[str, object]:
                 description += " 밴드 접촉만으로 반전을 판단하지 않습니다."
             else:
                 condition = f"조건 해제: {condition}"
+        if ma_context is not None and ma_context.get("band_interpretation"):
+            condition += f"\n{ma_context['band_interpretation']}"
+            reference = ma_context.get("reference")
+            line = _finite_number(d.metadata.get(reference)) if isinstance(reference, str) else None
+            if line is not None:
+                period = "20" if reference == "ema20" else "50"
+                condition += f"\n추세 확인선 EMA{period} {_compact_number(line)} USDT"
+            condition += f"\n다음 폐봉: {ma_context.get('band_check', '방향 재확인')}"
         fields.append({"name": "확인할 조건", "value": condition, "inline": False})
         simultaneous = d.metadata.get("concurrent_watch_events")
         if isinstance(simultaneous, (list, tuple)):
