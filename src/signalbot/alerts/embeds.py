@@ -679,14 +679,13 @@ def _simple_payload(d: SignalDecision, username: str) -> dict[str, object]:
             )
             description = "범위 경계에서 되돌아온 **검증 전 후보**입니다."
         else:
-            description = "**관찰 알림** · 진입 확정 신호가 아닙니다."
+            description = "**관찰 알림**"
             if d.family in {SignalFamily.BOLLINGER_UPPER_TOUCH, SignalFamily.BOLLINGER_LOWER_TOUCH}:
                 side = "상단" if d.family is SignalFamily.BOLLINGER_UPPER_TOUCH else "하단"
                 band = _finite_number(
                     d.metadata.get(f"bollinger_{'upper' if side == '상단' else 'lower'}")
                 )
                 condition = f"접촉한 {side} {_compact_number(band)} USDT\n조건 해제: {condition}"
-                description += " 밴드 접촉만으로 반전을 판단하지 않습니다."
             else:
                 condition = f"조건 해제: {condition}"
         if ma_context is not None and ma_context.get("band_interpretation"):
