@@ -1333,7 +1333,7 @@ class SqlRepository:
         detail: str | None = None,
         expected_status: str = "sending",
     ) -> bool:
-        allowed = {"pending", "delivered", "uncertain", "dead", "disabled"}
+        allowed = {"pending", "delivered", "uncertain", "dead", "disabled", "expired"}
         if status not in allowed:
             raise ValueError(f"unsupported outbox status: {status}")
         with Session(self.engine) as session:
@@ -1356,6 +1356,45 @@ class SqlRepository:
             )
             session.commit()
             return result.rowcount == 1
+
+    def signal_delivery_meta(self, event_id: str) -> tuple[str, int] | None:
+        """Return ``(family, event_time_ms)`` of the stored signal, if any."""
+
+        with Session(self.engine) as session:
+            row = session.get(SignalRow, event_id)
+            return None if row is None else (row.family, row.event_time_ms)
+
+    def append_alert_audit(
+        self,
+        event_id: str,
+        status: str,
+        created_at_ms: int,
+        *,
+        response_code: int | None = None,
+        detail: str | None = None,
+    ) -> int:
+        """Append an ``alerts`` audit row without overwriting earlier attempts.
+
+        Uses the next free attempt number for the event and returns it.
+        """
+
+        with Session(self.engine) as session:
+            highest = session.scalar(
+                select(func.max(AlertRow.attempt)).where(AlertRow.event_id == event_id)
+            )
+            attempt = int(highest if highest is not None else 0) + 1
+            session.add(
+                AlertRow(
+                    event_id=event_id,
+                    attempt=attempt,
+                    status=status,
+                    response_code=response_code,
+                    detail=detail,
+                    created_at_ms=created_at_ms,
+                )
+            )
+            session.commit()
+            return attempt
 
     def mark_inflight_uncertain(self, updated_at_ms: int) -> int:
         """Quarantine delivery attempts whose process ended while in flight."""

@@ -234,6 +234,7 @@ class _StubScanner:
 
 class _StubNotifier:
     mode = "return"
+    startup_dispatch_calls = 0
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         pass
@@ -242,6 +243,8 @@ class _StubNotifier:
         return 0
 
     async def dispatch_pending(self, limit: int = 100) -> list[DeliveryResult]:
+        _StubNotifier.startup_dispatch_calls += 1
+        await asyncio.Event().wait()  # a stalled Discord must never block startup
         return []
 
     async def close(self) -> None:
@@ -322,3 +325,15 @@ async def test_normal_stop_with_healthy_drain_logs_no_errors(
     with caplog.at_level(logging.INFO):
         await asyncio.wait_for(app.run(), timeout=15)
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.asyncio
+async def test_startup_does_not_await_dispatch_pending_before_scanners(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _make_app(tmp_path, monkeypatch, "wait")
+    _StubNotifier.startup_dispatch_calls = 0
+    app.stop_after_minutes = 0
+    await asyncio.wait_for(app.run(), timeout=15)
+    assert len(app.scanners) == 2
+    assert _StubNotifier.startup_dispatch_calls == 0

@@ -94,7 +94,8 @@ class SignalApplication:
                 "quarantined interrupted Discord deliveries",
                 extra={"uncertain_delivery_count": uncertain_count},
             )
-        await self.notifier.dispatch_pending()
+        # The startup drain runs inside the supervised discord-outbox-drain task so
+        # a slow or rate-limited Discord never delays scanner startup.
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:

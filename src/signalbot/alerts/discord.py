@@ -11,10 +11,15 @@ import httpx
 from signalbot.alerts.embeds import build_discord_payload
 from signalbot.clock import Clock
 from signalbot.config import AlertSettings
+from signalbot.domain.enums import SignalFamily
 from signalbot.domain.models import SignalDecision
 from signalbot.persistence.repository import SqlRepository
 
 LOGGER = logging.getLogger(__name__)
+
+_RISK_FAMILIES = frozenset({SignalFamily.PUMP_RISK.value, SignalFamily.CRASH_RISK.value})
+_MAX_INLINE_RETRY_SECONDS = 30.0
+_MAX_EMBARGO_SECONDS = 300.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +43,9 @@ class DiscordNotifier:
         self.clock = clock
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=settings.timeout_seconds)
+        # In-memory only: a Discord 429 means the message was not processed, so the
+        # item stays pending and the whole notifier pauses until this deadline.
+        self._embargo_until_ms = 0
 
     async def close(self) -> None:
         if self._owns_client:
@@ -90,6 +98,9 @@ class DiscordNotifier:
             return DeliveryResult("disabled", attempts)
         webhook = self.settings.discord_webhook_url.get_secret_value()
         while True:
+            expired = self._expire_if_stale(event_id)
+            if expired is not None:
+                return expired
             claimed = self.repository.claim_outbox(event_id, self.clock.now_ms())
             if claimed is None:
                 return self._current_result(event_id)
@@ -161,7 +172,10 @@ class DiscordNotifier:
                 return DeliveryResult("uncertain", attempt, status_code, detail)
 
             detail = f"Discord HTTP {status_code}: {response.text[:300]}"
-            if status_code == 429 and attempt < self.settings.max_attempts:
+            if status_code == 429:
+                # The message was not processed, so it is safe to keep it pending.
+                # It is never marked dead for rate limiting; delivery-age expiry
+                # bounds how long it can wait.
                 self.repository.mark_outbox(
                     event_id,
                     "pending",
@@ -177,8 +191,16 @@ class DiscordNotifier:
                     status_code,
                     detail,
                 )
-                await asyncio.sleep(self._retry_after(response))
-                continue
+                if attempt < self.settings.max_attempts:
+                    await asyncio.sleep(self._retry_after(response))
+                    continue
+                embargo_seconds = self._retry_after(response, maximum=_MAX_EMBARGO_SECONDS)
+                self._embargo_until_ms = self.clock.now_ms() + int(embargo_seconds * 1000)
+                LOGGER.warning(
+                    "Discord rate limit persisted; pausing outbox delivery",
+                    extra={"event_id": event_id, "attempt": attempt},
+                )
+                return DeliveryResult("rate_limited", attempt, status_code, detail)
 
             if status_code >= 500:
                 uncertain_detail = f"{detail}; server-side delivery outcome is ambiguous"
@@ -227,8 +249,54 @@ class DiscordNotifier:
 
         results: list[DeliveryResult] = []
         for item in self.repository.pending_outbox(limit):
+            expired = self._expire_if_stale(item.event_id)
+            if expired is not None:
+                results.append(expired)
+                continue
+            if self._embargoed():
+                continue
             results.append(await self.deliver_event(item.event_id))
         return results
+
+    def _embargoed(self) -> bool:
+        return self.clock.now_ms() < self._embargo_until_ms
+
+    def _delivery_limit_ms(self, family: str) -> int:
+        limit_seconds = self.settings.max_delivery_delay_seconds
+        if family in _RISK_FAMILIES:
+            limit_seconds = min(limit_seconds, self.settings.risk_max_delivery_delay_seconds)
+        return limit_seconds * 1000
+
+    def _expire_if_stale(self, event_id: str) -> DeliveryResult | None:
+        """Terminally expire a pending item whose signal is too old to be useful.
+
+        The class (risk vs. other) comes from the stored signal row. An expired
+        item is never sent and does not count toward the active outbox limit.
+        """
+
+        meta = self.repository.signal_delivery_meta(event_id)
+        if meta is None:
+            return None
+        family, event_time_ms = meta
+        now_ms = self.clock.now_ms()
+        age_ms = now_ms - event_time_ms
+        limit_ms = self._delivery_limit_ms(family)
+        if age_ms <= limit_ms:
+            return None
+        detail = (
+            f"expired before delivery: age {age_ms} ms exceeds limit {limit_ms} ms "
+            f"for {family}"
+        )
+        if not self.repository.mark_outbox(
+            event_id, "expired", now_ms, detail=detail, expected_status="pending"
+        ):
+            return None
+        self.repository.append_alert_audit(event_id, "expired", now_ms, detail=detail)
+        LOGGER.warning(
+            "stale Discord alert expired without delivery",
+            extra={"event_id": event_id},
+        )
+        return self._current_result(event_id)
 
     async def run_dispatch_loop(
         self,
@@ -315,10 +383,12 @@ class DiscordNotifier:
         return value if isinstance(value, str) and value else None
 
     @staticmethod
-    def _retry_after(response: httpx.Response) -> float:
+    def _retry_after(
+        response: httpx.Response, maximum: float = _MAX_INLINE_RETRY_SECONDS
+    ) -> float:
         try:
             payload: Any = response.json()
             value = float(payload.get("retry_after", 1)) if isinstance(payload, dict) else 1
         except (ValueError, TypeError):
             value = 1
-        return min(max(value, 0.05), 30)
+        return min(max(value, 0.05), maximum)

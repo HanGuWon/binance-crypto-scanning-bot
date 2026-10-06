@@ -322,6 +322,10 @@ class AlertSettings(StrictModel):
     max_attempts: int = Field(default=3, ge=1, le=10)
     timeout_seconds: float = Field(default=10, ge=1, le=60)
     outbox_max_active_items: int = Field(default=10_000, ge=100, le=1_000_000)
+    # New alert settings use exclude=True so Settings.model_dump() and the frozen
+    # effective-Settings hashes derived from it stay unchanged.
+    max_delivery_delay_seconds: int = Field(default=900, ge=60, le=86_400, exclude=True)
+    risk_max_delivery_delay_seconds: int = Field(default=180, ge=30, le=86_400, exclude=True)
 
     @field_validator("discord_username", mode="before")
     @classmethod

@@ -140,21 +140,41 @@ The `signals` row and `alert_outbox` intent are atomic. Inspect both
 `alert_outbox.status` and the append-only `alerts` attempt history when an alert
 appears missing or duplicated.
 
-- `pending`: safe to dispatch; startup drains a bounded batch before scanners
-  start and the cancellable background dispatcher continues draining bounded
-  batches during operation.
+- `pending`: safe to dispatch. The supervised, cancellable background dispatcher
+  (`discord-outbox-drain`) drains bounded batches, including the startup backlog;
+  scanner startup no longer waits on Discord. Only `recover_inflight()` runs
+  synchronously before scanners.
 - `sending`: temporarily claimed. On restart it is changed to `uncertain`, not
   replayed.
 - `delivered`: Discord returned a message ID after a `wait=true` request.
 - `uncertain`: the HTTP outcome may already have created a Discord message.
   Reconcile it against the channel and `event_id`; never bulk-reset these rows
   to `pending` or retry them blindly.
-- `dead`: a definitive, non-retryable failure or exhausted 429 retry budget.
+- `dead`: a definitive, non-retryable failure (for example an HTTP 4xx other
+  than 429). HTTP 429 never produces `dead`.
+- `expired`: terminal. The alert was older than the delivery limit when it was
+  about to be sent, so it was never sent. It does not count toward
+  `outbox_max_active_items` and an `expired` audit row is appended to `alerts`.
 - `disabled`: signal persistence was enabled while Discord delivery was off.
 
 Transport failures, HTTP 5xx, and 2xx responses without a message ID become
-`uncertain`. Only HTTP 429 is retried automatically, up to `max_attempts`, with a
-bounded server-directed delay.
+`uncertain`. HTTP 429 means Discord did not process the message: it is retried
+up to `max_attempts` with the server-directed delay (capped at 30 s). After that
+the item stays `pending` and the notifier pauses all deliveries for the
+server-directed `retry_after` (capped at 300 s, in memory only, cancelled by
+shutdown). Nothing waits forever: expiry still applies.
+
+Delivery age limits (`alerts.max_delivery_delay_seconds`, default 900, minimum
+60; `alerts.risk_max_delivery_delay_seconds`, default 180, minimum 30, applied
+to `PUMP_RISK`/`CRASH_RISK` and never above the general limit) are measured as
+`now - signals.event_time_ms`; the class is read from the stored signal row. An
+item exactly at the limit is still delivered; one millisecond older is expired.
+Both settings are excluded from `Settings.model_dump()` so frozen settings
+hashes do not change.
+
+Delivery guarantee: at most once per `event_id`. `uncertain` remains ambiguous
+because the Discord Execute Webhook API has no idempotency key; a message may
+or may not exist.
 
 `outbox_max_active_items` is a hard limit over `pending`, `sending`, and
 `uncertain`. If it is reached, the service refuses the new signal/outbox pair
