@@ -192,13 +192,39 @@ latency, rate limiting, and ambiguous transport outcomes cannot block Binance
 WebSocket processing. The worker sends only already-persisted immutable alert
 intents.
 
+Failures are classified by where they occur. Transport failures (connect,
+receive, protocol error, connection-age recycle) reconnect with bounded backoff.
+An exception raised by the message handler (outbox capacity, event-ID or candle
+conflict, database errors, the PAPER symbol bound) is a pipeline failure: it is
+never treated as a disconnect, the scanner task fails, and the application logs
+CRITICAL and stops (fail closed). The Discord outbox drain and the event-loop lag
+monitor are supervised the same way, and the drain survives per-batch errors with
+bounded exponential backoff.
+
 ## Recommendation boundary
 
-The recommendation core is a pure projection boundary after the signal state
-machine. It preserves the source event ID, reasons, failed gates,
-invalidation, rule version, and a deterministic projection ID. Only a fully
-confirmed, directionally valid decision can become an entry candidate. Watch
-and setup states, informational pullbacks, failed gates, stale context, and
-directionally invalid stops become `NO_ENTRY`; pump and crash anomalies remain
-risk warnings. Ranking filters expired recommendations and never converts a
-rule-strength score into a probability.
+Two different things are easy to confuse here.
+
+**Live Discord path (what actually runs).** A decision leaves the state machine,
+is persisted with its outbox intent, and `build_discord_payload` renders it. The
+embed is a presentation-only mapping of the existing decision state to a Korean
+status: `CONFIRMED` directional decisions read as a rule trigger and review
+candidate marked `(미검증 규칙)`, everything else as `진입 보류`, exit review, or a
+risk warning. It shows the reasons, the invalidation level, the rule version and
+the deterministic `event_id` (footer), plus a fixed `검증 상태` notice. It has no
+TTL, no projection ID and no ranking: an alert simply stops being sent once it is
+older than the delivery limit (`alerts.max_delivery_delay_seconds`, risk alerts
+`alerts.risk_max_delivery_delay_seconds`; see `docs/OPERATIONS.md`).
+
+**Recommendation projector (a library, not on the live path).**
+`signalbot.recommendations` (`project_decision`, `project_decisions`, ranking) is a
+pure projection of a decision into `LONG` / `SHORT` / `NO_ENTRY` envelopes with
+blockers, expiry (TTL) and a deterministic projection ID. Only a fully confirmed,
+directionally valid decision can become an entry candidate; watch and setup
+states, informational pullbacks, failed gates, stale context and directionally
+invalid stops become `NO_ENTRY`; pump and crash anomalies stay risk warnings;
+ranking filters expired envelopes and never converts a rule-strength score into a
+probability. No production module (scanner, runtime, outbox, API, Discord) imports
+it today; it is exercised by unit tests and defines the contract a future
+consumer would use. Backtests and alert replay write their own recommendation
+event records and do not call it either.

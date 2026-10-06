@@ -386,6 +386,9 @@ class RuntimeSettings(StrictModel):
     )
     # exclude=True keeps Settings.model_dump() and frozen settings hashes unchanged.
     ready_max_staleness_seconds: int = Field(default=120, ge=15, le=3_600, exclude=True)
+    # Diagnostics thresholds; effective values are logged once at startup.
+    loop_lag_warning_ms: int = Field(default=500, ge=50, le=60_000, exclude=True)
+    handler_slow_warning_ms: int = Field(default=1_000, ge=100, le=600_000, exclude=True)
 
 
 class Settings(StrictModel):
@@ -398,6 +401,17 @@ class Settings(StrictModel):
     alerts: AlertSettings = AlertSettings()
     runtime: RuntimeSettings = RuntimeSettings()
     shadow: ShadowPolicySettings = ShadowPolicySettings()
+
+    @model_validator(mode="after")
+    def reject_directional_observation_with_discord(self) -> Settings:
+        if self.shadow.directional_observation_enabled and self.alerts.discord_enabled:
+            raise ValueError(
+                "shadow.directional_observation_enabled cannot be combined with "
+                "alerts.discord_enabled (directional observation is shadow-only). Note that "
+                "setting the SIGNALBOT_DISCORD_WEBHOOK_URL environment variable enables "
+                "Discord automatically; unset it when running directional observation"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_funding_history_capacity(self) -> Settings:
@@ -498,6 +512,23 @@ class Settings(StrictModel):
         if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError(f"unsupported log level: {value}")
         return normalized
+
+
+def unevaluated_pullback_intervals(settings: Settings) -> list[str]:
+    """Configured pullback intervals that can never be evaluated live.
+
+    Rules run only on the primary-interval candle, so entries other than
+    ``binance.primary_interval`` are inert. Only meaningful when pullback alerts
+    are on at all.
+    """
+
+    if settings.signals.pullback_alert_mode == "off":
+        return []
+    return [
+        interval
+        for interval in settings.signals.pullback_intervals
+        if interval != settings.binance.primary_interval
+    ]
 
 
 def _apply_environment(data: dict[str, Any]) -> dict[str, Any]:

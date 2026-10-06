@@ -54,9 +54,10 @@ class HeartbeatRecorder:
         self._decision_ms = self._clock.now_ms()
         self._maybe_flush()
 
-    def note_loop_lag(self, lag_ms: int) -> None:
-        if self._max_loop_lag_ms is None or lag_ms > self._max_loop_lag_ms:
-            self._max_loop_lag_ms = lag_ms
+    def note_loop_lag(self, rolling_max_lag_ms: int) -> None:
+        """Publish the current rolling maximum (the monitor owns the window)."""
+
+        self._max_loop_lag_ms = rolling_max_lag_ms
         self._maybe_flush()
 
     def _maybe_flush(self) -> None:

@@ -20,6 +20,7 @@ from signalbot.exchange.binance.endpoints import build_websocket_plans
 from signalbot.exchange.binance.rest import BinanceRestClient, BinanceRestError
 from signalbot.exchange.binance.universe import Universe, UniverseSelector
 from signalbot.exchange.binance.websocket import WebSocketConsumer
+from signalbot.observability.handler_timing import HandlerDiagnostics
 from signalbot.runtime import MarketRuntime
 
 LOGGER = logging.getLogger(__name__)
@@ -60,7 +61,13 @@ class MarketScanner:
             clock,
             required_symbols=required_symbols,
         )
-        self.consumer = WebSocketConsumer(settings.binance.max_connection_age_seconds)
+        self.consumer = WebSocketConsumer(
+            settings.binance.max_connection_age_seconds,
+            diagnostics=HandlerDiagnostics(
+                slow_warning_ms=settings.runtime.handler_slow_warning_ms,
+                market=market.value,
+            ),
+        )
         self.universe: Universe | None = None
         self._pending_universe_signature: tuple[frozenset[str], frozenset[str]] | None = None
         self._pending_universe_confirmations = 0

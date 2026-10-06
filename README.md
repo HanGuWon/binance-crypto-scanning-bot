@@ -4,10 +4,12 @@ An executable, alert-first Python service for Binance Spot and USDⓈ-M perpetua
 
 This repository intentionally **does not place orders**. Spot sell/exit suggestions and futures short suggestions are distinct. Public market data requires no Binance API key.
 
-The first trading-oriented boundary is recommendation-only: the scanner emits
-`LONG`, `SHORT`, or `NO_ENTRY` envelopes with reasons, blockers, invalidation,
-expiry, and deterministic IDs. It has no private account access and no order
-placement path. The planned Position Guardian is stop-only for explicitly
+The first trading-oriented boundary is recommendation-only. Live Discord alerts
+carry reasons, invalidation and a deterministic `event_id`; a `CONFIRMED` alert is
+a rule trigger and review candidate (`미검증 규칙`), not a forecast. The separate
+`signalbot.recommendations` projector (`LONG`/`SHORT`/`NO_ENTRY` envelopes with
+expiry and projection IDs) is a library that is not wired into the live path. The
+scanner has no private account access and no order placement path. The planned Position Guardian is stop-only for explicitly
 assigned positions, while Freqtrade automation is isolated to a dedicated
 account. See [`docs/TRADING_CAPABILITY_MATRIX.md`](docs/TRADING_CAPABILITY_MATRIX.md)
 and [`docs/TRADING_EVENT_CONTRACTS.md`](docs/TRADING_EVENT_CONTRACTS.md).
@@ -44,7 +46,50 @@ Set `SIGNALBOT_DISCORD_WEBHOOK_URL` to enable Discord. Without it, decisions are
 uv run signalbot replay --config config/settings.example.yaml --market spot --input tests/fixtures/replay/sample_events.jsonl
 uv run signalbot evaluate-outcomes --config config/settings.example.yaml --input tests/fixtures/outcomes/sample.json --horizons 900 3600
 uv run signalbot serve-api --config config/settings.example.yaml --host 0.0.0.0 --port 8080
+uv run signalbot outbox status --config config/settings.yaml
+uv run signalbot prune-candles --config config/settings.yaml --older-than-days 30
 ```
+
+## Operations at a glance
+
+Details and procedures are in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
+**Delivery guarantee.** Discord delivery is at most once per `event_id`. A
+transport failure, HTTP 5xx, or a success response without a message ID leaves the
+item `uncertain`, which stays ambiguous because the Discord Execute Webhook API has
+no idempotency key. Reconcile it against the channel and resolve it with
+`signalbot outbox resolve`; never bulk-reset it to `pending`.
+
+**Outbox statuses:** `pending`, `sending`, `delivered`, `uncertain`, `dead`
+(definitive non-retryable failure; HTTP 429 never produces it), `expired` (older
+than the delivery limit, never sent), `disabled`.
+
+**Endpoints (read-only API):** `/health/live`; `/health/ready` (200 only while every
+configured market has a fresh WebSocket heartbeat, otherwise 503 with reasons);
+`/outbox/summary` (counts and ages only, no payloads); `/signals/recent`;
+`/protection-contexts`.
+
+**CLI:** `signalbot outbox status`; `signalbot outbox resolve --event-id ID --as
+delivered|dead --reason TEXT [--message-id ID]`; `signalbot prune-candles
+--older-than-days N [--apply]` (dry-run unless `--apply`, candles table only).
+
+**Settings added since the review (all optional; none changes
+`Settings.model_dump()` or the frozen settings hashes):**
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `binance.bootstrap_close_margin_ms` | 2000 | drop REST bootstrap candles closing within this margin of now (clock skew) |
+| `alerts.max_delivery_delay_seconds` | 900 | alerts older than this expire instead of being sent |
+| `alerts.risk_max_delivery_delay_seconds` | 180 | same limit for `PUMP_RISK`/`CRASH_RISK` |
+| `alerts.validation_notice` | R2-failed notice | fixed `검증 상태` embed field |
+| `runtime.ready_max_staleness_seconds` | 120 | `/health/ready` heartbeat age limit |
+| `runtime.loop_lag_warning_ms` | 500 | event-loop lag WARNING threshold |
+| `runtime.handler_slow_warning_ms` | 1000 | slow WebSocket handler WARNING threshold |
+
+Webhook URLs are redacted from all logs. PostgreSQL databases created by an older
+build need the one-time `rule_version` `ALTER TABLE` described in the operations
+guide. CI runs a separate PostgreSQL smoke job (`postgres:17`). Directional
+shadow observation cannot be combined with Discord (see operations guide).
 
 ## Cost-aware research backtest
 

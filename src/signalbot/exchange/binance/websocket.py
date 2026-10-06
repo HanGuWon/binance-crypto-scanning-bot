@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -11,6 +12,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from signalbot.exchange.binance.endpoints import WebSocketPlan
+from signalbot.observability.handler_timing import HandlerDiagnostics
 
 LOGGER = logging.getLogger(__name__)
 PayloadHandler = Callable[[Any], Awaitable[None]]
@@ -23,11 +25,28 @@ class WebSocketConsumer:
         initial_backoff_seconds: float = 1,
         maximum_backoff_seconds: float = 30,
         max_queue: int = 2048,
+        diagnostics: HandlerDiagnostics | None = None,
     ) -> None:
         self.max_connection_age_seconds = max_connection_age_seconds
         self.initial_backoff_seconds = initial_backoff_seconds
         self.maximum_backoff_seconds = maximum_backoff_seconds
         self.max_queue = max_queue
+        self.diagnostics = diagnostics
+
+    def _now(self) -> float:
+        return time.monotonic() if self.diagnostics is None else self.diagnostics.monotonic()
+
+    def _record_timing(
+        self, stream: str, received_at: float, handler_started_at: float
+    ) -> None:
+        if self.diagnostics is None:
+            return
+        finished_at = self.diagnostics.monotonic()
+        self.diagnostics.record(
+            stream,
+            receive_to_handler_ms=(handler_started_at - received_at) * 1000,
+            handler_ms=(finished_at - handler_started_at) * 1000,
+        )
 
     async def consume_forever(
         self, plan: WebSocketPlan, handler: PayloadHandler, stop_event: asyncio.Event
@@ -58,6 +77,7 @@ class WebSocketConsumer:
                     delay = self.initial_backoff_seconds
                     async with asyncio.timeout(self.max_connection_age_seconds):
                         async for raw in websocket:
+                            received_at = self._now()
                             if stop_event.is_set():
                                 return
                             try:
@@ -68,6 +88,7 @@ class WebSocketConsumer:
                                     extra={"market": plan.market.value, "stream": plan.name},
                                 )
                                 continue
+                            handler_started_at = self._now()
                             try:
                                 await handler(payload)
                             except Exception as exc:
@@ -75,6 +96,10 @@ class WebSocketConsumer:
                                 # re-raise below, outside the transport try.
                                 handler_error = exc
                                 break
+                            finally:
+                                self._record_timing(
+                                    plan.name, received_at, handler_started_at
+                                )
             except asyncio.CancelledError:
                 raise
             except TimeoutError:

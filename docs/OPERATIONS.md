@@ -7,8 +7,13 @@ V1 accepts only a Discord webhook secret through
 commit or log the webhook. The scanner reads public market data and emits
 alerts. It does not place Spot or Futures orders.
 
-The read-only API exposes `/health/live`, `/health/ready`, and
-`/signals/recent`. Keep the host NTP-synchronized. Discord displays UTC and
+The read-only API exposes `/health/live`, `/health/ready`, `/outbox/summary`,
+`/signals/recent` and the protection-context endpoints.
+
+Logging redacts Discord webhook URLs: the `httpx`/`httpcore` loggers are held at
+WARNING and a filter on the root handler rewrites `/webhooks/<id>/<token>` to
+`/webhooks/<id>/<redacted>` in messages, arguments and exception text. A token
+that appears anywhere in a log line is a bug; report it. Keep the host NTP-synchronized. Discord displays UTC and
 Asia/Seoul while internal timestamps remain UTC Unix milliseconds.
 
 ## Position Guardian shadow alerts, durable authority, and restart recovery
@@ -174,7 +179,9 @@ hashes do not change.
 
 Delivery guarantee: at most once per `event_id`. `uncertain` remains ambiguous
 because the Discord Execute Webhook API has no idempotency key; a message may
-or may not exist.
+or may not exist. Resolve each `uncertain` item
+after checking the channel with `signalbot outbox resolve` (see "Pipeline readiness
+and outbox operations").
 
 `outbox_max_active_items` is a hard limit over `pending`, `sending`, and
 `uncertain`. If it is reached, the service refuses the new signal/outbox pair
@@ -248,6 +255,87 @@ Embeds carry a fixed `검증 상태` field taken from `alerts.validation_notice`
 setting is excluded from `Settings.model_dump()`. The embed footer records a
 presentation version (`view vN`); see `docs/ARCHITECTURE.md` for how a
 presentation-only difference is treated when an event ID is persisted again.
+
+## Failure handling and supervision
+
+- WebSocket consumers reconnect with bounded backoff only on transport failures. An
+  exception raised by the message handler is a pipeline failure and is not a
+  reconnect: outbox capacity, event-ID or candle conflicts, database errors and the
+  PAPER lifecycle symbol bound stop that scanner, log CRITICAL, and stop the whole
+  application (fail closed, operator attention required).
+- The Discord outbox drain (`discord-outbox-drain`) catches errors per batch, logs
+  them at ERROR with the traceback, and retries with exponential backoff from 1 s up
+  to 60 s (interrupted by shutdown). An item that was `sending` when an error hit is
+  not retried by the loop; it becomes `uncertain` at the next restart. If the drain
+  task ends without a stop request, or the event-loop lag monitor does, the
+  application logs CRITICAL and stops. Any exception collected during teardown is
+  logged.
+- `binance.bootstrap_close_margin_ms` (default 2000, 0-60000) drops REST bootstrap
+  candles that close within the margin of local now, so a local clock slightly ahead
+  of Binance cannot admit a still-open candle (which would later conflict with the
+  closed WebSocket candle). Gap recovery is unchanged. The effective value is logged
+  once per market at startup and, like every setting below, is excluded from
+  `Settings.model_dump()` so frozen settings hashes do not change.
+
+## Diagnostics: event-loop lag and slow handlers
+
+Feature computation runs on the event loop, so a candle-boundary burst can delay
+WebSocket processing. Two diagnostics make that visible; neither changes any gate
+or timestamp.
+
+- `runtime.loop_lag_warning_ms` (default 500): a periodic task measures how late it
+  resumes. A lag above the threshold logs one WARNING per 60 s with the maximum seen
+  since the last warning; the rolling maximum is written to
+  `runtime_heartbeats.max_loop_lag_ms` (existing 15 s write throttle).
+- `runtime.handler_slow_warning_ms` (default 1000): one WARNING per stream per 60 s
+  when a message spends longer than the threshold in the handler, or when more than
+  the threshold passes between pulling the frame from the connection and the handler
+  starting (the library's internal receive queue is not visible to this measurement).
+
+Both effective values are logged once at startup. Intervals shorter than
+`binance.primary_interval` are no longer featurized (their candles are still stored
+and persisted); BTCUSDT 1h is kept because it feeds the regime. Optimizing the
+feature computation itself is not done: it lives in sources frozen by the Guardian
+policy contract.
+
+## Retention: `prune-candles`
+
+```bash
+signalbot prune-candles --config config/settings.yaml --older-than-days 30          # dry-run
+signalbot prune-candles --config config/settings.yaml --older-than-days 30 --apply  # delete
+```
+
+Dry-run is the default and prints counts per market/interval. `--apply` deletes in
+batches of 5,000 rows, one transaction per batch, and reports totals. It touches
+only the `candles` table (never signals, alerts, the outbox, heartbeats or shadow
+tables) and refuses `--older-than-days` below 1. A candle closing exactly at the
+cutoff is kept. Do not prune candles that an active retest/shadow campaign still
+needs (`runtime.persist_candles` feeds causal retest observation); preserve the
+database before the first `--apply`.
+
+## Configuration restrictions and startup warnings
+
+- `shadow.directional_observation_enabled` cannot be combined with
+  `alerts.discord_enabled`: directional observation is shadow-only. Setting the
+  `SIGNALBOT_DISCORD_WEBHOOK_URL` environment variable enables Discord
+  automatically, so unset it when running directional observation. The directional
+  deployment template validates when that variable is absent.
+- If pullback alerts are on (`signals.pullback_alert_mode` other than `off`) and
+  `signals.pullback_intervals` lists intervals other than `binance.primary_interval`,
+  a WARNING is logged once at startup: rules run only on the primary-interval candle,
+  so those entries are never evaluated live. The configuration is not rejected.
+- Open product decision: `RequiredUniverseUnavailableError` currently stops both
+  markets when a required directional symbol is unavailable. That behavior is
+  unchanged and awaits a decision.
+
+## Continuous integration
+
+The `test` job runs ruff, pyright, the full pytest suite, compileall and the CLI
+checks. A separate `postgres` job starts a `postgres:17` service and runs only
+`tests/integration/test_postgres_smoke.py` with `SIGNALBOT_TEST_POSTGRES_URL` set:
+it initializes the schema, stores a signal whose `rule_version` is exactly 64
+characters and checks the startup width check. The test is skipped when the
+variable is unset, so local runs are unaffected.
 
 ## Raw-event evidence capacity
 

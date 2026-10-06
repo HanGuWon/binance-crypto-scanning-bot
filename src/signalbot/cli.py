@@ -54,6 +54,7 @@ from signalbot.persistence.repository import SqlRepository
 from signalbot.prospective.directional_review import review_directional_validation
 from signalbot.prospective.directional_validation import run_directional_validation
 from signalbot.prospective.smoke_audit import write_smoke_audit
+from signalbot.retention import register_prune_parser, run_prune_command
 from signalbot.runtime import MarketRuntime
 
 
@@ -94,6 +95,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Explicit frozen raw-event tape directory override",
     )
     register_outbox_parser(subs)
+    register_prune_parser(subs)
     api = subs.add_parser("serve-api")
     api.add_argument("--config", required=True)
     api.add_argument("--host", default="127.0.0.1")
@@ -549,6 +551,11 @@ def main() -> None:
             ready_max_staleness_seconds=settings.runtime.ready_max_staleness_seconds,
         )
         uvicorn.run(api_app, host=args.host, port=args.port)
+        return
+    if args.command == "prune-candles":
+        prune_code = run_prune_command(args, settings)
+        if prune_code:
+            raise SystemExit(prune_code)
         return
     if args.command == "outbox":
         code = run_outbox_command(args, settings)

@@ -27,3 +27,31 @@ jobs:
       - run: uv run signalbot validate-config --config config/settings.example.yaml
       - run: uv run signalbot run --config config/settings.example.yaml --dry-run
       - run: uv run signalbot replay --config config/settings.example.yaml --market spot --input tests/fixtures/replay/sample_events.jsonl
+
+  postgres:
+    # Real-PostgreSQL smoke: SQLite ignores VARCHAR lengths, PostgreSQL does not.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: signalbot
+          POSTGRES_PASSWORD: signalbot-ci-only
+          POSTGRES_DB: signalbot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U signalbot -d signalbot_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      SIGNALBOT_TEST_POSTGRES_URL: postgresql+psycopg://signalbot:signalbot-ci-only@localhost:5432/signalbot_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12.13"
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: uv run pytest -q tests/integration/test_postgres_smoke.py
