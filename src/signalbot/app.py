@@ -11,6 +11,7 @@ from signalbot.config import Settings
 from signalbot.data.raw_events import RawEventRecorder
 from signalbot.domain.models import SignalDecision
 from signalbot.heartbeat import HeartbeatRecorder, record_outbox_drain
+from signalbot.observability.loop_lag import LoopLagMonitor
 from signalbot.persistence.repository import SqlRepository
 from signalbot.runtime import MarketRuntime
 from signalbot.scanner import MarketScanner
@@ -20,6 +21,11 @@ from signalbot.signals.protection_context import ProtectionContext
 LOGGER = logging.getLogger(__name__)
 
 _OUTBOX_DRAIN_TASK_NAME = "discord-outbox-drain"
+_LOOP_LAG_TASK_NAME = "event-loop-lag-monitor"
+_SUPERVISED_LABELS = {
+    _OUTBOX_DRAIN_TASK_NAME: "Discord outbox drain",
+    _LOOP_LAG_TASK_NAME: "Event-loop lag monitor",
+}
 _MONITOR_STOP_TIMEOUT_SECONDS = 5.0
 _GRACEFUL_DRAIN_TIMEOUT_SECONDS = 30.0
 _RESOURCE_CLOSE_TIMEOUT_SECONDS = 15.0
@@ -111,6 +117,12 @@ class SignalApplication:
                 loop.add_signal_handler(sig, self.stop_event.set)
             except NotImplementedError:
                 pass
+        LOGGER.info(
+            "diagnostic thresholds: event-loop lag warning %d ms, slow handler warning %d ms",
+            self.settings.runtime.loop_lag_warning_ms,
+            self.settings.runtime.handler_slow_warning_ms,
+        )
+        heartbeats: list[HeartbeatRecorder] = []
         for market in self.settings.binance.markets:
             runtime = MarketRuntime(
                 market,
@@ -120,7 +132,9 @@ class SignalApplication:
                 self._after_decision_persisted,
                 protection_context_handler=self._persist_protection_context,
             )
-            runtime.heartbeat = HeartbeatRecorder(self.repository, market.value, self.clock)
+            recorder = HeartbeatRecorder(self.repository, market.value, self.clock)
+            runtime.heartbeat = recorder
+            heartbeats.append(recorder)
             restore = getattr(runtime, "restore_persisted_state", None)
             if callable(restore):
                 restore()
@@ -163,6 +177,14 @@ class SignalApplication:
                     name=_OUTBOX_DRAIN_TASK_NAME,
                 )
             )
+        lag_monitor = LoopLagMonitor(
+            warning_ms=self.settings.runtime.loop_lag_warning_ms,
+            stop_event=self.stop_event,
+            heartbeats=heartbeats,
+        )
+        drain_tasks.append(
+            asyncio.create_task(lag_monitor.run(), name=_LOOP_LAG_TASK_NAME)
+        )
         reported_tasks: set[asyncio.Task[None]] = set()
         try:
             # Explicit task ownership (Phase-K supervisor):
@@ -174,11 +196,12 @@ class SignalApplication:
             done, pending = await asyncio.wait(
                 [*critical_tasks, *drain_tasks], return_when=asyncio.FIRST_COMPLETED
             )
-            drain_error = self._drain_exit_error(done)
-            if drain_error is not None:
+            supervised_failure = self._supervised_exit_error(done)
+            drain_error: BaseException | None = None
+            if supervised_failure is not None:
+                label, drain_error = supervised_failure
                 LOGGER.critical(
-                    "Discord outbox drain exited unexpectedly; failing closed",
-                    exc_info=drain_error,
+                    "%s exited unexpectedly; failing closed", label, exc_info=drain_error
                 )
                 reported_tasks.update(t for t in done if t in drain_tasks)
                 self.stop_event.set()
@@ -254,16 +277,19 @@ class SignalApplication:
             self.repository.close()
         LOGGER.info("signal application stopped")
 
-    def _drain_exit_error(self, done: set[asyncio.Task[None]]) -> BaseException | None:
-        """Return the failure for an outbox drain that ended without a stop."""
+    def _supervised_exit_error(
+        self, done: set[asyncio.Task[None]]
+    ) -> tuple[str, BaseException] | None:
+        """Failure of a supervised auxiliary task that ended without a stop request."""
         for task in done:
-            if task.get_name() != _OUTBOX_DRAIN_TASK_NAME or task.cancelled():
+            label = _SUPERVISED_LABELS.get(task.get_name())
+            if label is None or task.cancelled():
                 continue
             error = task.exception()
             if error is not None:
-                return error
+                return label, error
             if not self.stop_event.is_set():
-                return RuntimeError("Discord outbox drain exited without a stop request")
+                return label, RuntimeError(f"{label} exited without a stop request")
         return None
 
     @staticmethod

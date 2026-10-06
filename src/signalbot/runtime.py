@@ -516,8 +516,25 @@ class MarketRuntime:
         )
         return inserted == len(expected_opens)
 
+    def _feature_has_no_consumer(self, candle: Candle) -> bool:
+        """True for intervals shorter than the primary whose feature nothing reads.
+
+        Decisions and PAPER use primary-interval features; higher-timeframe context
+        reads only intervals longer than the primary; the regime engine reads the
+        BTCUSDT 1h feature (kept even if 1h were sub-primary). Candles are still
+        stored and persisted by the caller.
+        """
+
+        if candle.symbol == "BTCUSDT" and candle.interval == "1h":
+            return False
+        return interval_to_milliseconds(candle.interval) < interval_to_milliseconds(
+            self.settings.binance.primary_interval
+        )
+
     def _update_derived_for_candle(self, candle: Candle) -> FeatureSnapshot | None:
         self.regime.update_candle(candle)
+        if self._feature_has_no_consumer(candle):
+            return None
         feature = self._refresh_feature(candle.symbol, candle.interval)
         if feature is not None and candle.symbol == "BTCUSDT" and candle.interval == "1h":
             self.regime.update_feature(feature)

@@ -386,6 +386,9 @@ class RuntimeSettings(StrictModel):
     )
     # exclude=True keeps Settings.model_dump() and frozen settings hashes unchanged.
     ready_max_staleness_seconds: int = Field(default=120, ge=15, le=3_600, exclude=True)
+    # Diagnostics thresholds; effective values are logged once at startup.
+    loop_lag_warning_ms: int = Field(default=500, ge=50, le=60_000, exclude=True)
+    handler_slow_warning_ms: int = Field(default=1_000, ge=100, le=600_000, exclude=True)
 
 
 class Settings(StrictModel):
