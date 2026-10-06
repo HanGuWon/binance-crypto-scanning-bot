@@ -12,6 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Frozen-source contract tests read historical blobs with git cat-file.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12.13"
