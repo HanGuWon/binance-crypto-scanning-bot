@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from position_guardian.config import GuardianAlertSettings, GuardianCredentials, GuardianSettings
 from position_guardian.discord import (
     GuardianDiscordNotifier,
-    build_guardian_discord_payload,
 )
 from position_guardian.domain import (
     AdoptionCandidate,
