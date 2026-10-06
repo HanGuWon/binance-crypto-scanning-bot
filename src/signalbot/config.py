@@ -10,6 +10,20 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, m
 
 from signalbot.domain.enums import Market
 
+DIRECTIONAL_FROZEN_SYMBOLS = (
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "SUIUSDT",
+    "WIFUSDT",
+)
+DIRECTIONAL_PREREGISTRATION_SHA256 = (
+    "a1b2977c3de07959413d4509c888f34d275cd32a8070ca2e41ca288961fa5b31"
+)
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -25,6 +39,9 @@ class BinanceSettings(StrictModel):
     intervals: list[str] = Field(default_factory=lambda: ["1m", "5m", "15m", "1h"])
     primary_interval: str = "5m"
     bootstrap_candles: int = Field(default=260, ge=60, le=1500)
+    # exclude=True keeps Settings.model_dump() (and the frozen effective-Settings
+    # hashes derived from it) unchanged; this is a startup-only REST filter margin.
+    bootstrap_close_margin_ms: int = Field(default=2_000, ge=0, le=60_000, exclude=True)
     history_limit: int = Field(default=600, ge=250, le=5000)
     websocket_batch_size: int = Field(default=180, ge=1, le=1024)
     max_connection_age_seconds: int = Field(default=85_800, ge=60, le=86_399)
@@ -102,6 +119,21 @@ class ShadowPolicySettings(StrictModel):
     campaign_created_at_ms: int | None = None
     retest_observation_enabled: bool = False
     retest_horizon_bars: int = Field(default=72, ge=1, le=10_000)
+    directional_observation_enabled: bool = False
+    directional_campaign_id: str | None = None
+    directional_source_identity: str | None = None
+    directional_campaign_created_at_ms: int | None = None
+    directional_activation_ms: int | None = None
+    directional_candidate_version: Literal["futures-bidirectional-v1"] = (
+        "futures-bidirectional-v1"
+    )
+    directional_symbols: tuple[str, ...] = ()
+    directional_preregistration_sha256: str | None = None
+
+    @field_validator("directional_symbols")
+    @classmethod
+    def normalize_directional_symbols(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(value.strip().upper() for value in values)
 
     @model_validator(mode="after")
     def freeze_observation_contract(self) -> ShadowPolicySettings:
@@ -109,6 +141,47 @@ class ShadowPolicySettings(StrictModel):
             raise ValueError(
                 "causal retest observation requires shadow observation_enabled"
             )
+        if self.directional_observation_enabled:
+            prefix = "worktree-source-v1:"
+            digest = (self.directional_source_identity or "").removeprefix(prefix)
+            if (
+                not (self.directional_source_identity or "").startswith(prefix)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(
+                    "directional observation requires worktree-source-v1 source_identity"
+                )
+            if not self.directional_campaign_id:
+                raise ValueError("directional observation requires campaign_id")
+            if not self.directional_campaign_id.startswith("futures-bidirectional-"):
+                raise ValueError(
+                    "directional observation campaign_id must use the "
+                    "futures-bidirectional namespace"
+                )
+            if self.directional_campaign_created_at_ms is None:
+                raise ValueError(
+                    "directional observation requires campaign_created_at_ms"
+                )
+            if self.directional_activation_ms is None:
+                raise ValueError("directional observation requires activation_ms")
+            if self.directional_activation_ms < self.directional_campaign_created_at_ms:
+                raise ValueError(
+                    "directional activation_ms must be >= campaign_created_at_ms"
+                )
+            if len(self.directional_symbols) != len(set(self.directional_symbols)):
+                raise ValueError("directional_symbols must not contain duplicates")
+            if set(self.directional_symbols) != set(DIRECTIONAL_FROZEN_SYMBOLS):
+                raise ValueError(
+                    "directional observation requires the frozen eight-symbol universe"
+                )
+            if (
+                self.directional_preregistration_sha256
+                != DIRECTIONAL_PREREGISTRATION_SHA256
+            ):
+                raise ValueError(
+                    "directional observation requires the frozen preregistration sha256"
+                )
         if not self.observation_enabled:
             return self
         if (
@@ -249,6 +322,21 @@ class AlertSettings(StrictModel):
     max_attempts: int = Field(default=3, ge=1, le=10)
     timeout_seconds: float = Field(default=10, ge=1, le=60)
     outbox_max_active_items: int = Field(default=10_000, ge=100, le=1_000_000)
+    # New alert settings use exclude=True so Settings.model_dump() and the frozen
+    # effective-Settings hashes derived from it stay unchanged.
+    max_delivery_delay_seconds: int = Field(default=900, ge=60, le=86_400, exclude=True)
+    risk_max_delivery_delay_seconds: int = Field(default=180, ge=30, le=86_400, exclude=True)
+    validation_notice: str = Field(
+        default="회고 검증 FAIL(R2) · prospective 검증 전 — 기대수익·확률 아님",
+        min_length=1,
+        max_length=300,
+        exclude=True,
+    )
+
+    @field_validator("validation_notice", mode="before")
+    @classmethod
+    def normalize_validation_notice(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("discord_username", mode="before")
     @classmethod
@@ -296,6 +384,8 @@ class RuntimeSettings(StrictModel):
         ge=1_048_576,
         le=10_995_116_277_760,
     )
+    # exclude=True keeps Settings.model_dump() and frozen settings hashes unchanged.
+    ready_max_staleness_seconds: int = Field(default=120, ge=15, le=3_600, exclude=True)
 
 
 class Settings(StrictModel):
@@ -377,6 +467,27 @@ class Settings(StrictModel):
                 raise ValueError(
                     "shadow observation requires subscribed intervals: "
                     + ", ".join(missing)
+                )
+        if self.shadow.directional_observation_enabled:
+            directional_count = len(self.shadow.directional_symbols)
+            if Market.FUTURES not in self.binance.markets:
+                raise ValueError("directional observation requires the futures market")
+            if self.binance.primary_interval != "5m":
+                raise ValueError("directional observation requires primary_interval=5m")
+            required_intervals = {"5m", "15m", "1h"}
+            missing = sorted(required_intervals.difference(self.binance.intervals))
+            if missing:
+                raise ValueError(
+                    "directional observation requires subscribed intervals: "
+                    + ", ".join(missing)
+                )
+            if self.binance.top_n < directional_count:
+                raise ValueError(
+                    "directional observation requires top_n >= directional symbol count"
+                )
+            if self.binance.surveillance_n < directional_count:
+                raise ValueError(
+                    "directional observation requires surveillance_n >= directional symbol count"
                 )
         return self
 

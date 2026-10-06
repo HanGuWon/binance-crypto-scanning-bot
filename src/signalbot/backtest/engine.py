@@ -562,7 +562,12 @@ class ResearchBacktester:
         scheduled_entries = 0
         cancelled_gap_entries = 0
         funding = sorted(funding or [], key=lambda item: item.funding_time_ms)
-        allowed_direction = Direction.LONG if market is Market.SPOT else Direction.SHORT
+        allowed_directions = (
+            (Direction.LONG, Direction.SHORT)
+            if self.spec.direction_scope == "futures_bidirectional"
+            and market is Market.FUTURES
+            else ((Direction.LONG,) if market is Market.SPOT else (Direction.SHORT,))
+        )
         if market is Market.FUTURES and funding:
             features = self._with_funding_features(
                 features,
@@ -714,7 +719,7 @@ class ResearchBacktester:
                         )
                         for candidate in candidate_evaluations
                         if candidate.evaluation.triggered
-                        and candidate.evaluation.direction is allowed_direction
+                        and candidate.evaluation.direction in allowed_directions
                         and candidate.evaluation.family
                         in {SignalFamily.BREAKOUT_LONG, SignalFamily.BREAKDOWN_SHORT}
                     )
@@ -723,7 +728,7 @@ class ResearchBacktester:
                     state_machine.process(evaluation)
                     if (
                         evaluation.triggered
-                        and evaluation.direction is allowed_direction
+                        and evaluation.direction in allowed_directions
                         and evaluation.family
                         in {SignalFamily.BREAKOUT_LONG, SignalFamily.BREAKDOWN_SHORT}
                     ):
@@ -742,7 +747,7 @@ class ResearchBacktester:
                             > 0
                         )
                         for evaluation in evaluations
-                        if evaluation.direction is allowed_direction
+                        if evaluation.direction in allowed_directions
                     )
                     confirmed_signals += len(entry_decisions)
 
@@ -778,7 +783,7 @@ class ResearchBacktester:
                 candidates = [
                     item
                     for item in entry_decisions
-                    if item.direction is allowed_direction
+                    if item.direction in allowed_directions
                 ]
                 if candidates:
                     pending_entry = sorted(

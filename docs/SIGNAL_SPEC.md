@@ -63,6 +63,13 @@ Every emitted decision retains its evidence, failed or passed gate diagnostics,
 informational ATR/structure invalidation, rule version, and deterministic event
 ID. It remains an alert and never places an exchange order.
 
+The recommendation projection preserves this boundary. A confirmed valid
+direction may become an `ENTRY_CANDIDATE` envelope for a later consumer;
+watch/setup states, failed gates, informational pullbacks, stale context, and
+invalid directional stops become `NO_ENTRY`. Spot short-direction output
+remains an exit warning, and risk warnings remain non-entry evidence. Envelope
+timestamps are UTC Unix milliseconds and every envelope has an expiry.
+
 ## Alert-only PAPER technical exits
 
 When `signals.technical_exit.enabled` is true, only a newly persisted

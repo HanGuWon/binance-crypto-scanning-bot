@@ -1,0 +1,21 @@
+{
+  "context_id": "753359fc22b823bd4bb9db6322c35d54a0c5e8ddb06b91fd16f6d1c6635ff571",
+  "context_version": "protection-context-v1",
+  "source_decision_clock_id": "futures:BTCUSDT:5m:1700000299999",
+  "market": "futures",
+  "symbol": "BTCUSDT",
+  "primary_interval": "5m",
+  "candle_open_time_ms": 1700000000000,
+  "candle_close_time_ms": 1700000299999,
+  "source_candle_closed": true,
+  "close": 42000.0,
+  "atr": 250.0,
+  "confirmed_swing_support": null,
+  "confirmed_swing_resistance": null,
+  "trend_state": "bullish",
+  "consecutive_trend_failure_count": 0,
+  "data_completeness": 1.0,
+  "context_freshness_ms": 0,
+  "higher_timeframes": [],
+  "producer_transport_note": "ignored-by-v1-consumer"
+}

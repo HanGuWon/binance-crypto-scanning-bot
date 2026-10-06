@@ -11,6 +11,8 @@ from signalbot.config import SignalSettings
 from signalbot.domain.enums import Direction, SignalFamily
 from signalbot.domain.models import MarketRegime, MiniTicker, RuleEvaluation
 
+ROBUST_Z_DISPLAY_CAP = 1000
+
 
 @dataclass(frozen=True, slots=True)
 class PricePoint:
@@ -96,13 +98,19 @@ class AnomalyDetector:
             ):
                 median = statistics.median(incremental)
                 mad = statistics.median(abs(value - median) for value in incremental)
-                sigma = max(1.4826 * mad, 1e-9)
+                raw_sigma = 1.4826 * mad
+                sigma = max(raw_sigma, 1e-9)
+                sigma_floor_hit = raw_sigma < 1e-9
                 robust_z = abs(math.log(point.price / anchor.price)) / (
                     sigma * math.sqrt(max(1.0, self.settings.anomaly_horizon_seconds))
                 )
                 if robust_z >= self.settings.anomaly_robust_zscore:
                     triggered = self._triggered(
-                        ticker, regime, horizon_return, robust_z
+                        ticker,
+                        regime,
+                        horizon_return,
+                        robust_z,
+                        sigma_floor_hit=sigma_floor_hit,
                     )
         return self._with_idle_families(ticker, regime, triggered)
 
@@ -164,6 +172,8 @@ class AnomalyDetector:
         regime: MarketRegime,
         horizon_return: float,
         robust_z: float,
+        *,
+        sigma_floor_hit: bool = False,
     ) -> RuleEvaluation:
         upward = horizon_return > 0
         family = SignalFamily.PUMP_RISK if upward else SignalFamily.CRASH_RISK
@@ -188,9 +198,24 @@ class AnomalyDetector:
             price=Decimal(str(ticker.close)),
             reasons=(
                 f"{self.settings.anomaly_horizon_seconds}s return {horizon_return:+.2%}",
-                f"robust anomaly z-score {robust_z:.2f}",
+                self._robust_z_text(robust_z, sigma_floor_hit),
                 "intrabar all-market mini-ticker warning",
             ),
             regime=regime,
-            metadata={"return": horizon_return, "robust_zscore": robust_z, "intrabar": True},
+            metadata={
+                "return": horizon_return,
+                "robust_zscore": robust_z,
+                "sigma_floor_hit": sigma_floor_hit,
+                "intrabar": True,
+            },
         )
+
+    @staticmethod
+    def _robust_z_text(robust_z: float, sigma_floor_hit: bool) -> str:
+        """Display text only; detection uses the raw value above."""
+
+        if sigma_floor_hit:
+            return "robust z 산출 불가(MAD=0)"
+        if robust_z >= ROBUST_Z_DISPLAY_CAP:
+            return f"robust anomaly z-score ≥{ROBUST_Z_DISPLAY_CAP}"
+        return f"robust anomaly z-score {robust_z:.2f}"

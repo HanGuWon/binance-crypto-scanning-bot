@@ -23,6 +23,7 @@ from signalbot.backtest.comparison import (
     read_trade_observations,
 )
 from signalbot.backtest.config import load_backtest_spec
+from signalbot.backtest.guardian_policy import run_guardian_policy_backtest
 from signalbot.backtest.outcomes import OutcomeEvaluator
 from signalbot.backtest.r2 import (
     analyze_r2_retrospective,
@@ -48,7 +49,10 @@ from signalbot.domain.enums import Market
 from signalbot.domain.models import Candle, SignalDecision
 from signalbot.exchange.binance.endpoints import build_websocket_plans
 from signalbot.observability.logging import configure_logging
+from signalbot.outbox_cli import register_outbox_parser, run_outbox_command
 from signalbot.persistence.repository import SqlRepository
+from signalbot.prospective.directional_review import review_directional_validation
+from signalbot.prospective.directional_validation import run_directional_validation
 from signalbot.prospective.smoke_audit import write_smoke_audit
 from signalbot.runtime import MarketRuntime
 
@@ -89,6 +93,7 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="Explicit frozen raw-event tape directory override",
     )
+    register_outbox_parser(subs)
     api = subs.add_parser("serve-api")
     api.add_argument("--config", required=True)
     api.add_argument("--host", default="127.0.0.1")
@@ -102,6 +107,11 @@ def _parser() -> argparse.ArgumentParser:
     backtest.add_argument("--spec", required=True)
     backtest.add_argument("--data-dir", required=True)
     backtest.add_argument("--output-dir", required=True)
+    guardian_policy = subs.add_parser("backtest-guardian-policy")
+    guardian_policy.add_argument("--config", required=True)
+    guardian_policy.add_argument("--contract", required=True)
+    guardian_policy.add_argument("--data-dir", required=True)
+    guardian_policy.add_argument("--output-dir", required=True)
     alert_replay = subs.add_parser("backtest-alert-replay")
     alert_replay.add_argument("--config", required=True)
     alert_replay.add_argument("--spec", required=True)
@@ -156,6 +166,15 @@ def _parser() -> argparse.ArgumentParser:
     c1_run.add_argument("--spec", required=True)
     c1_run.add_argument("--data-dir", required=True)
     c1_run.add_argument("--output-dir", required=True)
+    directional = subs.add_parser("prospective-directional-validate")
+    directional.add_argument("--config", required=True)
+    directional.add_argument("--preregistration", required=True)
+    directional.add_argument("--spec", required=True)
+    directional.add_argument("--data-dir", required=True)
+    directional.add_argument("--output-dir", required=True)
+    review = subs.add_parser("prospective-directional-review")
+    review.add_argument("--preregistration", required=True)
+    review.add_argument("--receipt-dir", required=True)
     return parser
 
 
@@ -476,6 +495,15 @@ def main() -> None:
         if status_axes["data_integrity"] != "PASS":
             raise SystemExit(2)
         return
+    if args.command == "prospective-directional-review":
+        root = Path(__file__).resolve().parents[2]
+        result = review_directional_validation(
+            args.preregistration,
+            args.receipt_dir,
+            workspace_root=root,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+        return
     settings = load_settings(args.config)
     configure_logging(settings.log_level)
     if args.command == "validate-config":
@@ -515,7 +543,17 @@ def main() -> None:
     if args.command == "serve-api":
         repository = SqlRepository(settings.storage.url, settings.storage.echo_sql)
         repository.initialize()
-        uvicorn.run(create_api(repository), host=args.host, port=args.port)
+        api_app = create_api(
+            repository,
+            markets=settings.binance.markets,
+            ready_max_staleness_seconds=settings.runtime.ready_max_staleness_seconds,
+        )
+        uvicorn.run(api_app, host=args.host, port=args.port)
+        return
+    if args.command == "outbox":
+        code = run_outbox_command(args, settings)
+        if code:
+            raise SystemExit(code)
         return
     if args.command == "backtest-run":
         spec = load_backtest_spec(args.spec)
@@ -530,6 +568,30 @@ def main() -> None:
             config_path=args.config,
         )
         print(json.dumps(result, indent=2))
+        return
+    if args.command == "backtest-guardian-policy":
+        root = Path(__file__).resolve().parents[2]
+        result = run_guardian_policy_backtest(
+            settings,
+            args.contract,
+            args.data_dir,
+            args.output_dir,
+            workspace_root=root,
+            config_path=args.config,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+        return
+    if args.command == "prospective-directional-validate":
+        root = Path(__file__).resolve().parents[2]
+        result = run_directional_validation(
+            settings,
+            args.preregistration,
+            args.spec,
+            args.data_dir,
+            args.output_dir,
+            workspace_root=root,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
         return
     if args.command == "backtest-alert-replay":
         spec = load_backtest_spec(args.spec)

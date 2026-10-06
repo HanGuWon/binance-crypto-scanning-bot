@@ -1,0 +1,270 @@
+{
+  "bootstrap": {
+    "block_days": 7,
+    "calendar_span_rule": "within each population independently, build one common challenger-shared UTC calendar from min(entry_utc_day) through max(entry_utc_day) inclusive across all admitted cohort positions before policy-specific censoring; retain zero-entry days; every challenger in that population uses this identical calendar",
+    "calendar_key": "entry_utc_day",
+    "confidence_level": "0.95",
+    "draw_algorithm": "replicate ordinal r is zero-based 0..samples-1 and block ordinal b is zero-based starting at 0; substitute seed,r,b as unsigned base-10 ASCII integers with no leading plus sign and no leading zeros except the single digit 0; hash the exact ASCII bytes GUARDIAN_POLICY_BOOTSTRAP_V1|<seed>|<r>|<b> with no trailing newline; start_index=uint64_be(first_8_bytes(SHA256(bytes))) mod calendar_day_count; append the 7 circular consecutive UTC days from start_index; increment b and repeat until at least calendar_day_count sampled days exist, then truncate to exactly calendar_day_count",
+    "familywise_rule": "all three challengers share every calendar draw; for each globally valid replicate compute centered_error_i=replicate_mean_delta_bps_i-point_mean_delta_bps_i and max_error=max_i(centered_error_i); critical_95 is nearest-rank q95 of max_error; simultaneous_lower_i=point_mean_delta_bps_i-critical_95",
+    "globally_valid_replicate": "every challenger has at least one finite paired primary row after applying the sampled UTC-day multiplicities; otherwise discard the replicate for the entire challenger family",
+    "include_zero_entry_calendar_days": true,
+    "minimum_valid_replicates": 8000,
+    "method": "shared_circular_calendar_block_bootstrap",
+    "quantile_rule": "nearest_rank:sort ascending and select index ceil(0.95*n)-1",
+    "samples": 10000,
+    "seed": 20260921
+  },
+  "bound_text_source_hash_rule": "for every bound repository text source SHA-256 in this contract, read file bytes, replace each CRLF byte pair with LF, perform no other transformation, then SHA-256 the resulting bytes; this makes the identity invariant to Git core.autocrlf checkout conversion",
+  "contract_version": "guardian-policy-selection-v1",
+  "cohort_authority": {
+    "external_shadow": {
+      "admission_rule": "include every explicitly approved adoption generation that first reaches MANAGED_SHADOW after campaign activation; do not filter by current profit, MFE, age-in-position, subsequent policy outcome, symbol performance, or policy availability",
+      "admission_stratum_rule": "bind the compatible protection-context-v1 row for the same Futures symbol and 5m primary interval with the greatest candle_close_time_ms strictly less than the MANAGED_SHADOW transition UTC ms among rows already persisted before that transition; require transition_ms-candle_close_time_ms<=600000 and context_freshness_ms<=600000; ties on candle_close_time_ms must have identical context_id or fail closed; if no qualifying row exists, retain the position in the cohort with stratum_unavailable and it cannot satisfy trend-state coverage",
+      "campaign_duration_days": 60,
+      "campaign_clock": "UTC",
+      "campaign_terminal_rule": "campaign_end_ms=activation_ms+60*86400000; admit positions only when MANAGED_SHADOW transition_ms satisfies activation_ms<=transition_ms<campaign_end_ms; never extend or terminate early based on policy outcomes, evidence counts, performance, or observed guardrail values; after campaign_end_ms no new admissions occur; allow a fixed 21600000 ms observation tail for already-admitted 72x5m max-holding episodes, then unresolved episodes are censored and insufficient evidence closes fail-closed",
+      "context_stratum_authority": "ProtectionContext.trend_state from protection-context-v1",
+      "outcome_based_early_stopping_allowed": false,
+      "prerequisite": "L60-06_PASS_and_exact_L60-02_contract_sha256",
+      "selection_time": "admission is decided before any candidate-policy outcome for that adoption generation is read"
+    },
+    "historical_harness": {
+      "admission_rule": "load the frozen base source spec, override only direction_scope to futures_bidirectional, then include every executable USD-M Futures entry produced in its declared evaluation splits before exit-policy substitution; no filtering by realized return, MFE, profit, later market path, or candidate-policy outcome",
+      "admission_stratum_rule": "use the protection-context-v1 trend_state derived from the same fully closed decision candle that scheduled the next-bar-open entry; require context candle_close_time_ms < entry_time_ms",
+      "derived_override": {
+        "direction_scope": "futures_bidirectional"
+      },
+      "derived_override_exclusivity": "no other BacktestSpec field may differ from the frozen base source",
+      "entry_quantity_rule": "use the exact source-spec notional and the same entry time and quantity for all four policies",
+      "episode_independence": "freeze the baseline-generated entry rows once; replay every policy on every frozen row as an independent exit-policy episode, and do not let a candidate's longer or shorter holding period suppress or create later cohort entries",
+      "interval": "5m",
+      "market": "futures",
+      "context_stratum_authority": "ProtectionContext.trend_state derived causally at the entry decision",
+      "source_path": "config/backtest.5m.r2-c0-corrected.yaml",
+      "source_sha256": "2dce99a243c4f94c446cf48a0edcb103093db9cecf0e6da261c35b45fa235c7f",
+      "splits": [
+        "development:2024-07-01T00:00:00Z/2025-03-01T00:00:00Z",
+        "validation:2025-03-01T00:00:00Z/2025-11-01T00:00:00Z",
+        "retrospective_test:2025-11-01T00:00:00Z/2026-07-01T00:00:00Z"
+      ],
+      "symbol_cohort_map": {
+        "BNBUSDT": "major",
+        "BTCUSDT": "anchor",
+        "DOGEUSDT": "major",
+        "ETHUSDT": "anchor",
+        "SOLUSDT": "major",
+        "SUIUSDT": "volatile",
+        "WIFUSDT": "volatile",
+        "XRPUSDT": "major"
+      }
+    },
+    "protection_context_source_path": "src/signalbot/signals/protection_context.py",
+    "protection_context_source_sha256": "9d514265f28e03fdac06288ea16aa8029f36f37d4a4d6698a3521840987522a8",
+    "protection_context_version": "protection-context-v1"
+  },
+  "cost_model": {
+    "execution_cost_source": "config/backtest.5m.r2-c0-corrected.yaml:costs",
+    "funding": "include_realized_usdm_funding_for_each_policy_holding_interval",
+    "modeled_stop_update_cost_bps": "0.10",
+    "round_trip_execution": {
+      "entry_fee_bps": "5.0",
+      "entry_slippage_bps_by_cohort": {
+        "anchor": "3.0",
+        "major": "3.0",
+        "volatile": "8.0"
+      },
+      "exit_fee_bps": "5.0",
+      "exit_slippage_bps_by_cohort": {
+        "anchor": "3.0",
+        "major": "3.0",
+        "volatile": "8.0"
+      }
+    }
+  },
+  "funding_authority": {
+    "endpoint_path": "/fapi/v1/fundingRate",
+    "external_shadow_capture": "for each admitted symbol, obtain anonymous public funding history covering from the earliest admitted entry_time_ms through campaign_end_ms+21600000 with startTime/endTime and limit=1000; paginate with cursor=newest_funding_time_ms+1 until cursor>endTime or a successful page contains fewer than 1000 rows; retain exact query/response hashes in the L60-07 run manifest; rows must be finite, strictly increasing and unique",
+    "historical_harness_source": "use the existing per-symbol FundingDataset file addressed by signalbot.backtest.runner.funding_path for the frozen base spec; verify with signalbot.backtest.funding.verify_funding_dataset against exact symbol, data_start_ms, and evaluation_end_ms-1; bind every funding file SHA-256 in the L60-03 run manifest",
+    "historical_source_path": "src/signalbot/backtest/funding.py",
+    "historical_source_sha256": "c2f13af537eb663c7de3cab7ed595518463000a365fd51ac113e86d910394c19",
+    "missing_or_unverified_rule": "missing file/page, failed exact-range verification, malformed/non-unique row, incomplete pagination, or unavailable funding authority makes the affected policy outcome primary-censored; do not substitute zero",
+    "zero_event_rule": "zero funding return is valid only when the funding authority coverage is complete for the full policy holding interval and contains no strict-interior funding event"
+  },
+  "hard_guardrails": {
+    "maximum_censor_fraction": "0.10",
+    "maximum_drawdown_worsening_percentage_points_vs_baseline": "2.0",
+    "maximum_mean_mfe_giveback_fraction": "0.60",
+    "maximum_mean_mfe_giveback_worsening_vs_baseline": "0.05",
+    "maximum_mean_stop_updates_per_24h_exposure": "24.0",
+    "maximum_premature_stop_rate": "0.15",
+    "maximum_premature_stop_rate_worsening_vs_baseline": "0.05",
+    "maximum_tail_loss_cvar_5_worsening_bps_vs_baseline": "25.0",
+    "require_primary_bootstrap_lower_bound_strictly_positive": true,
+    "require_primary_point_estimate_strictly_positive": true
+  },
+  "minimum_evidence": {
+    "application_rule": "evaluate every minimum-evidence floor separately for each challenger-vs-baseline comparison on that comparison's paired-valid primary-position intersection; direction, symbol, context-trend-state, and calendar-day counts all use those paired-valid rows; censor fraction remains separately defined over all admitted cohort positions",
+    "calendar_day_count_rule": "count distinct UTC entry dates containing at least one paired-valid primary position for that challenger-vs-baseline comparison",
+    "external_shadow": {
+      "minimum_calendar_days": 30,
+      "minimum_positions_per_direction": 10,
+      "minimum_symbols_per_direction": 2,
+      "minimum_total_positions": 30,
+      "required_context_trend_states": [
+        "bullish",
+        "mixed",
+        "bearish"
+      ]
+    },
+    "historical_harness": {
+      "minimum_calendar_days": 90,
+      "minimum_positions_per_direction": 100,
+      "minimum_symbols_per_direction": 4,
+      "minimum_total_positions": 300,
+      "required_context_trend_states": [
+        "bullish",
+        "mixed",
+        "bearish"
+      ]
+    },
+    "selection_requires_both_populations": true
+  },
+  "numeric_precision": {
+    "decimal_context_precision_digits": 34,
+    "input_conversion": "Decimal(str(source_numeric_value))",
+    "intermediate_quantization": "none",
+    "pass_fail_comparison": "exact Decimal comparison with no display rounding; strictly-positive gates require value>Decimal('0')",
+    "report_rounding": "display-only, ROUND_HALF_EVEN, never used for pass/fail or tie detection",
+    "rounding_mode": "ROUND_HALF_EVEN",
+    "tie_equality": "exact Decimal equality before advancing to the next frozen tie-break"
+  },
+  "metric_definitions": {
+    "after_cost_return_bps": "directional_entry_to_exit_return_bps-entry_fee_bps-entry_slippage_bps-exit_fee_bps-exit_slippage_bps+realized_signed_funding_bps-(stop_update_count*modeled_stop_update_cost_bps), where realized_signed_funding_bps=10000*sum(strict_interior_funding_return_decimal)",
+    "censor_fraction": "for each challenger comparison, count cohort positions for which either challenger or baseline lacks a valid primary outcome, divided by all admitted cohort positions",
+    "cvar_5_return_bps": "arithmetic_mean_of_worst_ceil(0.05*n)_per_position_after_cost_returns",
+    "maximum_drawdown": "positive drawdown magnitude fraction; initialize each symbol sleeve at 1.0; apply each completed position multiplicatively as sleeve*=max(0,1+(after_cost_return_bps/10000)), ordered by (exit_time_ms,position_id); portfolio equity is the arithmetic mean of all symbol sleeves after each exit; at each step drawdown_magnitude=max(0,1-portfolio/previous_peak); maximum_drawdown=max(drawdown_magnitude)",
+    "mean_mfe_giveback_fraction": "MFE is policy-specific favorable excursion from common entry execution through that policy's exit; include full OHLC extremes only for fully completed bars strictly before the exit bar; on a gap-through exit use only the exit open; on an intrabar stop exit use the exit-bar open plus stop execution price but exclude that bar's favorable high/low because its ordering relative to the stop is unknowable; for positions with MFE_bps>0, mean(1-clamp(realized_directional_return_bps,0,MFE_bps)/MFE_bps)",
+    "mean_stop_updates_per_24h_exposure": "sum(post_admission_effective_stop_amendments)/(sum(exit_time_ms-entry_time_ms)/86400000); the cohort-entry active stop is not an update, duplicate/idempotent intents are not updates, and zero/nonpositive exposure is primary-censored",
+    "premature_stop_rate": "premature_stop_count/all_valid_paired_primary_positions_for_that_challenger; positions where the challenger does not exit prematurely contribute zero; zero denominator is invalid",
+    "same_bar_ambiguity_count": "count bars where the diagnostic one-R target and already-active stop are both touched; the event is never classified as a target win"
+  },
+  "outcome_semantics": {
+    "ambiguity_rule": "a stop computed from candle t is never active inside candle t; if the prior active stop is touched during t, the prior stop exit wins and no t-close amendment is applied",
+    "contiguous_price_gap_rule": "when consecutive 5m slots are present and the next bar opens beyond the already-active stop in the adverse direction, fill at that bar open and record adverse gap-through slippage; this is a valid primary outcome",
+    "data_gap_rule": "if one or more expected 5m slots are missing between the prior retained bar and the next retained bar, do not infer a stop fill across the missing interval; primary-censor the affected policy outcome",
+    "funding_boundary_rule": "include only funding events with entry_time_ms < funding_time_ms < exit_time_ms; an event timestamp equal to entry or exit makes that policy outcome primary-censored",
+    "funding_return_rule": "direction_sign is +1 LONG and -1 SHORT; for each strict-interior event use mark_price when it is present and positive, otherwise use entry_price, then funding_return_decimal += -direction_sign*funding_rate*funding_mark/entry_price; realized_signed_funding_bps=10000*funding_return_decimal",
+    "maximum_holding_bars": 72,
+    "new_stop_effective_from": "NEXT_CANDLE_OPEN",
+    "profit_target": "NO_TARGET_EXIT; policy PnL is stop-or-max-holding only",
+    "premature_stop_definition": {
+      "lookahead_bars": 12,
+      "exit_order_rule": "order exits by (bar_index,phase) with OPEN < INTRABAR < CLOSE; two INTRABAR exits in the same OHLC bar are unordered and neither is earlier for this diagnostic",
+      "rebound_bar_rule": "evaluate favorable excursion only on complete contiguous bars whose bar_index is strictly greater than the candidate exit bar_index and strictly less than the baseline exit bar_index; never use the baseline exit bar, even when its exit phase is CLOSE",
+      "rule": "a policy stop is premature only when its exit is strictly earlier than the delayed-ATR baseline under exit_order_rule and, under rebound_bar_rule, favorable excursion reaches at least one candidate-exit-time ATR from candidate exit price within the next 12 eligible fully subsequent bars; never use the remainder of the candidate exit bar or any baseline exit bar",
+      "same_bar_unordered": "if candidate and baseline are both INTRABAR exits in the same OHLC bar, classify the premature diagnostic as false rather than inferring intrabar order"
+    },
+    "same_bar_stop_fill": "if an already-active stop lies inside a bar range and the bar open did not gap through it, fill at the stop price",
+    "same_bar_target_diagnostic": "define one-R target from common entry and cohort-entry active stop: LONG target=entry+abs(entry-initial_stop), SHORT target=entry-abs(entry-initial_stop); if target and already-active stop are both touched in one OHLC bar, increment same_bar_ambiguity_count and never label the row a target win; target does not alter policy PnL exit",
+    "same_bar_terminal_rule": "if an already-active stop is touched in the max-holding bar, the stop exit takes precedence over the close-based max-holding exit",
+    "unresolved_same_bar_ambiguity_allowed": false,
+    "terminal_precedence": [
+      "contiguous_bar_gap_through_active_stop_at_open",
+      "intrabar_active_stop_at_stop_price",
+      "shared_max_holding_exit_at_close"
+    ]
+  },
+  "policy_common_invariants": {
+    "crossed_reference_price_candidate": "fail_closed_no_update",
+    "l60_01_source_path": "src/signalbot/signals/position_management.py",
+    "l60_01_source_sha256": "5de30eb8406d534ca3033edc0ac0f2376311d6a8d2f96e0bd8e5d4d6c433f018",
+    "long_stop_monotonicity": "new_stop>=active_stop",
+    "minimum_improvement_bps": "1.0",
+    "minimum_price_gap_bps": "5.0",
+    "protection_floor": "LONG new_stop>=protection_floor when present; SHORT new_stop<=protection_floor when present",
+    "short_stop_monotonicity": "new_stop<=active_stop",
+    "stale_or_uncertain_context": "no_stop_update"
+  },
+  "policies": [
+    {
+      "policy_id": "delayed_atr_trail_v1",
+      "role": "baseline",
+      "rules": {
+        "manual_activation_atr": "1.0",
+        "minimum_improvement_bps": "1.0",
+        "minimum_price_gap_bps": "5.0",
+        "trailing_activation_r": "1.0",
+        "trailing_atr_multiple": "2.0",
+        "use_confirmed_structure": false,
+        "use_momentum_weakening": false
+      }
+    },
+    {
+      "policy_id": "initial_stop_only_v1",
+      "role": "challenger",
+      "rules": {
+        "admission_stop": "active_stop_at_cohort_entry",
+        "subsequent_stop_updates": false
+      }
+    },
+    {
+      "policy_id": "confirmed_swing_atr_trail_v1",
+      "role": "challenger",
+      "rules": {
+        "atr_candidate_not_active": "no_stop_update; confirmed structure does not bypass the ordinary ATR/R activation gate",
+        "manual_activation_atr": "1.0",
+        "minimum_improvement_bps": "1.0",
+        "minimum_price_gap_bps": "5.0",
+        "trailing_activation_r": "1.0",
+        "trailing_atr_multiple": "2.0",
+        "when_structure_available": "LONG=max(atr_candidate,confirmed_swing_support);SHORT=min(atr_candidate,confirmed_swing_resistance)",
+        "when_structure_unavailable": "atr_candidate"
+      }
+    },
+    {
+      "policy_id": "weakening_sensitive_adaptive_trail_v1",
+      "role": "challenger",
+      "rules": {
+        "manual_activation_atr": "1.0",
+        "minimum_improvement_bps": "1.0",
+        "minimum_price_gap_bps": "5.0",
+        "normal_state": "delayed_atr_trail_v1",
+        "trailing_activation_r": "1.0",
+        "trailing_atr_multiple": "2.0",
+        "weakening_state": "confirmed structure stop is eligible when confirmed structure and explicit momentum weakening are both present, even if the normal ATR/R activation threshold has not yet been reached; otherwise use delayed_atr_trail_v1"
+      }
+    }
+  ],
+  "primary_metric": {
+    "aggregation": "equal_weight_per_position",
+    "adjudication_population": "external_shadow",
+    "baseline_policy_id": "delayed_atr_trail_v1",
+    "comparison": "challenger_minus_baseline",
+    "historical_harness_role": "mandatory_prequalification_population_that_must_pass_the_same_directional_risk_and_cost_guardrails_before_external_selection",
+    "metric": "paired_mean_after_cost_return_delta_bps",
+    "preferred_direction": "higher",
+    "population": "same_entry_time_quantity_and_cost_rows_for_every_policy",
+    "paired_row_requirement": "a row contributes to the primary metric only when both challenger and baseline have valid outcomes for the same cohort position",
+    "promotion_lower_bound": "familywise_simultaneous_lower_bound_from_bootstrap_must_be_strictly_positive"
+  },
+  "schema_version": "guardian_policy_selection_preregistration_v1",
+  "selection_rule": {
+    "all_hard_guardrails_must_pass": true,
+    "baseline_is_not_auto_promoted": true,
+    "external_shadow_gate": "must meet external_shadow minimum evidence, every numeric hard guardrail including strictly positive primary point estimate and familywise simultaneous lower bound, and censor/funding requirements",
+    "guardrail_population_rule": "for each challenger-vs-baseline comparison, compute after-cost return, maximum drawdown, CVaR, premature-stop rate, MFE giveback, and stop-update-frequency candidate/baseline values on the exact same paired-valid position intersection used by that comparison; absolute candidate caps and candidate-minus-baseline deterioration limits both use this paired intersection; censor fraction alone uses all admitted cohort positions as denominator",
+    "historical_harness_gate": "must meet historical_harness minimum evidence plus drawdown, CVaR, premature-stop, MFE-giveback, stop-update-frequency, censor, funding, and cost guardrails; historical primary point estimate and bootstrap lower bound are reported but are not promotion gates",
+    "no_qualifying_challenger_terminal": "NO_POLICY_PROMOTION",
+    "tie_break_population": "external_shadow",
+    "tie_break_order": [
+      "higher_paired_mean_after_cost_return_delta_bps",
+      "lower_maximum_drawdown",
+      "less_negative_cvar_5_return",
+      "lower_premature_stop_rate",
+      "lower_mean_mfe_giveback_fraction",
+      "lower_mean_stop_updates_per_24h_exposure",
+      "lexicographically_smaller_policy_id"
+    ]
+  },
+  "status": "PREREGISTERED_OUTCOME_BLIND"
+}

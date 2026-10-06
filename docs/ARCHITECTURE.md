@@ -33,12 +33,23 @@ persistence, notification, and shutdown services.
    deterministic event IDs, reasons, invalidation, rule version, and cooldown
    behavior.
 
-No component in this path calls an order endpoint.
+No component in this path calls an order endpoint. The scanner is public-data
+only and produces recommendations and warnings. Any future position Guardian
+is a separate private-read, stop-only process, while Freqtrade automation is
+restricted to a dedicated account; see
+[`TRADING_CAPABILITY_MATRIX.md`](TRADING_CAPABILITY_MATRIX.md).
 
-Live Discord titles translate the existing final decision state into a direct
-Korean recommendation (`상승 예상`, `하락 예상`, or `진입 보류`). The displayed
-0–100 value remains rule-evidence strength, not a calibrated probability, and
-only `CONFIRMED` directional decisions are rendered as entry candidates.
+Live Discord titles are prefixed with the market (`[SPOT]` / `[USDⓈ-M]`) and
+translate the existing final decision state into a Korean status. A `CONFIRMED`
+directional decision is rendered as a rule trigger and a review candidate marked
+`(미검증 규칙)` (for example `규칙 트리거 · LONG 검토 후보`); it is never described
+as a forecast, because the rules failed retrospective validation (R2) and have no
+prospective evidence yet. A fixed `검증 상태` field (`alerts.validation_notice`)
+repeats this. All other states render as `진입 보류`, exit review, or warnings.
+The displayed 0–100 value remains rule-evidence strength, not a calibrated
+probability, and only `CONFIRMED` directional decisions are rendered as entry
+candidates. Gates that the active entry policy does not evaluate (participation
+and crowding under `r2_pit_htf_exec`) are shown as `N/A(정책 미사용)`.
 
 ## Signal persistence and Discord outbox
 
@@ -46,6 +57,14 @@ A signal row and its immutable Discord payload intent are committed in one
 database transaction. Replaying the same event ID and byte-equivalent payload
 is a no-op. Reusing an event ID for different signal or alert content raises a
 hard conflict.
+
+The embed footer records a presentation version (`view vN`). If an event ID whose
+signal semantics are unchanged is persisted again by a newer presentation (for
+example gap recovery of the candle at a deploy boundary), the stored payload is
+kept and the call is a no-op. Display-only decision metadata (`entry_policy`,
+`unevaluated_gates`, `sigma_floor_hit`) is ignored by the signal conflict check;
+any other difference, or a same-version payload difference, is still a hard
+conflict.
 
 The durable outbox state flow is:
 
@@ -172,3 +191,14 @@ awaits Discord HTTP. A separate outbox worker owns provider I/O, so webhook
 latency, rate limiting, and ambiguous transport outcomes cannot block Binance
 WebSocket processing. The worker sends only already-persisted immutable alert
 intents.
+
+## Recommendation boundary
+
+The recommendation core is a pure projection boundary after the signal state
+machine. It preserves the source event ID, reasons, failed gates,
+invalidation, rule version, and a deterministic projection ID. Only a fully
+confirmed, directionally valid decision can become an entry candidate. Watch
+and setup states, informational pullbacks, failed gates, stale context, and
+directionally invalid stops become `NO_ENTRY`; pump and crash anomalies remain
+risk warnings. Ranking filters expired recommendations and never converts a
+rule-strength score into a probability.

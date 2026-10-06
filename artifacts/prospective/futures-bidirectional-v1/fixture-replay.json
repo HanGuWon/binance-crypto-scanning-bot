@@ -1,0 +1,8 @@
+{
+  "candidate_version": "futures-bidirectional-v1",
+  "exact_duplicates_removed": 0,
+  "input_rows": 512,
+  "protocol_version": "futures_bidirectional_candidate_v1",
+  "replay_sha256": "d54d9508a4ceb1ca8c09007ff17b3d729860ff49b715670da23b9073bfa43ae7",
+  "unique_rows": 512
+}

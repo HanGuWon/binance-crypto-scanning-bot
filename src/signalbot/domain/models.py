@@ -405,7 +405,7 @@ class SignalDecision(FrozenModel):
     invalidation: Decimal | None = None
     regime: MarketRegime = MarketRegime()
     gate: GateEvaluation | None = None
-    rule_version: str
+    rule_version: str = Field(min_length=1, max_length=64)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -427,6 +427,8 @@ class SignalDecision(FrozenModel):
         if self.family is SignalFamily.CRASH_RISK:
             return "CRASH_RISK"
         if self.family is SignalFamily.TECHNICAL_EXIT:
+            if self.metadata.get("notice_only") is True:
+                return "PAPER_TRACKING_NOTICE"
             if self.market is Market.SPOT:
                 return "SPOT_EXIT"
             return (

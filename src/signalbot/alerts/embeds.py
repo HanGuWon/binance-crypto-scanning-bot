@@ -12,6 +12,7 @@ from signalbot.domain.models import (
     DirectionalSetupScore,
     SignalDecision,
 )
+from signalbot.domain.presentation import PRESENTATION_FOOTER_MARKER, PRESENTATION_VERSION
 
 KST = ZoneInfo("Asia/Seoul")
 DISCORD_EMBED_TOTAL_LIMIT = 6_000
@@ -22,6 +23,14 @@ DISCORD_EMBED_FIELD_NAME_LIMIT = 256
 DISCORD_EMBED_FIELD_VALUE_LIMIT = 1_024
 DISCORD_EMBED_FOOTER_LIMIT = 2_048
 DISCORD_USERNAME_LIMIT = 80
+
+# PRESENTATION_VERSION / PRESENTATION_FOOTER_MARKER live in domain.presentation so the
+# repository can parse the footer without importing this package.
+DEFAULT_VALIDATION_NOTICE = "회고 검증 FAIL(R2) · prospective 검증 전 — 기대수익·확률 아님"
+VALIDATION_FIELD_NAME = "검증 상태"
+GATE_NOT_USED = "N/A(정책 미사용)"
+ANOMALY_Z_DISPLAY_CAP = 1000
+TRACKING_RESET_NOTICE_TEXT = "PAPER 추적 중단 — 이 진입의 청산 알림은 더 이상 오지 않습니다"
 
 
 def _truncate_text(value: object, limit: int) -> str:
@@ -136,6 +145,8 @@ def _times(timestamp_ms: int) -> str:
 
 
 def _color(d: SignalDecision) -> int:
+    if _is_notice_only(d):
+        return 0x95A5A6
     if d.stage is SignalStage.INVALIDATED:
         return 0x808080
     if d.metadata.get("informational_only") is True:
@@ -149,6 +160,29 @@ def _color(d: SignalDecision) -> int:
     return 0x2ECC71 if d.direction in {Direction.LONG, Direction.RISK_UP} else 0xE74C3C
 
 
+def _is_notice_only(d: SignalDecision) -> bool:
+    return d.family is SignalFamily.TECHNICAL_EXIT and d.metadata.get("notice_only") is True
+
+
+def _market_tag(market: Market) -> str:
+    return "[SPOT]" if market is Market.SPOT else "[USDⓈ-M]"
+
+
+def _unevaluated_gates(d: SignalDecision) -> frozenset[str]:
+    """Gates the active entry policy does not evaluate (their score is a fixed constant).
+
+    Prefer the list recorded with the decision; fall back to the recorded entry
+    policy. Decisions without either (legacy rows) are rendered numerically.
+    """
+
+    recorded = d.metadata.get("unevaluated_gates")
+    if isinstance(recorded, (list, tuple)):
+        return frozenset(str(item) for item in recorded)
+    if d.metadata.get("entry_policy") == "r2_pit_htf_exec":
+        return frozenset({"participation", "crowding"})
+    return frozenset()
+
+
 def _recommendation_summary(d: SignalDecision) -> str:
     """Translate the existing decision state into a direct user-facing recommendation.
 
@@ -159,6 +193,8 @@ def _recommendation_summary(d: SignalDecision) -> str:
     """
 
     if d.family is SignalFamily.TECHNICAL_EXIT:
+        if _is_notice_only(d):
+            return f"⚪ {TRACKING_RESET_NOTICE_TEXT}"
         if d.market is Market.SPOT:
             return "🟠 추천: 보유 포지션 정리 검토 · 신규 매수 보류"
         side = "LONG" if d.direction is Direction.LONG else "SHORT"
@@ -183,12 +219,14 @@ def _recommendation_summary(d: SignalDecision) -> str:
             else "하락 조건 형성 중"
         )
         return f"⏸️ 추천: 진입 보류 · {bias}"
+    # CONFIRMED means "a rule fired", not a forecast: the rules failed retrospective
+    # validation (R2) and have no prospective evidence yet, so no prediction wording.
     if d.direction is Direction.LONG:
-        action = "매수 후보" if d.market is Market.SPOT else "LONG 후보"
-        return f"🟢 추천: 상승 예상 · {action}"
+        action = "매수 검토 후보" if d.market is Market.SPOT else "LONG 검토 후보"
+        return f"🟢 규칙 트리거 · {action} (미검증 규칙)"
     if d.direction is Direction.SHORT:
-        action = "신규 매수 보류" if d.market is Market.SPOT else "SHORT 후보"
-        return f"🔴 추천: 하락 예상 · {action}"
+        action = "신규 매수 보류" if d.market is Market.SPOT else "SHORT 검토 후보"
+        return f"🔴 규칙 트리거 · {action} (미검증 규칙)"
     return "⏸️ 추천: 진입 보류"
 
 
@@ -352,7 +390,9 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
             f"Funding {_percent(funding, signed=True, digits=4)} · "
             f"z {_compact_number(feature.funding_zscore, signed=True)}"
         )
-    risk_lines.append(f"데이터 완전성 {feature.data_completeness:.0%} · 폐봉 기준")
+    risk_lines.append(
+        f"입력 가용성(체결흐름·호가) {feature.data_completeness:.0%} · 폐봉 기준"
+    )
 
     structure = feature.chart_structure
     pullback_depth = (
@@ -432,7 +472,12 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
     ]
 
 
-def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]:
+def build_discord_payload(
+    d: SignalDecision,
+    username: str,
+    *,
+    validation_notice: str | None = None,
+) -> dict[str, object]:
     d = SignalDecision.model_validate(d.model_dump(mode="python", warnings="none"))
     reasons = "\n".join(f"• {reason}" for reason in d.reasons[:10]) or "• No details"
     invalidation = str(d.invalidation) if d.invalidation is not None else "n/a"
@@ -451,19 +496,48 @@ def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]
         },
         {"name": "Time", "value": _times(d.event_time_ms), "inline": False},
     ]
+    notice_only = _is_notice_only(d)
     paper_exit = (
         d.family is SignalFamily.TECHNICAL_EXIT
         and d.metadata.get("paper_only") is True
+        and not notice_only
     )
     informational_only = d.metadata.get("informational_only") is True
     if informational_only and d.stage is SignalStage.CONFIRMED:
         raise ValueError("informational-only decisions cannot be CONFIRMED")
     recommendation = _recommendation_summary(d)
-    status_line = (
-        "PAPER 포지션 종료 추적"
-        if paper_exit
-        else f"상태: {d.stage.value.upper()} · 근거 강도: {d.score}/100"
-    )
+    if notice_only:
+        status_line = "PAPER 추적 안내 · 청산 권고 아님"
+    elif paper_exit:
+        status_line = "PAPER 포지션 종료 추적"
+    else:
+        status_line = f"상태: {d.stage.value.upper()} · 근거 강도: {d.score}/100"
+    if notice_only:
+        entry_time_ms = d.metadata.get("entry_time_ms")
+        entry_time = _times(entry_time_ms) if isinstance(entry_time_ms, int) else "unavailable"
+        fields.insert(
+            0,
+            {
+                "name": "Execution scope",
+                "value": (
+                    "PAPER alert only — no exchange order was placed. This is a notice, "
+                    "not an exit or a recommendation."
+                ),
+                "inline": False,
+            },
+        )
+        fields.insert(
+            1,
+            {
+                "name": "Tracked entry",
+                "value": (
+                    f"Entry event: {d.metadata.get('entry_event_id', 'unknown')}\n"
+                    f"Entry time: {entry_time}\n"
+                    "PAPER state is in memory only and was lost at process restart."
+                )[:1024],
+                "inline": False,
+            },
+        )
     if paper_exit:
         fill_time_ms = d.metadata.get("fill_time_ms")
         observed_at_ms = d.metadata.get("observed_at_closed_candle_ms")
@@ -523,13 +597,18 @@ def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]
         )
     if d.gate is not None:
         gate = d.gate
+        unused = _unevaluated_gates(d)
+        participation = (
+            GATE_NOT_USED if "participation" in unused else str(gate.participation_score)
+        )
+        crowding = GATE_NOT_USED if "crowding" in unused else str(gate.crowding_risk_score)
         fields.insert(
             3,
             {
                 "name": "Independent gates",
                 "value": (
-                    f"Trend {gate.trend_score} | Participation {gate.participation_score} | "
-                    f"Crowding risk {gate.crowding_risk_score} | "
+                    f"Trend {gate.trend_score} | Participation {participation} | "
+                    f"Crowding risk {crowding} | "
                     f"Execution {gate.execution_score} | Completeness {gate.completeness_score}"
                 )[:1024],
                 "inline": False,
@@ -546,12 +625,26 @@ def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]
                 "inline": False,
             },
         )
+    notice = (validation_notice or "").strip() or DEFAULT_VALIDATION_NOTICE
+    validation_index = next(
+        (index + 1 for index, field in enumerate(fields) if field["name"] == "Invalidation"),
+        len(fields),
+    )
+    fields.insert(
+        validation_index,
+        {"name": VALIDATION_FIELD_NAME, "value": notice[:1024], "inline": False},
+    )
     embed: dict[str, Any] = {
-        "title": f"{d.symbol} · {recommendation}",
+        "title": f"{_market_tag(d.market)} {d.symbol} · {recommendation}",
         "description": f"**{status_line}**",
         "color": _color(d),
         "fields": fields,
-        "footer": {"text": f"event {d.event_id} · rules {d.rule_version}"},
+        "footer": {
+            "text": (
+                f"event {d.event_id} · rules {d.rule_version} · "
+                f"{PRESENTATION_FOOTER_MARKER}{PRESENTATION_VERSION}"
+            )
+        },
         "timestamp": datetime.fromtimestamp(d.event_time_ms / 1000, tz=UTC).isoformat(),
     }
     return {

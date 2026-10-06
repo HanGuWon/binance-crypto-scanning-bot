@@ -2,31 +2,89 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import create_engine, desc, func, inspect, select, update
+from sqlalchemy import create_engine, delete, desc, func, inspect, select, update
 from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from signalbot.domain.enums import Market
+from signalbot.domain.enums import Market, SignalFamily, SignalStage
 from signalbot.domain.models import Candle, SignalDecision
+from signalbot.domain.presentation import PRESENTATION_FOOTER_MARKER, PRESENTATION_VERSION
 from signalbot.persistence.models import (
     AlertOutboxRow,
     AlertRow,
     Base,
     CandleRow,
     OutcomeRow,
+    ProtectionContextLatestRow,
+    ProtectionContextRow,
     RetestLifecycleRow,
     RetestTransitionRow,
+    RuntimeHeartbeatRow,
     ShadowCampaignRow,
     ShadowCoverageRow,
     ShadowObservationRow,
     SignalRow,
 )
+from signalbot.signals.protection_context import ProtectionContext
+
+RULE_VERSION_MAX_LENGTH = 64
+_RULE_VERSION_TABLES: tuple[str, ...] = ("signals", "shadow_campaigns")
+
+
+class SchemaMigrationRequiredError(RuntimeError):
+    """An existing database schema needs an operator-run migration."""
+
+
+def check_rule_version_column_width(inspector: Any) -> None:
+    """Fail closed when a PostgreSQL ``rule_version`` column is narrower than 64.
+
+    ``create_all`` never alters existing tables, and frozen campaign
+    ``rule_version`` identities are longer than 32 characters. Narrow columns
+    would raise ``DataError`` on the first signal insert, so the operator must
+    run the named ALTER TABLE statements; nothing is migrated automatically.
+    """
+
+    statements: list[str] = []
+    for table in _RULE_VERSION_TABLES:
+        if not inspector.has_table(table):
+            continue
+        for column in inspector.get_columns(table):
+            if column["name"] != "rule_version":
+                continue
+            length = getattr(column["type"], "length", None)
+            if length is not None and length < RULE_VERSION_MAX_LENGTH:
+                statements.append(
+                    f"ALTER TABLE {table} ALTER COLUMN rule_version "
+                    f"TYPE VARCHAR({RULE_VERSION_MAX_LENGTH});"
+                )
+    if statements:
+        raise SchemaMigrationRequiredError(
+            "PostgreSQL rule_version column is narrower than "
+            f"{RULE_VERSION_MAX_LENGTH}; run before starting: " + " ".join(statements)
+        )
+
+
+class OutboxResolveError(RuntimeError):
+    """An operator outbox resolution was refused (unknown event or wrong status)."""
+
+
+@dataclass(frozen=True, slots=True)
+class HeartbeatRecord:
+    market: str
+    last_ws_message_ms: int | None
+    last_closed_candle_ms: int | None
+    last_decision_ms: int | None
+    last_outbox_drain_ms: int | None
+    max_loop_lag_ms: int | None
+    updated_at_ms: int
 
 
 class EventIdConflictError(RuntimeError):
@@ -37,11 +95,16 @@ class OutboxCapacityError(RuntimeError):
     """Raised before persisting a signal when active delivery intent is full."""
 
 
+class ProtectionContextCursorError(RuntimeError):
+    """Raised when a protection-context cursor can no longer be resolved safely."""
+
+
 _RETEST_STAGES = frozenset(
     {"RAW_C0", "ARMED", "RETEST_TOUCH", "READY", "INVALID", "TIMEOUT", "CENSORED"}
 )
 _RETEST_TERMINAL_STAGES = frozenset({"READY", "INVALID", "TIMEOUT", "CENSORED"})
 _SQLITE_BUSY_TIMEOUT_SECONDS = 2.0
+_DEFAULT_PROTECTION_CONTEXT_RETENTION_PER_STREAM = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +124,62 @@ class OutboxItem:
 def _signal_payload(decision: SignalDecision) -> str:
     return json.dumps(
         decision.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False
+    )
+
+
+# Decision metadata that only drives how an alert is displayed. A re-evaluated
+# pre-upgrade event legitimately lacks these keys, so they never count as a
+# signal-semantics conflict.
+_PRESENTATION_METADATA_KEYS = frozenset({"entry_policy", "unevaluated_gates", "sigma_floor_hit"})
+_PRESENTATION_VERSION_PATTERN = re.compile(re.escape(PRESENTATION_FOOTER_MARKER) + r"(\d+)")
+
+
+def _signal_semantics(payload_json: str) -> str:
+    """Canonical signal payload without presentation-only metadata keys."""
+
+    try:
+        value = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return payload_json
+    if isinstance(value, dict) and isinstance(value.get("metadata"), dict):
+        value["metadata"] = {
+            key: item
+            for key, item in value["metadata"].items()
+            if key not in _PRESENTATION_METADATA_KEYS
+        }
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _signal_conflicts(stored_json: str, new_json: str) -> bool:
+    return stored_json != new_json and _signal_semantics(stored_json) != _signal_semantics(
+        new_json
+    )
+
+
+def _payload_presentation_version(payload_json: str) -> int:
+    """Presentation version recorded in an outbox payload footer (legacy payloads: 1)."""
+
+    try:
+        value = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return 0
+    embeds = value.get("embeds") if isinstance(value, dict) else None
+    if not isinstance(embeds, list) or not embeds or not isinstance(embeds[0], dict):
+        return 0
+    footer = embeds[0].get("footer")
+    text = footer.get("text") if isinstance(footer, dict) else None
+    if not isinstance(text, str):
+        return 0
+    match = _PRESENTATION_VERSION_PATTERN.search(text)
+    return int(match.group(1)) if match else 1
+
+
+def _protection_context_payload(context: ProtectionContext) -> str:
+    return json.dumps(
+        context.model_dump(mode="json"),
+        separators=(",", ":"),
+        sort_keys=True,
+        ensure_ascii=False,
     )
 
 
@@ -482,6 +601,8 @@ class SqlRepository:
         self._engine = create_engine(self.url, **kwargs)
         Base.metadata.create_all(self._engine)
         _migrate_sqlite_shadow_schema(self._engine)
+        if self._engine.dialect.name == "postgresql":
+            check_rule_version_column_width(inspect(self._engine))
         self.ready = True
 
     def close(self) -> None:
@@ -1110,7 +1231,7 @@ class SqlRepository:
             payload = _signal_payload(d)
             existing = session.get(SignalRow, d.event_id)
             if existing is not None:
-                if existing.payload_json != payload:
+                if _signal_conflicts(existing.payload_json, payload):
                     raise EventIdConflictError(
                         f"event ID {d.event_id} maps to conflicting signal payloads"
                     )
@@ -1158,16 +1279,24 @@ class SqlRepository:
         fingerprint = hashlib.sha256(outbox_payload.encode()).hexdigest()
         with Session(self.engine) as session:
             signal = session.get(SignalRow, decision.event_id)
-            if signal is not None and signal.payload_json != signal_payload:
+            if signal is not None and _signal_conflicts(signal.payload_json, signal_payload):
                 raise EventIdConflictError(
                     f"event ID {decision.event_id} maps to conflicting signal payloads"
                 )
             outbox = session.get(AlertOutboxRow, decision.event_id)
             if outbox is not None:
                 if outbox.payload_sha256 != fingerprint or outbox.payload_json != outbox_payload:
-                    raise EventIdConflictError(
-                        f"event ID {decision.event_id} maps to conflicting alert payloads"
+                    # Same signal semantics (checked above) re-persisted by a newer
+                    # presentation: keep the stored, possibly already delivered,
+                    # intent. Same-or-newer stored versions still conflict.
+                    older_presentation = signal is not None and (
+                        _payload_presentation_version(outbox.payload_json)
+                        < min(PRESENTATION_VERSION, _payload_presentation_version(outbox_payload))
                     )
+                    if not older_presentation:
+                        raise EventIdConflictError(
+                            f"event ID {decision.event_id} maps to conflicting alert payloads"
+                        )
                 return False
             if delivery_enabled and maximum_active_items is not None:
                 if maximum_active_items < 1:
@@ -1278,7 +1407,7 @@ class SqlRepository:
         detail: str | None = None,
         expected_status: str = "sending",
     ) -> bool:
-        allowed = {"pending", "delivered", "uncertain", "dead", "disabled"}
+        allowed = {"pending", "delivered", "uncertain", "dead", "disabled", "expired"}
         if status not in allowed:
             raise ValueError(f"unsupported outbox status: {status}")
         with Session(self.engine) as session:
@@ -1301,6 +1430,156 @@ class SqlRepository:
             )
             session.commit()
             return result.rowcount == 1
+
+    def outbox_summary(self, now_ms: int) -> dict[str, Any]:
+        """Counts by status plus ages; never returns payloads, URLs or detail text."""
+
+        with Session(self.engine) as session:
+            counts = {
+                str(status): int(count)
+                for status, count in session.execute(
+                    select(AlertOutboxRow.status, func.count()).group_by(AlertOutboxRow.status)
+                ).all()
+            }
+            oldest = session.scalar(
+                select(func.min(AlertOutboxRow.created_at_ms)).where(
+                    AlertOutboxRow.status == "pending"
+                )
+            )
+        return {
+            "counts_by_status": dict(sorted(counts.items())),
+            "pending_count": counts.get("pending", 0),
+            "uncertain_count": counts.get("uncertain", 0),
+            "oldest_pending_age_ms": (
+                None if oldest is None else max(0, now_ms - int(oldest))
+            ),
+        }
+
+    def resolve_uncertain_outbox(
+        self,
+        event_id: str,
+        resolution: str,
+        reason: str,
+        now_ms: int,
+        *,
+        message_id: str | None = None,
+    ) -> None:
+        """Operator resolution of an uncertain item to delivered or dead.
+
+        Only ``uncertain`` rows may be resolved (guarded update). The previous
+        ``alerts`` history is preserved; an audit row is appended.
+        """
+
+        if resolution not in {"delivered", "dead"}:
+            raise ValueError("resolution must be delivered or dead")
+        if not reason.strip():
+            raise ValueError("a non-empty reason is required")
+        if message_id is not None and (not message_id.strip() or len(message_id) > 64):
+            raise ValueError("message_id must be 1-64 characters")
+        item = self.get_outbox(event_id)
+        if item is None:
+            raise OutboxResolveError(f"unknown outbox event_id {event_id}")
+        if item.status != "uncertain":
+            raise OutboxResolveError(
+                f"outbox item {event_id} is {item.status}; only uncertain can be resolved"
+            )
+        detail = f"operator resolved as {resolution}: {reason.strip()}"
+        if not self.mark_outbox(
+            event_id,
+            resolution,
+            now_ms,
+            response_code=item.response_code,
+            message_id=message_id if resolution == "delivered" else None,
+            detail=detail,
+            expected_status="uncertain",
+        ):
+            raise OutboxResolveError(f"outbox item {event_id} changed concurrently")
+        self.append_alert_audit(event_id, f"resolved_{resolution}", now_ms, detail=detail)
+
+    def upsert_heartbeat(
+        self,
+        market: str,
+        now_ms: int,
+        *,
+        last_ws_message_ms: int | None = None,
+        last_closed_candle_ms: int | None = None,
+        last_decision_ms: int | None = None,
+        last_outbox_drain_ms: int | None = None,
+        max_loop_lag_ms: int | None = None,
+    ) -> None:
+        """Merge the provided liveness fields into the market's single row."""
+
+        with Session(self.engine) as session:
+            row = session.get(RuntimeHeartbeatRow, market)
+            if row is None:
+                row = RuntimeHeartbeatRow(market=market, updated_at_ms=now_ms)
+                session.add(row)
+            for name, value in (
+                ("last_ws_message_ms", last_ws_message_ms),
+                ("last_closed_candle_ms", last_closed_candle_ms),
+                ("last_decision_ms", last_decision_ms),
+                ("last_outbox_drain_ms", last_outbox_drain_ms),
+                ("max_loop_lag_ms", max_loop_lag_ms),
+            ):
+                if value is not None:
+                    setattr(row, name, value)
+            row.updated_at_ms = now_ms
+            session.commit()
+
+    def get_heartbeats(self) -> dict[str, HeartbeatRecord]:
+        with Session(self.engine) as session:
+            rows = session.scalars(select(RuntimeHeartbeatRow)).all()
+            return {
+                row.market: HeartbeatRecord(
+                    market=row.market,
+                    last_ws_message_ms=row.last_ws_message_ms,
+                    last_closed_candle_ms=row.last_closed_candle_ms,
+                    last_decision_ms=row.last_decision_ms,
+                    last_outbox_drain_ms=row.last_outbox_drain_ms,
+                    max_loop_lag_ms=row.max_loop_lag_ms,
+                    updated_at_ms=row.updated_at_ms,
+                )
+                for row in rows
+            }
+
+    def signal_delivery_meta(self, event_id: str) -> tuple[str, int] | None:
+        """Return ``(family, event_time_ms)`` of the stored signal, if any."""
+
+        with Session(self.engine) as session:
+            row = session.get(SignalRow, event_id)
+            return None if row is None else (row.family, row.event_time_ms)
+
+    def append_alert_audit(
+        self,
+        event_id: str,
+        status: str,
+        created_at_ms: int,
+        *,
+        response_code: int | None = None,
+        detail: str | None = None,
+    ) -> int:
+        """Append an ``alerts`` audit row without overwriting earlier attempts.
+
+        Uses the next free attempt number for the event and returns it.
+        """
+
+        with Session(self.engine) as session:
+            highest = session.scalar(
+                select(func.max(AlertRow.attempt)).where(AlertRow.event_id == event_id)
+            )
+            attempt = int(highest if highest is not None else 0) + 1
+            session.add(
+                AlertRow(
+                    event_id=event_id,
+                    attempt=attempt,
+                    status=status,
+                    response_code=response_code,
+                    detail=detail,
+                    created_at_ms=created_at_ms,
+                )
+            )
+            session.commit()
+            return attempt
 
     def mark_inflight_uncertain(self, updated_at_ms: int) -> int:
         """Quarantine delivery attempts whose process ended while in flight."""
@@ -1363,6 +1642,64 @@ class SqlRepository:
                 is not None
             )
 
+    def list_signals_since(
+        self,
+        *,
+        market: Market,
+        timeframe: str,
+        since_ms: int,
+        stage: SignalStage,
+        exclude_families: Collection[SignalFamily] = (),
+        limit: int = 500,
+    ) -> list[SignalDecision]:
+        """Bounded, newest-first listing of stored decisions for one market/timeframe."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        statement = (
+            select(SignalRow)
+            .where(
+                SignalRow.market == market.value,
+                SignalRow.timeframe == timeframe,
+                SignalRow.stage == stage.value,
+                SignalRow.event_time_ms >= since_ms,
+            )
+            .order_by(desc(SignalRow.event_time_ms), SignalRow.event_id)
+            .limit(limit)
+        )
+        excluded = [family.value for family in exclude_families]
+        if excluded:
+            statement = statement.where(SignalRow.family.not_in(excluded))
+        with Session(self.engine) as session:
+            rows = session.scalars(statement).all()
+        return [SignalDecision.model_validate(json.loads(row.payload_json)) for row in rows]
+
+    def entry_ids_with_exit_since(
+        self, *, market: Market, since_ms: int, limit: int = 2_000
+    ) -> set[str]:
+        """Entry event IDs referenced by stored TECHNICAL_EXIT rows (bounded)."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with Session(self.engine) as session:
+            payloads = session.scalars(
+                select(SignalRow.payload_json)
+                .where(
+                    SignalRow.market == market.value,
+                    SignalRow.family == SignalFamily.TECHNICAL_EXIT.value,
+                    SignalRow.event_time_ms >= since_ms,
+                )
+                .order_by(desc(SignalRow.event_time_ms), SignalRow.event_id)
+                .limit(limit)
+            ).all()
+        entry_ids: set[str] = set()
+        for payload_json in payloads:
+            metadata = json.loads(payload_json).get("metadata")
+            entry_id = metadata.get("entry_event_id") if isinstance(metadata, dict) else None
+            if isinstance(entry_id, str):
+                entry_ids.add(entry_id)
+        return entry_ids
+
     def recent_signals(
         self, limit: int = 100, *, market: Market | None = None
     ) -> list[SignalDecision]:
@@ -1372,6 +1709,192 @@ class SqlRepository:
         with Session(self.engine) as session:
             rows = session.scalars(statement).all()
         return [SignalDecision.model_validate(json.loads(row.payload_json)) for row in rows]
+
+    def save_protection_context(
+        self,
+        context: ProtectionContext,
+        *,
+        created_at_ms: int,
+        retention_per_stream: int = _DEFAULT_PROTECTION_CONTEXT_RETENTION_PER_STREAM,
+    ) -> bool:
+        """Persist one immutable context and advance its latest pointer atomically."""
+
+        if created_at_ms < 0:
+            raise ValueError("created_at_ms must be non-negative")
+        if retention_per_stream < 1:
+            raise ValueError("retention_per_stream must be positive")
+
+        validated = ProtectionContext.model_validate(context.model_dump(mode="json"))
+        payload = _protection_context_payload(validated)
+        payload_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        stream_filters = (
+            ProtectionContextRow.market == validated.market.value,
+            ProtectionContextRow.symbol == validated.symbol,
+            ProtectionContextRow.primary_interval == validated.primary_interval,
+        )
+
+        with Session(self.engine) as session:
+            existing = session.get(ProtectionContextRow, validated.context_id)
+            if existing is not None:
+                if (
+                    existing.payload_json != payload
+                    or existing.payload_sha256 != payload_sha256
+                ):
+                    raise EventIdConflictError(
+                        f"context ID {validated.context_id} maps to conflicting payloads"
+                    )
+                return False
+
+            same_clock = session.scalar(
+                select(ProtectionContextRow).where(
+                    *stream_filters,
+                    ProtectionContextRow.candle_close_time_ms
+                    == validated.candle_close_time_ms,
+                )
+            )
+            if same_clock is not None:
+                raise EventIdConflictError(
+                    "protection-context decision clock maps to multiple payloads"
+                )
+
+            session.add(
+                ProtectionContextRow(
+                    context_id=validated.context_id,
+                    market=validated.market.value,
+                    symbol=validated.symbol,
+                    primary_interval=validated.primary_interval,
+                    candle_close_time_ms=validated.candle_close_time_ms,
+                    payload_json=payload,
+                    payload_sha256=payload_sha256,
+                    created_at_ms=created_at_ms,
+                )
+            )
+            session.flush()
+
+            latest_key = {
+                "market": validated.market.value,
+                "symbol": validated.symbol,
+                "primary_interval": validated.primary_interval,
+            }
+            latest = session.get(ProtectionContextLatestRow, latest_key)
+            if latest is None:
+                session.add(
+                    ProtectionContextLatestRow(
+                        **latest_key,
+                        context_id=validated.context_id,
+                        candle_close_time_ms=validated.candle_close_time_ms,
+                        updated_at_ms=created_at_ms,
+                    )
+                )
+            elif validated.candle_close_time_ms > latest.candle_close_time_ms:
+                latest.context_id = validated.context_id
+                latest.candle_close_time_ms = validated.candle_close_time_ms
+                latest.updated_at_ms = created_at_ms
+
+            cutoff_close_ms = session.scalar(
+                select(ProtectionContextRow.candle_close_time_ms)
+                .where(*stream_filters)
+                .order_by(
+                    desc(ProtectionContextRow.candle_close_time_ms),
+                    desc(ProtectionContextRow.context_id),
+                )
+                .offset(retention_per_stream - 1)
+                .limit(1)
+            )
+            if cutoff_close_ms is not None:
+                session.execute(
+                    delete(ProtectionContextRow).where(
+                        *stream_filters,
+                        ProtectionContextRow.candle_close_time_ms < cutoff_close_ms,
+                    )
+                )
+            session.commit()
+            return True
+
+    def list_protection_contexts(
+        self,
+        *,
+        market: Market,
+        symbol: str,
+        primary_interval: str,
+        limit: int = 100,
+        after_context_id: str | None = None,
+        after_close_time_ms: int | None = None,
+    ) -> list[ProtectionContext]:
+        """Read a bounded ascending context page from one stream."""
+
+        if limit < 1 or limit > 1000:
+            raise ValueError("protection-context limit must be between 1 and 1000")
+        if after_context_id is not None and after_close_time_ms is not None:
+            raise ValueError("use only one protection-context cursor")
+        if after_close_time_ms is not None and after_close_time_ms < 0:
+            raise ValueError("after_close_time_ms must be non-negative")
+
+        normalized_symbol = symbol.upper().strip()
+        if not normalized_symbol:
+            raise ValueError("symbol must not be blank")
+
+        with Session(self.engine) as session:
+            cursor_close_ms = after_close_time_ms
+            if after_context_id is not None:
+                cursor = session.get(ProtectionContextRow, after_context_id)
+                if (
+                    cursor is None
+                    or cursor.market != market.value
+                    or cursor.symbol != normalized_symbol
+                    or cursor.primary_interval != primary_interval
+                ):
+                    raise ProtectionContextCursorError(
+                        "protection-context cursor is missing or belongs to another stream"
+                    )
+                cursor_close_ms = cursor.candle_close_time_ms
+
+            statement = (
+                select(ProtectionContextRow)
+                .where(
+                    ProtectionContextRow.market == market.value,
+                    ProtectionContextRow.symbol == normalized_symbol,
+                    ProtectionContextRow.primary_interval == primary_interval,
+                )
+                .order_by(
+                    ProtectionContextRow.candle_close_time_ms,
+                    ProtectionContextRow.context_id,
+                )
+                .limit(limit)
+            )
+            if cursor_close_ms is not None:
+                statement = statement.where(
+                    ProtectionContextRow.candle_close_time_ms > cursor_close_ms
+                )
+            rows = session.scalars(statement).all()
+
+        return [
+            ProtectionContext.model_validate(json.loads(row.payload_json)) for row in rows
+        ]
+
+    def latest_protection_context(
+        self,
+        *,
+        market: Market,
+        symbol: str,
+        primary_interval: str,
+    ) -> ProtectionContext | None:
+        normalized_symbol = symbol.upper().strip()
+        if not normalized_symbol:
+            raise ValueError("symbol must not be blank")
+        key = {
+            "market": market.value,
+            "symbol": normalized_symbol,
+            "primary_interval": primary_interval,
+        }
+        with Session(self.engine) as session:
+            latest = session.get(ProtectionContextLatestRow, key)
+            if latest is None:
+                return None
+            row = session.get(ProtectionContextRow, latest.context_id)
+            if row is None or row.candle_close_time_ms != latest.candle_close_time_ms:
+                raise EventIdConflictError("protection-context latest pointer is inconsistent")
+            return ProtectionContext.model_validate(json.loads(row.payload_json))
 
     def save_outcome(
         self,

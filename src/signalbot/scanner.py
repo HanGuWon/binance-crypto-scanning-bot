@@ -15,6 +15,7 @@ from signalbot.data.raw_events import (
 )
 from signalbot.domain.enums import Market
 from signalbot.domain.models import Candle
+from signalbot.errors import is_fatal_pipeline_error
 from signalbot.exchange.binance.endpoints import build_websocket_plans
 from signalbot.exchange.binance.rest import BinanceRestClient, BinanceRestError
 from signalbot.exchange.binance.universe import Universe, UniverseSelector
@@ -48,7 +49,17 @@ class MarketScanner:
         self.rest = rest_client or BinanceRestClient(
             market, settings.binance.request_timeout_seconds
         )
-        self.selector = UniverseSelector(settings.binance, clock)
+        required_symbols = (
+            settings.shadow.directional_symbols
+            if market is Market.FUTURES
+            and settings.shadow.directional_observation_enabled
+            else ()
+        )
+        self.selector = UniverseSelector(
+            settings.binance,
+            clock,
+            required_symbols=required_symbols,
+        )
         self.consumer = WebSocketConsumer(settings.binance.max_connection_age_seconds)
         self.universe: Universe | None = None
         self._pending_universe_signature: tuple[frozenset[str], frozenset[str]] | None = None
@@ -98,6 +109,13 @@ class MarketScanner:
         )
         if self.market is Market.FUTURES:
             await self._refresh_funding(universe.tradable_symbols, bootstrap=True)
+        # The margin is excluded from Settings.model_dump() (frozen hashes), so
+        # log the effective operational value once per market startup.
+        LOGGER.info(
+            "bootstrap close margin effective: %d ms",
+            self.settings.binance.bootstrap_close_margin_ms,
+            extra={"market": self.market.value},
+        )
         await self._bootstrap(market_data_symbols)
         LOGGER.info("market scanner prepared", extra={"market": self.market.value})
         return universe
@@ -190,6 +208,12 @@ class MarketScanner:
             raise asyncio.CancelledError
         error = task.exception()
         if error is not None:
+            if is_fatal_pipeline_error(error):
+                LOGGER.critical(
+                    "fatal pipeline error; scanner failing closed for operator attention",
+                    extra={"task": label},
+                    exc_info=error,
+                )
             raise error
         raise RuntimeError(f"{label} exited unexpectedly")
 
@@ -461,7 +485,10 @@ class MarketScanner:
                     symbol,
                     interval,
                     self.settings.binance.bootstrap_candles,
-                    now_ms=self.clock.now_ms(),
+                    # Bootstrap only: a local clock ahead of Binance must not admit a
+                    # still-open candle as closed (it would later conflict with x=true).
+                    now_ms=self.clock.now_ms()
+                    - self.settings.binance.bootstrap_close_margin_ms,
                 )
             try:
                 self.runtime.bootstrap(candles, rebuild=False)

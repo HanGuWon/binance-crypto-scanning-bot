@@ -27,19 +27,23 @@ from signalbot.domain.models import (
     SignalDecision,
 )
 from signalbot.exchange.binance.schemas import PayloadError, parse_payload
+from signalbot.heartbeat import HeartbeatRecorder
 from signalbot.indicators.core import FeatureEngine
 from signalbot.persistence.repository import SqlRepository
+from signalbot.prospective.directional_shadow import DirectionalShadowObserver
 from signalbot.prospective.observer import ShadowObserver
 from signalbot.regime.market import MarketRegimeEngine
 from signalbot.signals.positions import (
     PaperLifecycleCheckpoint,
     PaperPositionLifecycle,
 )
+from signalbot.signals.protection_context import ProtectionContext
 from signalbot.signals.rules import SignalRuleEngine
 from signalbot.signals.state_machine import SignalStateMachine
 
 LOGGER = logging.getLogger(__name__)
 DecisionHandler = Callable[[SignalDecision], Awaitable[object]]
+ProtectionContextHandler = Callable[[ProtectionContext], Awaitable[object]]
 GapRecoverer = Callable[[CandleGap], Awaitable[list[Candle]]]
 FEATURE_HISTORY_LIMIT = 4
 
@@ -54,13 +58,18 @@ class MarketRuntime:
         decision_handler: DecisionHandler,
         gap_recoverer: GapRecoverer | None = None,
         campaign_id: str | None = None,
+        protection_context_handler: ProtectionContextHandler | None = None,
     ) -> None:
         self.market = market
         self.settings = settings
         self.repository = repository
         self.clock = clock
         self.decision_handler = decision_handler
+        # Optional liveness writer; set by the live application only (never by
+        # replay or backtests).
+        self.heartbeat: HeartbeatRecorder | None = None
         self.gap_recoverer = gap_recoverer
+        self.protection_context_handler = protection_context_handler
         self.candles = CandleStore(settings.binance.history_limit)
         self.order_flow = OrderFlowTracker()
         self.books = BookState()
@@ -74,6 +83,7 @@ class MarketRuntime:
         self.feature_engine = FeatureEngine(settings.signals)
         self.rule_engine = SignalRuleEngine(settings.signals, settings.shadow)
         self.shadow_observer: ShadowObserver | None = None
+        self.directional_shadow_observer: DirectionalShadowObserver | None = None
         if settings.shadow.observation_enabled:
             if campaign_id is not None and campaign_id != settings.shadow.campaign_id:
                 raise ValueError(
@@ -82,6 +92,12 @@ class MarketRuntime:
             self.shadow_observer = ShadowObserver(
                 settings,
                 self.rule_engine,
+                repository,
+                clock=clock,
+            )
+        if self.market is Market.FUTURES and settings.shadow.directional_observation_enabled:
+            self.directional_shadow_observer = DirectionalShadowObserver(
+                settings,
                 repository,
                 clock=clock,
             )
@@ -103,6 +119,7 @@ class MarketRuntime:
         ] = {}
         self.decision_count = 0
         self.parse_error_count = 0
+        self.protection_context_error_count = 0
 
     def restore_persisted_state(self) -> None:
         """Restore alert cooldowns from durable signal rows after restart."""
@@ -121,15 +138,22 @@ class MarketRuntime:
         """
 
         if self.shadow_observer is None:
-            return
-        try:
-            self.shadow_observer.flush()
-        except Exception as exc:
-            LOGGER.error(
-                "shadow observer finalization failed; incumbent shutdown unchanged",
-                exc_info=exc,
-                extra={"market": self.market.value},
-            )
+            incumbent_flush = None
+        else:
+            incumbent_flush = self.shadow_observer.flush
+        for flush in tuple(
+            item
+            for item in (incumbent_flush, getattr(self.directional_shadow_observer, "flush", None))
+            if item is not None
+        ):
+            try:
+                flush()
+            except Exception as exc:
+                LOGGER.error(
+                    "shadow observer finalization failed; incumbent shutdown unchanged",
+                    exc_info=exc,
+                    extra={"market": self.market.value},
+                )
 
     def set_surveillance_symbols(self, symbols: frozenset[str]) -> None:
         """Backward-compatible replay helper that treats one set as both universes."""
@@ -243,6 +267,8 @@ class MarketRuntime:
         *,
         received_at_ms: int | None = None,
     ) -> None:
+        if self.heartbeat is not None:
+            self.heartbeat.note_ws_message()
         try:
             events = parse_payload(self.market, payload)
         except PayloadError as exc:
@@ -313,6 +339,8 @@ class MarketRuntime:
     async def _handle_candle(self, candle: Candle) -> None:
         if not candle.is_closed:
             return
+        if self.heartbeat is not None:
+            self.heartbeat.note_closed_candle(candle.close_time_ms)
         latest = self.candles.latest(candle.market, candle.symbol, candle.interval)
         if latest is not None and candle.open_time_ms < latest.open_time_ms:
             return
@@ -384,6 +412,56 @@ class MarketRuntime:
                         "symbol": candle.symbol,
                     },
                 )
+        if self.directional_shadow_observer is not None:
+            try:
+                self.directional_shadow_observer.observe(feature, contexts)
+            except Exception as exc:
+                LOGGER.error(
+                    "directional shadow observation failed; production unchanged",
+                    exc_info=exc,
+                    extra={"market": self.market.value, "symbol": candle.symbol},
+                )
+        await self._emit_protection_context(candle, feature, contexts)
+
+    async def _emit_protection_context(
+        self,
+        candle: Candle,
+        feature: FeatureSnapshot,
+        contexts: dict[str, FeatureSnapshot],
+    ) -> None:
+        """Build and optionally hand off one deterministic closed-candle context.
+
+        The context is composed from the feature and strictly-prior HTF snapshots
+        already produced by this runtime. Errors are isolated after the source
+        signal/PAPER/shadow path has completed so Guardian context cannot alter it.
+        """
+
+        try:
+            context = ProtectionContext.from_closed_candle(
+                candle=candle,
+                feature=feature,
+                higher_timeframe_contexts=contexts,
+                source_decision_clock_id=self._decision_clock_id(candle),
+            )
+            if self.protection_context_handler is not None:
+                await self.protection_context_handler(context)
+        except Exception as exc:
+            self.protection_context_error_count += 1
+            LOGGER.error(
+                "protection context failed; source signal path unchanged",
+                exc_info=exc,
+                extra={
+                    "market": self.market.value,
+                    "symbol": candle.symbol,
+                    "candle_close_time_ms": candle.close_time_ms,
+                },
+            )
+
+    def _decision_clock_id(self, candle: Candle) -> str:
+        return (
+            f"{candle.market.value}:{candle.symbol}:{candle.interval}:"
+            f"{candle.close_time_ms}"
+        )
 
     async def _recover_gap(self, gap: CandleGap) -> bool:
         if self.gap_recoverer is None:
@@ -507,8 +585,14 @@ class MarketRuntime:
     def _context_features(self, symbol: str, event_time_ms: int) -> dict[str, FeatureSnapshot]:
         normalized = symbol.upper()
         contexts: dict[str, FeatureSnapshot] = {}
+        primary_interval_ms = interval_to_milliseconds(
+            self.settings.binance.primary_interval
+        )
         for (feature_symbol, interval), history in self._feature_history.items():
-            if feature_symbol != normalized or interval == self.settings.binance.primary_interval:
+            if (
+                feature_symbol != normalized
+                or interval_to_milliseconds(interval) <= primary_interval_ms
+            ):
                 continue
             available = [item for item in history if item.event_time_ms < event_time_ms]
             if not available:
@@ -533,12 +617,50 @@ class MarketRuntime:
             self.state_machine.restore(checkpoint)
         return persisted
 
+    def _with_presentation_metadata(self, decision: SignalDecision) -> SignalDecision:
+        """Record which gates the active entry policy evaluates (display metadata).
+
+        Added at creation time, outside the frozen rule/gate modules. It is not an
+        identity input and does not affect any gate, score or transition; alerts use
+        it to render fixed participation/crowding constants as N/A.
+        """
+
+        if decision.gate is None or "entry_policy" in decision.metadata:
+            return decision
+        signals = self.settings.signals
+        r2_policy = signals.entry_policy == "r2_pit_htf_exec"
+        unevaluated = [
+            name
+            for name, evaluated in (
+                ("participation", signals.gate_use_participation and not r2_policy),
+                ("crowding", signals.gate_use_crowding and not r2_policy),
+            )
+            if not evaluated
+        ]
+        return decision.model_copy(
+            update={
+                "metadata": {
+                    **decision.metadata,
+                    "entry_policy": signals.entry_policy,
+                    "unevaluated_gates": unevaluated,
+                }
+            }
+        )
+
+    def persist_notice(self, decision: SignalDecision) -> bool:
+        """Persist a notice-only decision through the normal signal + outbox path."""
+
+        return self._persist_decision(decision)
+
     async def _publish_decision(
         self, decision: SignalDecision
     ) -> SignalDecision | None:
+        decision = self._with_presentation_metadata(decision)
         if not self._persist_decision(decision):
             return None
         self.decision_count += 1
+        if self.heartbeat is not None:
+            self.heartbeat.note_decision()
         await self.decision_handler(decision)
         return decision
 
@@ -552,6 +674,7 @@ class MarketRuntime:
         payload = build_discord_payload(
             decision,
             self.settings.alerts.discord_username,
+            validation_notice=self.settings.alerts.validation_notice,
         )
         return self.repository.save_signal_and_enqueue(
             decision,
@@ -588,4 +711,6 @@ class MarketRuntime:
 
         for decision in newly_persisted:
             self.decision_count += 1
+            if self.heartbeat is not None:
+                self.heartbeat.note_decision()
             await self.decision_handler(decision)

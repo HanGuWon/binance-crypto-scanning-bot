@@ -80,7 +80,7 @@ def test_embed_contains_evidence_but_no_mass_mentions() -> None:
     payload = build_discord_payload(make_decision(), "Test Bot")
     assert payload["allowed_mentions"] == {"parse": []}
     embed = payload["embeds"][0]  # type: ignore[index]
-    assert "🟢 추천: 상승 예상 · LONG 후보" in embed["title"]  # type: ignore[index]
+    assert "🟢 규칙 트리거 · LONG 검토 후보 (미검증 규칙)" in embed["title"]  # type: ignore[index]
     assert "근거 강도: 85/100" in embed["description"]  # type: ignore[index]
     assert "not a probability" not in embed["description"]  # type: ignore[index]
 
@@ -95,7 +95,7 @@ def test_confirmed_futures_short_is_a_direct_downside_recommendation() -> None:
     )
     embed = payload["embeds"][0]  # type: ignore[index]
 
-    assert "🔴 추천: 하락 예상 · SHORT 후보" in embed["title"]  # type: ignore[index]
+    assert "🔴 규칙 트리거 · SHORT 검토 후보 (미검증 규칙)" in embed["title"]  # type: ignore[index]
     assert "상태: CONFIRMED" in embed["description"]  # type: ignore[index]
     assert embed["color"] == 0xE74C3C
 
@@ -112,7 +112,7 @@ def test_spot_short_is_a_bearish_hold_not_a_short_candidate() -> None:
     )
     embed = payload["embeds"][0]  # type: ignore[index]
 
-    assert "🔴 추천: 하락 예상 · 신규 매수 보류" in embed["title"]  # type: ignore[index]
+    assert "🔴 규칙 트리거 · 신규 매수 보류 (미검증 규칙)" in embed["title"]  # type: ignore[index]
     assert "SHORT 후보" not in embed["title"]  # type: ignore[index]
 
 
@@ -248,7 +248,7 @@ def test_discord_payload_enforces_component_and_total_text_limits() -> None:
                 breadth_ratio=0.5,
             ),
             event_id="e" * 3_000,
-            rule_version="r" * 3_000,
+            rule_version="r" * 64,
             metadata=metadata,
         ),
         "u" * 200,

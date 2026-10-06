@@ -44,7 +44,7 @@ class SignalRow(Base):
     score: Mapped[int] = mapped_column(Integer)
     price: Mapped[str] = mapped_column(String(64))
     invalidation: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    rule_version: Mapped[str] = mapped_column(String(32))
+    rule_version: Mapped[str] = mapped_column(String(64))
     payload_json: Mapped[str] = mapped_column(Text)
 
 
@@ -76,6 +76,19 @@ class AlertOutboxRow(Base):
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class RuntimeHeartbeatRow(Base):
+    """Latest pipeline liveness evidence per market (one row, upserted)."""
+
+    __tablename__ = "runtime_heartbeats"
+    market: Mapped[str] = mapped_column(String(16), primary_key=True)
+    last_ws_message_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_closed_candle_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_decision_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_outbox_drain_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    max_loop_lag_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
 class OutcomeRow(Base):
     __tablename__ = "outcomes"
     __table_args__ = (UniqueConstraint("event_id", "horizon_seconds", name="uq_outcome_horizon"),)
@@ -86,6 +99,41 @@ class OutcomeRow(Base):
     mae: Mapped[float] = mapped_column(Float)
     close_return: Mapped[float] = mapped_column(Float)
     observed_until_ms: Mapped[int] = mapped_column(BigInteger)
+
+
+class ProtectionContextRow(Base):
+    """Immutable closed-candle protection context event."""
+
+    __tablename__ = "protection_contexts"
+    __table_args__ = (
+        UniqueConstraint(
+            "market",
+            "symbol",
+            "primary_interval",
+            "candle_close_time_ms",
+            name="uq_protection_context_clock",
+        ),
+    )
+    context_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    market: Mapped[str] = mapped_column(String(16), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    primary_interval: Mapped[str] = mapped_column(String(8), index=True)
+    candle_close_time_ms: Mapped[int] = mapped_column(BigInteger, index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_sha256: Mapped[str] = mapped_column(String(64))
+    created_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
+class ProtectionContextLatestRow(Base):
+    """Mutable index pointing at the newest immutable context per stream."""
+
+    __tablename__ = "protection_context_latest"
+    market: Mapped[str] = mapped_column(String(16), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    primary_interval: Mapped[str] = mapped_column(String(8), primary_key=True)
+    context_id: Mapped[str] = mapped_column(String(64), index=True)
+    candle_close_time_ms: Mapped[int] = mapped_column(BigInteger, index=True)
+    updated_at_ms: Mapped[int] = mapped_column(BigInteger)
 
 
 class ShadowObservationRow(Base):
@@ -127,7 +175,7 @@ class ShadowCampaignRow(Base):
     campaign_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     campaign_mode: Mapped[str] = mapped_column(String(16))
     source_identity: Mapped[str] = mapped_column(String(128))
-    rule_version: Mapped[str] = mapped_column(String(32))
+    rule_version: Mapped[str] = mapped_column(String(64))
     policy_name: Mapped[str] = mapped_column(String(64))
     policy_sha256: Mapped[str] = mapped_column(String(64))
     config_sha256: Mapped[str] = mapped_column(String(64))

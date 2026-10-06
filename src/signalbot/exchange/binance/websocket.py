@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from signalbot.exchange.binance.endpoints import WebSocketPlan
 
@@ -32,8 +32,15 @@ class WebSocketConsumer:
     async def consume_forever(
         self, plan: WebSocketPlan, handler: PayloadHandler, stop_event: asyncio.Event
     ) -> None:
+        """Consume a stream, reconnecting only on transport-level failures.
+
+        Exceptions raised by ``handler`` are pipeline failures, not disconnects:
+        they propagate unchanged after the connection is closed.
+        """
+
         delay = self.initial_backoff_seconds
         while not stop_event.is_set():
+            handler_error: Exception | None = None
             try:
                 LOGGER.info(
                     "connecting Binance WebSocket",
@@ -61,7 +68,13 @@ class WebSocketConsumer:
                                     extra={"market": plan.market.value, "stream": plan.name},
                                 )
                                 continue
-                            await handler(payload)
+                            try:
+                                await handler(payload)
+                            except Exception as exc:
+                                # Leave the transport contexts cleanly, then
+                                # re-raise below, outside the transport try.
+                                handler_error = exc
+                                break
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
@@ -69,12 +82,14 @@ class WebSocketConsumer:
                     "recycling Binance WebSocket",
                     extra={"market": plan.market.value, "stream": plan.name},
                 )
-            except (ConnectionClosed, OSError, RuntimeError) as exc:
+            except (ConnectionClosed, WebSocketException, OSError) as exc:
                 LOGGER.warning(
                     "Binance WebSocket disconnected",
                     extra={"market": plan.market.value, "stream": plan.name},
                     exc_info=exc,
                 )
+            if handler_error is not None:
+                raise handler_error
             if stop_event.is_set():
                 return
             try:

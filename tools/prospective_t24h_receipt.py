@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.getcwd())
 
-from src.signalbot.prospective.source_freeze import (
+from src.signalbot.prospective.source_freeze import (  # noqa: I001
     default_source_root,
     freeze_source,
 )

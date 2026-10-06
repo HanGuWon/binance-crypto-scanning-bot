@@ -1,0 +1,36 @@
+{
+  "authority_released": false,
+  "candidate_version": "futures-bidirectional-v1",
+  "config_sha256": "a1b2977c3de07959413d4509c888f34d275cd32a8070ca2e41ca288961fa5b31",
+  "data_authority_sha256": "1f191533c6d3cf44aece6ad0d081ede791a4498fd5c9fce909f97f2552d6b492",
+  "directions": [
+    {
+      "candidate_version": "futures-bidirectional-v1",
+      "censor_fraction": 0.0025807440719541885,
+      "config_sha256": "a1b2977c3de07959413d4509c888f34d275cd32a8070ca2e41ca288961fa5b31",
+      "data_quality_passed": true,
+      "direction": "long",
+      "independent_review_passed": false,
+      "operational_health_passed": true,
+      "regime_count": 3,
+      "sample_count": 39035,
+      "symbol_count": 8
+    },
+    {
+      "candidate_version": "futures-bidirectional-v1",
+      "censor_fraction": 0.0004848837491211455,
+      "config_sha256": "a1b2977c3de07959413d4509c888f34d275cd32a8070ca2e41ca288961fa5b31",
+      "data_quality_passed": true,
+      "direction": "short",
+      "independent_review_passed": false,
+      "operational_health_passed": true,
+      "regime_count": 3,
+      "sample_count": 41227,
+      "symbol_count": 8
+    }
+  ],
+  "historical_screen": "PASS",
+  "independent_review_passed": false,
+  "prospective_status": "NOT_STARTED",
+  "trial_registry_sha256": "df973e3adf062f0b90d3f1baa119421ca847d7839c8ff5f05952aa14f3b7c422"
+}

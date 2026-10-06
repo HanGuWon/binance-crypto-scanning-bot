@@ -1,0 +1,24 @@
+[
+  {
+    "symbol": "BTCUSDT",
+    "positionSide": "LONG",
+    "positionAmt": "0.010",
+    "entryPrice": "60000.00",
+    "breakEvenPrice": "60010.00",
+    "markPrice": "60500.00000",
+    "unRealizedProfit": "5.00000000",
+    "liquidationPrice": "0",
+    "isolatedMargin": "0",
+    "notional": "605.00000000",
+    "marginAsset": "USDT",
+    "isolatedWallet": "0",
+    "initialMargin": "6.05",
+    "maintMargin": "0.30",
+    "positionInitialMargin": "6.05",
+    "openOrderInitialMargin": "0",
+    "adl": 2,
+    "bidNotional": "0",
+    "askNotional": "0",
+    "updateTime": 1700000000000
+  }
+]

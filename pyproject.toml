@@ -36,9 +36,10 @@ dev = [
 [project.scripts]
 signalbot = "signalbot.cli:main"
 signalbot-capture = "signalbot.capture.cli:main"
+position-guardian = "position_guardian.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/signalbot"]
+packages = ["src/signalbot", "src/position_guardian"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

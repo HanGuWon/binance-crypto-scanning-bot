@@ -1,0 +1,39 @@
+# Successor research contract for L35-02. Existing Phase-R/Phase-S and R2
+# configurations are intentionally left unchanged.
+protocol_version: futures_bidirectional_candidate_v1
+candidate_version: futures-bidirectional-v1
+rule_version: v3.1.0-r2-c0-corrected-successor
+market: futures
+interval: 5m
+long_family: breakout_long
+short_family: breakdown_short
+higher_timeframes: [15m, 1h]
+require_fully_closed_candles: true
+require_strict_prior_higher_timeframes: true
+require_observed_bbo_for_live_gate: true
+historical_bbo_status: UNAVAILABLE
+entry_timing: NEXT_BAR_OPEN
+outcome_horizons_bars: [1, 3, 6, 12]
+technical_exit_max_holding_bars: 72
+neutral_band_bps: 26.0
+research_round_trip_cost_bps: 26.0
+universe:
+  - {asset: BTC, symbol: BTCUSDT, cohort: anchor}
+  - {asset: ETH, symbol: ETHUSDT, cohort: anchor}
+  - {asset: BNB, symbol: BNBUSDT, cohort: major}
+  - {asset: SOL, symbol: SOLUSDT, cohort: major}
+  - {asset: XRP, symbol: XRPUSDT, cohort: major}
+  - {asset: DOGE, symbol: DOGEUSDT, cohort: major}
+  - {asset: SUI, symbol: SUIUSDT, cohort: volatile}
+  - {asset: WIF, symbol: WIFUSDT, cohort: volatile}
+splits:
+  - {name: development, start: 2024-07-01T00:00:00Z, end: 2025-03-01T00:00:00Z}
+  - {name: validation, start: 2025-03-01T00:00:00Z, end: 2025-11-01T00:00:00Z}
+  - {name: retrospective_test, start: 2025-11-01T00:00:00Z, end: 2026-07-01T00:00:00Z}
+minimum_evidence:
+  min_samples_per_direction: 100
+  min_symbols_per_direction: 4
+  min_regimes_per_direction: 3
+  max_censor_fraction: 0.35
+  require_independent_review: true
+authority_status: WAITING_FOR_AUTHORITY
