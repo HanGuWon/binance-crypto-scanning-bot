@@ -50,7 +50,7 @@ def _is_reparse_or_symlink(path: Path) -> bool:
     if path.is_symlink():
         return True
     try:
-        attributes = os.stat(path, follow_symlinks=False).st_file_attributes
+        attributes = os.stat(path, follow_symlinks=False).st_file_attributes  # pyright: ignore[reportAttributeAccessIssue]
     except (AttributeError, OSError):
         return False
     return bool(attributes & getattr(os, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
