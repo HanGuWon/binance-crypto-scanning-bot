@@ -13,10 +13,6 @@ from signalbot.domain.enums import Direction, Market, SignalFamily, SignalStage
 from signalbot.domain.models import Candle, FeatureSnapshot, SignalDecision
 
 
-class PaperLifecycleBoundError(RuntimeError):
-    """The bounded PAPER lifecycle cannot track another symbol (fatal pipeline error)."""
-
-
 class ExitPolicy(Protocol):
     trend_failure_bars: int
     trailing_activation_r: float
@@ -301,9 +297,7 @@ class PaperPositionLifecycle:
             checkpoint.symbol not in self._states
             and len(self._states) >= self.maximum_symbols
         ):
-            raise PaperLifecycleBoundError(
-                "paper lifecycle cannot restore beyond its symbol bound"
-            )
+            raise RuntimeError("paper lifecycle cannot restore beyond its symbol bound")
         self._states[checkpoint.symbol] = deepcopy(checkpoint._state)
 
     def prune_symbols(self, active_symbols: Collection[str]) -> int:
@@ -538,9 +532,7 @@ class PaperPositionLifecycle:
         if existing is not None:
             return existing
         if len(self._states) >= self.maximum_symbols:
-            raise PaperLifecycleBoundError(
-                "paper lifecycle reached its configured symbol bound"
-            )
+            raise RuntimeError("paper lifecycle reached its configured symbol bound")
         created = _SymbolLifecycle()
         self._states[symbol] = created
         return created

@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from conftest import make_candle
-from signalbot.config import BinanceSettings, load_settings
+from signalbot.config import BinanceSettings, Settings, load_settings
 from signalbot.data.candles import CandleConflictError, CandleStore
 from signalbot.domain.enums import Market
 from signalbot.domain.models import Candle
@@ -174,3 +174,8 @@ def test_existing_config_files_still_validate(
         assert settings.binance.bootstrap_close_margin_ms == 2_000, path.name
         loaded += 1
     assert loaded >= 3
+
+
+def test_margin_is_excluded_from_settings_dump_to_keep_frozen_hashes_stable() -> None:
+    dumped = Settings.model_validate({}).model_dump(mode="json")
+    assert "bootstrap_close_margin_ms" not in dumped["binance"]

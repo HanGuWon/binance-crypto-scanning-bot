@@ -14,7 +14,6 @@ from signalbot.errors import FATAL_PIPELINE_ERRORS, is_fatal_pipeline_error
 from signalbot.exchange.binance.endpoints import WebSocketPlan
 from signalbot.exchange.binance.websocket import WebSocketConsumer
 from signalbot.persistence.repository import EventIdConflictError, OutboxCapacityError
-from signalbot.signals.positions import PaperLifecycleBoundError
 
 PLAN = WebSocketPlan("test", Market.SPOT, "spot", ("x",), "wss://example.test")
 
@@ -54,7 +53,7 @@ FATAL_INSTANCES: list[BaseException] = [
     OutboxCapacityError("full"),
     EventIdConflictError("conflict"),
     CandleConflictError(make_candle(0), make_candle(0)),
-    PaperLifecycleBoundError("bound"),
+    RuntimeError("paper lifecycle reached its configured symbol bound"),
     OperationalError("INSERT", {}, Exception("locked")),
     DataError("INSERT", {}, Exception("too long")),
     # Builtin classes that the old transport handler used to swallow:
@@ -169,5 +168,10 @@ def test_taxonomy_classification() -> None:
     for error in FATAL_INSTANCES[:6]:
         assert is_fatal_pipeline_error(error), type(error).__name__
     assert not is_fatal_pipeline_error(OSError("transport"))
+    assert is_fatal_pipeline_error(
+        RuntimeError("paper lifecycle cannot restore beyond its symbol bound")
+    )
     assert not is_fatal_pipeline_error(ValueError("other"))
+    assert not is_fatal_pipeline_error(RuntimeError("unrelated runtime failure"))
+    assert not is_fatal_pipeline_error(RuntimeError("paper lifecycle exited normally"))
     assert OutboxCapacityError in FATAL_PIPELINE_ERRORS
