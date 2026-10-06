@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Any
+from decimal import Decimal
+from typing import Any, cast
 
 from signalbot.clock import Clock
 from signalbot.config import Settings
@@ -23,8 +24,28 @@ _DIRECTIONS = {Direction.LONG, Direction.SHORT}
 
 
 def _sha256_payload(payload: object) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(
+        _json_ready(payload),
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _json_ready(value: object) -> object:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, (Direction, Market, SignalFamily)):
+        return value.value
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    raise TypeError(f"unsupported evidence payload type: {type(value).__name__}")
 
 
 class DirectionalShadowObserver:
@@ -56,10 +77,31 @@ class DirectionalShadowObserver:
         self.clock = clock
         self.campaign_id = campaign_id
         self.activation_ms = activation_ms
+        self.directional_symbols = frozenset(policy.directional_symbols)
+        self.universe_sha256 = _sha256_payload(sorted(self.directional_symbols))
+        effective_signals = settings.signals.model_copy(
+            update={"gate_enabled": False, "entry_policy": "legacy_gates"}
+        )
+        self.signal_config_sha256 = _sha256_payload(
+            effective_signals.model_dump(mode="json")
+        )
+        strict_prior_htf_contract = {
+            "required": True,
+            "primary_interval": settings.binance.primary_interval,
+            "higher_timeframes": ["15m", "1h"],
+            "closed_candles_only": True,
+            "selection": "strict_prior",
+        }
         self.policy_sha256 = _sha256_payload(
             {
                 "candidate_version": policy.directional_candidate_version,
                 "schema_version": SCHEMA_VERSION,
+                "rule_version": settings.rule_version,
+                "source_identity": source_identity,
+                "preregistration_sha256": policy.directional_preregistration_sha256,
+                "universe_sha256": self.universe_sha256,
+                "signal_config_sha256": self.signal_config_sha256,
+                "strict_prior_htf": strict_prior_htf_contract,
                 "families": sorted(item.value for item in _FAMILIES),
                 "directions": sorted(item.value for item in _DIRECTIONS),
             }
@@ -69,16 +111,19 @@ class DirectionalShadowObserver:
                 "rule_version": settings.rule_version,
                 "candidate_version": policy.directional_candidate_version,
                 "source_identity": source_identity,
+                "preregistration_sha256": policy.directional_preregistration_sha256,
+                "universe_sha256": self.universe_sha256,
+                "directional_symbols": sorted(self.directional_symbols),
+                "signal_config_sha256": self.signal_config_sha256,
+                "signal_settings": effective_signals.model_dump(mode="json"),
+                "strict_prior_htf": strict_prior_htf_contract,
                 "primary_interval": settings.binance.primary_interval,
                 "markets": [Market.FUTURES.value],
                 "families": sorted(item.value for item in _FAMILIES),
+                "directions": sorted(item.value for item in _DIRECTIONS),
             }
         )
-        self.engine = SignalRuleEngine(
-            settings.signals.model_copy(
-                update={"gate_enabled": False, "entry_policy": "legacy_gates"}
-            )
-        )
+        self.engine = SignalRuleEngine(effective_signals)
         self.repository.register_shadow_campaign(
             campaign_schema_version="shadow_campaign_v1",
             campaign_id=campaign_id,
@@ -110,7 +155,11 @@ class DirectionalShadowObserver:
         feature: FeatureSnapshot,
         contexts: Mapping[str, FeatureSnapshot],
     ) -> int:
-        if feature.market is not Market.FUTURES or feature.event_time_ms < self.activation_ms:
+        if (
+            feature.market is not Market.FUTURES
+            or feature.symbol not in self.directional_symbols
+            or feature.event_time_ms < self.activation_ms
+        ):
             return 0
         count = 0
         for evaluation in self.engine.evaluate(feature, contexts):
@@ -144,6 +193,12 @@ class DirectionalShadowObserver:
                     "rule_version": self.settings.rule_version,
                     "config_sha256": self.config_sha256,
                     "policy_sha256": self.policy_sha256,
+                    "preregistration_sha256": (
+                        self.settings.shadow.directional_preregistration_sha256
+                    ),
+                    "universe_sha256": self.universe_sha256,
+                    "directional_symbols": sorted(self.directional_symbols),
+                    "signal_config_sha256": self.signal_config_sha256,
                     "schema_version": SCHEMA_VERSION,
                     "activation_ms": self.activation_ms,
                 },
@@ -176,6 +231,7 @@ class DirectionalShadowObserver:
                 "order_placement": False,
                 "discord_delivery": False,
             }
+            payload = cast(dict[str, Any], _json_ready(payload))
             if self.repository.save_shadow_observation(
                 observation_id=observation_id,
                 campaign_id=self.campaign_id,

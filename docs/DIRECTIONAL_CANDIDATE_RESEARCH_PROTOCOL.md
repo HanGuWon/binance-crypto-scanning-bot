@@ -93,12 +93,32 @@ shadow:
   directional_source_identity: worktree-source-v1:<64-hex-source-hash>
   directional_campaign_created_at_ms: <registration-time-ms>
   directional_activation_ms: <future-boundary-ms>
+  directional_preregistration_sha256: a1b2977c3de07959413d4509c888f34d275cd32a8070ca2e41ca288961fa5b31
+  directional_symbols:
+    - BTCUSDT
+    - ETHUSDT
+    - BNBUSDT
+    - SOLUSDT
+    - XRPUSDT
+    - DOGEUSDT
+    - SUIUSDT
+    - WIFUSDT
 ```
+
+The runtime requires this exact unique symbol set, a Futures market, and
+`top_n`/`surveillance_n` values of at least eight. Required contracts remain in
+the bounded panels even when their 24h volume is below the dynamic liquidity
+floor. A missing, delisted, non-perpetual, blacklisted, too-young, or otherwise
+ineligible required contract fails initial preparation and every later universe
+refresh. It cannot silently shrink the prospective population.
 
 The observer writes immutable evidence rows under the existing shadow campaign
 repository with schema `directional_shadow_observation_v1`. It records both
 `BREAKOUT_LONG` and `BREAKDOWN_SHORT` raw closed-candle triggers, strictly-prior
 HTF acceptance, and explicit `production_entry: false`, `order_placement: false`,
-and `discord_delivery: false` markers. The incumbent observer and its campaign
-remain separate. A campaign cannot be called complete until the future boundary
-has elapsed and the independent review recomputes the stored hashes.
+and `discord_delivery: false` markers. Every row also carries the frozen
+preregistration, universe, effective signal-settings, policy, config, source,
+and campaign-manifest hashes. Symbols outside the frozen set are rejected before
+rule evaluation. The incumbent observer and its campaign remain separate. A
+campaign cannot be called complete until the future boundary has elapsed and the
+independent review recomputes the stored hashes.

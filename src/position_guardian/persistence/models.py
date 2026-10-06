@@ -90,3 +90,17 @@ class GuardianAlertOutboxRow(GuardianBase):
     response_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     detail_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class GuardianAlertAttemptRow(GuardianBase):
+    """Append-only delivery-attempt outcome history for Guardian alerts."""
+
+    __tablename__ = "guardian_alert_attempts"
+
+    attempt_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    alert_id: Mapped[str] = mapped_column(String(64), index=True)
+    attempt: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24))
+    occurred_at_ms: Mapped[int] = mapped_column(BigInteger)
+    response_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    detail_code: Mapped[str | None] = mapped_column(String(64), nullable=True)

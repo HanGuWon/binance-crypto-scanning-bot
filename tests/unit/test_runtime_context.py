@@ -14,7 +14,7 @@ def test_higher_timeframe_context_never_uses_a_future_closed_candle() -> None:
         {
             "binance": {
                 "markets": ["spot"],
-                "intervals": ["5m", "15m", "1h"],
+                "intervals": ["1m", "5m", "15m", "1h"],
                 "primary_interval": "5m",
             },
             "storage": {"url": "sqlite:///:memory:"},
@@ -29,6 +29,10 @@ def test_higher_timeframe_context_never_uses_a_future_closed_candle() -> None:
     runtime = MarketRuntime(Market.SPOT, settings, repository, ReplayClock(), discard)
     runtime._feature_history[("BTCUSDT", "5m")] = deque(
         [make_feature(market=Market.SPOT, interval="5m", event_time_ms=299_999)],
+        maxlen=4,
+    )
+    runtime._feature_history[("BTCUSDT", "1m")] = deque(
+        [make_feature(market=Market.SPOT, interval="1m", event_time_ms=299_999)],
         maxlen=4,
     )
     runtime._feature_history[("BTCUSDT", "15m")] = deque(

@@ -48,7 +48,17 @@ class MarketScanner:
         self.rest = rest_client or BinanceRestClient(
             market, settings.binance.request_timeout_seconds
         )
-        self.selector = UniverseSelector(settings.binance, clock)
+        required_symbols = (
+            settings.shadow.directional_symbols
+            if market is Market.FUTURES
+            and settings.shadow.directional_observation_enabled
+            else ()
+        )
+        self.selector = UniverseSelector(
+            settings.binance,
+            clock,
+            required_symbols=required_symbols,
+        )
         self.consumer = WebSocketConsumer(settings.binance.max_connection_age_seconds)
         self.universe: Universe | None = None
         self._pending_universe_signature: tuple[frozenset[str], frozenset[str]] | None = None

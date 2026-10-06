@@ -36,7 +36,7 @@
     "short": 41227
   },
   "protocol_version": "futures_bidirectional_validation_v1",
-  "source_identity": "worktree-source-v1:0f629d1bb44ce10cfd8fec241ae2958105533fb066c189867605c47608dfcba6",
+  "source_identity": "worktree-source-v1:c89e0e5aa776033c4550f1c4bc6139c94ea66718b63b775a7d05ff1ed1b7e334",
   "symbols": [
     {
       "asset": "BTC",

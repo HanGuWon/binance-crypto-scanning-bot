@@ -2,7 +2,7 @@
   "files": [
     {
       "path": "pyproject.toml",
-      "sha256": "06132a7a371b34185aea130b9742a28eeedaf4ae4252ecc207482f08d13f48d8"
+      "sha256": "e6c95b41a35a5e6f35214c98da894a455c0ca8231c8efdd389d60dc4e9ab1686"
     },
     {
       "path": "src/signalbot/__init__.py",
@@ -30,11 +30,11 @@
     },
     {
       "path": "src/signalbot/api/server.py",
-      "sha256": "a0012061719fbe2285059c5509c93cd10d00f498368bc4984701b745fe6656aa"
+      "sha256": "e293923b97e3f3094becbffaf5f700985dc20d14c44013fdb9da3c2ac1f0ecea"
     },
     {
       "path": "src/signalbot/app.py",
-      "sha256": "3142250f6e66cdfe92a4f760e9f22a0d12b2a4af54ba598f3692915cf22b5dd0"
+      "sha256": "7ef4e65fe902febd0ffe9d8cc70b723cb007772ded0bdd411ea9a40f7b0a0e41"
     },
     {
       "path": "src/signalbot/backtest/__init__.py",
@@ -119,6 +119,10 @@
     {
       "path": "src/signalbot/backtest/funding.py",
       "sha256": "c2f13af537eb663c7de3cab7ed595518463000a365fd51ac113e86d910394c19"
+    },
+    {
+      "path": "src/signalbot/backtest/guardian_policy.py",
+      "sha256": "354824d2162b77f46b140e727a648b69a57817147dfb8fdaf413fa3a6a04b6d9"
     },
     {
       "path": "src/signalbot/backtest/historical_three_family_analysis.py",
@@ -302,7 +306,7 @@
     },
     {
       "path": "src/signalbot/cli.py",
-      "sha256": "9ad3df1fb3112d7b6b6a168d002526fe44dc1c8bb1c7b819ff078db82afc5ba2"
+      "sha256": "7ddbd105894886a8108bc8d24a7bdfcc33212f2d51689d93ad316baf43b6b769"
     },
     {
       "path": "src/signalbot/clock.py",
@@ -310,7 +314,7 @@
     },
     {
       "path": "src/signalbot/config.py",
-      "sha256": "8734f6213b73e9430da6858841b409d396ceab3ab7f034065bd15aa61613918f"
+      "sha256": "2a0bf0cc0ad56dd5687352f2bed668c639053ec9166f4095be77120fcde11d6c"
     },
     {
       "path": "src/signalbot/data/__init__.py",
@@ -370,7 +374,7 @@
     },
     {
       "path": "src/signalbot/exchange/binance/universe.py",
-      "sha256": "4be4df04b7338fbe41f2ce7a2d8b8f04175d63b0948dd1efedd1e458cb041fc0"
+      "sha256": "6e22c1b87607b3bdb0ede8a46073aa29a75ba4d4ea0bf94d74b27b4df448f685"
     },
     {
       "path": "src/signalbot/exchange/binance/websocket.py",
@@ -406,11 +410,11 @@
     },
     {
       "path": "src/signalbot/persistence/models.py",
-      "sha256": "57a188505cca590522dfccde98c69d19a32721185a37476497046b57df73b1fd"
+      "sha256": "08696c288bcb39d7235caa514dceaf8a4ebc8a88078266518c497ec249ad8acb"
     },
     {
       "path": "src/signalbot/persistence/repository.py",
-      "sha256": "fd424666a36e970fb03a25b90e7018f1ff052db2667ac7fe8158f54b1d48efc5"
+      "sha256": "923a425fe17b517659bea10d922d3908fae2e456904d685f9992a8cb7cd37b8d"
     },
     {
       "path": "src/signalbot/prospective/__init__.py",
@@ -426,7 +430,7 @@
     },
     {
       "path": "src/signalbot/prospective/directional_shadow.py",
-      "sha256": "1207aeb5557f272fe8bc046a42276109f89cc3ee3e3cb73894e06c1a1e0cc4b7"
+      "sha256": "2fa6f1fbb951a701a7606299a34ee14d7e89ae2900a4ac941da8dd0d5eb62674"
     },
     {
       "path": "src/signalbot/prospective/directional_validation.py",
@@ -954,11 +958,11 @@
     },
     {
       "path": "src/signalbot/runtime.py",
-      "sha256": "25dd9030cca27ece7c39744cfe09dd3ebae317da933bc1f9b1bf31a573e0630f"
+      "sha256": "f8865b8ec55c08496dbc9367b8ded804dbd179c8357e49e9bd1b7be93a959aa9"
     },
     {
       "path": "src/signalbot/scanner.py",
-      "sha256": "07694414b51233be232a61a3fb772179307b45592ed20015ce8e7a54434ea027"
+      "sha256": "8a5f83c744525ab7fdb435578911aec55d27dcdafbd2a395451b4e1fded5ea0d"
     },
     {
       "path": "src/signalbot/signals/__init__.py",
@@ -970,11 +974,15 @@
     },
     {
       "path": "src/signalbot/signals/position_management.py",
-      "sha256": "e51950226b56fa0a38c3fb4a47fb7af836a87682d5a5704aeb3c30adef1a8e48"
+      "sha256": "1d62b1bfa64f84f15c0eeedeed359a01ef9bff7c79a2ad4e9f5b935ebf056cf9"
     },
     {
       "path": "src/signalbot/signals/positions.py",
       "sha256": "9c036ec4c253476450edde71fd24dcc5545e52f5c1ed6c50b8a037ce2c79926e"
+    },
+    {
+      "path": "src/signalbot/signals/protection_context.py",
+      "sha256": "9d514265f28e03fdac06288ea16aa8029f36f37d4a4d6698a3521840987522a8"
     },
     {
       "path": "src/signalbot/signals/rules.py",
@@ -993,7 +1001,7 @@
       "sha256": "d9f2064dec2913dfa24032007e80a32623f55540c248cd724f948b5b07326288"
     }
   ],
-  "git_head": "800be683577a9903ee68e804e67921710b58eb71",
+  "git_head": "2bb0d1eb075a6cf34d094cacfd902abb939d7bf1",
   "source_freeze_schema_version": "worktree-source-v1",
-  "source_root_sha256": "0f629d1bb44ce10cfd8fec241ae2958105533fb066c189867605c47608dfcba6"
+  "source_root_sha256": "c89e0e5aa776033c4550f1c4bc6139c94ea66718b63b775a7d05ff1ed1b7e334"
 }

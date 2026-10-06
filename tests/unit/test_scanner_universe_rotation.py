@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from signalbot.clock import ReplayClock
+from signalbot.config import (
+    DIRECTIONAL_FROZEN_SYMBOLS,
+    DIRECTIONAL_PREREGISTRATION_SHA256,
+    Settings,
+)
 from signalbot.domain.enums import Market
 from signalbot.domain.models import Instrument
-from signalbot.exchange.binance.universe import Universe
+from signalbot.exchange.binance.universe import (
+    RequiredUniverseUnavailableError,
+    Universe,
+)
 from signalbot.scanner import MarketScanner
 
 
@@ -28,6 +38,7 @@ def _universe(
     *,
     surveillance: tuple[str, ...] | None = None,
     context: tuple[str, ...] = ("BTCUSDT",),
+    market: Market = Market.SPOT,
 ) -> Universe:
     surveillance_symbols = surveillance or tradable
     instruments = {
@@ -35,7 +46,7 @@ def _universe(
         for symbol in {*tradable, *surveillance_symbols, *context}
     }
     return Universe(
-        market=Market.SPOT,
+        market=market,
         tradable=tuple(instruments[symbol] for symbol in tradable),
         surveillance=tuple(instruments[symbol] for symbol in surveillance_symbols),
         context=tuple(instruments[symbol] for symbol in context),
@@ -109,6 +120,116 @@ async def test_surveillance_only_change_applies_without_subscription_rotation() 
     assert scanner.universe is candidate
     assert len(active_calls) == 1
     assert scanner._pending_universe_confirmations == 0
+
+
+def _directional_settings() -> Settings:
+    return Settings.model_validate(
+        {
+            "shadow": {
+                "directional_observation_enabled": True,
+                "directional_campaign_id": "futures-bidirectional-test-1",
+                "directional_source_identity": "worktree-source-v1:" + "a" * 64,
+                "directional_campaign_created_at_ms": 100,
+                "directional_activation_ms": 200,
+                "directional_symbols": list(DIRECTIONAL_FROZEN_SYMBOLS),
+                "directional_preregistration_sha256": (
+                    DIRECTIONAL_PREREGISTRATION_SHA256
+                ),
+            }
+        }
+    )
+
+
+def test_scanner_passes_frozen_symbols_only_to_directional_futures() -> None:
+    runtime = SimpleNamespace(gap_recoverer=None)
+    futures = MarketScanner(
+        Market.FUTURES,
+        _directional_settings(),
+        ReplayClock(1_000),
+        cast(Any, runtime),
+        asyncio.Event(),
+        rest_client=cast(Any, SimpleNamespace()),
+    )
+    spot = MarketScanner(
+        Market.SPOT,
+        _directional_settings(),
+        ReplayClock(1_000),
+        cast(Any, SimpleNamespace(gap_recoverer=None)),
+        asyncio.Event(),
+        rest_client=cast(Any, SimpleNamespace()),
+    )
+    disabled = MarketScanner(
+        Market.FUTURES,
+        Settings(),
+        ReplayClock(1_000),
+        cast(Any, SimpleNamespace(gap_recoverer=None)),
+        asyncio.Event(),
+        rest_client=cast(Any, SimpleNamespace()),
+    )
+
+    assert futures.selector.required_symbols == frozenset(DIRECTIONAL_FROZEN_SYMBOLS)
+    assert spot.selector.required_symbols == frozenset()
+    assert disabled.selector.required_symbols == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_directional_prepare_reaches_funding_bootstrap_and_websocket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = tuple(DIRECTIONAL_FROZEN_SYMBOLS)
+    universe = _universe(expected, context=(), market=Market.FUTURES)
+    funding_calls: list[tuple[list[str], bool]] = []
+    bootstrap_calls: list[list[str]] = []
+    websocket_symbols: list[list[str]] = []
+
+    class Selector:
+        async def select(self, _rest: Any) -> Universe:
+            return universe
+
+    scanner = object.__new__(MarketScanner)
+    scanner.market = Market.FUTURES
+    scanner.settings = _directional_settings()
+    scanner.selector = cast(Any, Selector())
+    scanner.rest = cast(Any, object())
+    scanner.runtime = cast(
+        Any,
+        SimpleNamespace(set_active_symbols=lambda *_args: None),
+    )
+
+    async def refresh_funding(symbols: list[str], *, bootstrap: bool) -> None:
+        funding_calls.append((symbols, bootstrap))
+
+    async def bootstrap(symbols: list[str]) -> None:
+        bootstrap_calls.append(symbols)
+
+    monkeypatch.setattr(scanner, "_refresh_funding", refresh_funding)
+    monkeypatch.setattr(scanner, "_bootstrap", bootstrap)
+    monkeypatch.setattr(
+        "signalbot.scanner.build_websocket_plans",
+        lambda _market, symbols, *_args, **_kwargs: websocket_symbols.append(symbols) or [],
+    )
+
+    await scanner.prepare()
+    assert funding_calls == [(list(expected), True)]
+    assert bootstrap_calls == [sorted(expected)]
+    assert scanner._start_websocket_tasks(universe) == []
+    assert websocket_symbols == [sorted(expected)]
+
+
+@pytest.mark.asyncio
+async def test_required_symbol_loss_escapes_refresh_fail_closed() -> None:
+    class Selector:
+        async def select(self, _rest: Any) -> Universe:
+            raise RequiredUniverseUnavailableError("required futures symbols unavailable")
+
+    scanner = object.__new__(MarketScanner)
+    scanner.market = Market.FUTURES
+    scanner.selector = cast(Any, Selector())
+    scanner.rest = cast(Any, object())
+    scanner.universe = _universe(("BTCUSDT",), market=Market.FUTURES)
+
+    with pytest.raises(RequiredUniverseUnavailableError):
+        await scanner._poll_universe_candidate()
 
 
 @pytest.mark.asyncio

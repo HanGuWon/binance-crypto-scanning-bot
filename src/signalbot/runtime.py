@@ -577,8 +577,14 @@ class MarketRuntime:
     def _context_features(self, symbol: str, event_time_ms: int) -> dict[str, FeatureSnapshot]:
         normalized = symbol.upper()
         contexts: dict[str, FeatureSnapshot] = {}
+        primary_interval_ms = interval_to_milliseconds(
+            self.settings.binance.primary_interval
+        )
         for (feature_symbol, interval), history in self._feature_history.items():
-            if feature_symbol != normalized or interval == self.settings.binance.primary_interval:
+            if (
+                feature_symbol != normalized
+                or interval_to_milliseconds(interval) <= primary_interval_ms
+            ):
                 continue
             available = [item for item in history if item.event_time_ms < event_time_ms]
             if not available:

@@ -6,7 +6,9 @@ from decimal import Decimal
 from typing import Literal
 
 from position_guardian.alert_contract import (
+    GUARDIAN_ALERT_DELIVERY_DISABLED,
     GUARDIAN_RECONCILIATION_REJECTION_ALERT_SOURCE_V1,
+    GuardianAlertDeliveryMode,
 )
 from position_guardian.domain import AdoptionCandidate, ManagedPositionIdentity
 from position_guardian.exchange.binance_user_stream import RestResyncResult
@@ -40,6 +42,7 @@ class ReconciliationRequest:
     uncertainty_state: UncertaintyState = "CERTAIN"
     adoption_candidate: AdoptionCandidate | None = None
     release_event_id: str | None = None
+    alert_delivery_mode: GuardianAlertDeliveryMode = GUARDIAN_ALERT_DELIVERY_DISABLED
 
 
 @dataclass(frozen=True)
@@ -95,6 +98,7 @@ def reconcile_once(
             protective_order_confirmed=request.protective_order_confirmed,
             uncertainty_state=request.uncertainty_state,
             shadow_mode=request.shadow_mode,
+            alert_delivery_mode=request.alert_delivery_mode,
             terminal_release_event_id=(
                 request.release_event_id if terminal_reason is not None else None
             ),
@@ -132,6 +136,11 @@ def reconcile_once(
                 "protective_order_confirmed": request.protective_order_confirmed,
                 "uncertainty_state": request.uncertainty_state,
                 "shadow_mode": request.shadow_mode,
+                **(
+                    {"delivery_mode": request.alert_delivery_mode}
+                    if request.alert_delivery_mode != GUARDIAN_ALERT_DELIVERY_DISABLED
+                    else {}
+                ),
             },
         )
         _materialize_reconciliation_alerts_from_source(

@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from position_guardian.alert_contract import (
+    GUARDIAN_ALERT_DELIVERY_DISABLED,
     GUARDIAN_SHADOW_CONTEXT_ALERT_SOURCE_V1,
     GUARDIAN_SHADOW_INTENT_ALERT_SOURCE_V1,
+    GuardianAlertDeliveryMode,
 )
-from position_guardian.config import GuardianSettings, settings_summary
+from position_guardian.config import (
+    GuardianSettings,
+    configured_guardian_alert_delivery_mode,
+    settings_summary,
+)
 from position_guardian.context_client import (
     ProtectionContextRejected,
     validate_protection_context,
@@ -17,7 +23,11 @@ from position_guardian.context_client import (
 from position_guardian.domain import ManagedPositionIdentity
 from position_guardian.persistence.repository import GuardianRepository
 from position_guardian.planner import ShadowPlanningError, plan_shadow_stop
-from position_guardian.reconcile import ReconciliationResult
+from position_guardian.reconcile import (
+    ReconciliationRequest,
+    ReconciliationResult,
+    reconcile_once,
+)
 from signalbot.domain.enums import Direction, Market
 from signalbot.signals.position_management import ManagedPositionSnapshot, StopUpdateIntent
 from signalbot.signals.protection_context import ProtectionContext
@@ -40,6 +50,7 @@ class ShadowPlanningRequest:
     now_ms: int
     max_context_age_ms: int
     primary_interval: str = "5m"
+    alert_delivery_mode: GuardianAlertDeliveryMode = GUARDIAN_ALERT_DELIVERY_DISABLED
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +62,38 @@ class ShadowPlanningResult:
     intent_event_inserted: bool
     cursor_event_inserted: bool
     exchange_write_calls: int = 0
+
+
+@dataclass(slots=True)
+class GuardianRuntimeOwner:
+    """Bind immutable alert delivery authority from validated Guardian settings."""
+
+    settings: GuardianSettings
+    repository: GuardianRepository
+
+    def reconcile(self, request: ReconciliationRequest) -> ReconciliationResult:
+        self._validate_account_alias(request.identity)
+        return reconcile_once(
+            self.repository,
+            replace(
+                request,
+                alert_delivery_mode=configured_guardian_alert_delivery_mode(self.settings),
+            ),
+        )
+
+    def plan_shadow(self, request: ShadowPlanningRequest) -> ShadowPlanningResult:
+        self._validate_account_alias(request.identity)
+        return plan_shadow_once(
+            self.repository,
+            replace(
+                request,
+                alert_delivery_mode=configured_guardian_alert_delivery_mode(self.settings),
+            ),
+        )
+
+    def _validate_account_alias(self, identity: ManagedPositionIdentity) -> None:
+        if identity.account_alias != self.settings.account_alias:
+            raise ValueError("managed identity account_alias does not match Guardian settings")
 
 
 def build_dry_run_report(settings: GuardianSettings) -> dict[str, object]:
@@ -180,7 +223,11 @@ def plan_shadow_once(
             created_at_ms=request.now_ms,
             identity=request.identity,
             intent_type="STOP_ADJUSTMENT_SHADOW",
-            payload=_intent_payload(shadow_plan.intent, context_id=validated.context.context_id),
+            payload=_intent_payload(
+                shadow_plan.intent,
+                context_id=validated.context.context_id,
+                delivery_mode=request.alert_delivery_mode,
+            ),
         )
         _materialize_guardian_alerts(
             repository,
@@ -304,6 +351,11 @@ def _record_shadow_context_alert_source(
             "schema_version": GUARDIAN_SHADOW_CONTEXT_ALERT_SOURCE_V1,
             "disposition": "CONTEXT_REJECTED",
             "reason": reason,
+            **(
+                {"delivery_mode": request.alert_delivery_mode}
+                if request.alert_delivery_mode != GUARDIAN_ALERT_DELIVERY_DISABLED
+                else {}
+            ),
         },
     )
     return event_id
@@ -337,9 +389,19 @@ def _materialize_guardian_alerts(
     )
 
 
-def _intent_payload(intent: StopUpdateIntent, *, context_id: str) -> dict[str, object]:
+def _intent_payload(
+    intent: StopUpdateIntent,
+    *,
+    context_id: str,
+    delivery_mode: GuardianAlertDeliveryMode,
+) -> dict[str, object]:
     return {
         "alert_source_schema_version": GUARDIAN_SHADOW_INTENT_ALERT_SOURCE_V1,
+        **(
+            {"delivery_mode": delivery_mode}
+            if delivery_mode != GUARDIAN_ALERT_DELIVERY_DISABLED
+            else {}
+        ),
         "intent_id": intent.intent_id,
         "context_id": context_id,
         "policy_version": intent.policy_version,

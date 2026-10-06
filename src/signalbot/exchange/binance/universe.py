@@ -20,6 +20,10 @@ BENCHMARK_SYMBOL = "BTCUSDT"
 LOGGER = logging.getLogger(__name__)
 
 
+class RequiredUniverseUnavailableError(RuntimeError):
+    """A preregistered live population cannot be represented by the exchange."""
+
+
 @dataclass(frozen=True, slots=True)
 class Universe:
     market: Market
@@ -41,9 +45,20 @@ class Universe:
 
 
 class UniverseSelector:
-    def __init__(self, settings: BinanceSettings, clock: Clock) -> None:
+    def __init__(
+        self,
+        settings: BinanceSettings,
+        clock: Clock,
+        *,
+        required_symbols: tuple[str, ...] = (),
+    ) -> None:
         self.settings = settings
         self.clock = clock
+        self.required_symbols = frozenset(symbol.upper() for symbol in required_symbols)
+        if len(self.required_symbols) > settings.top_n:
+            raise ValueError("required symbol count exceeds top_n")
+        if len(self.required_symbols) > settings.surveillance_n:
+            raise ValueError("required symbol count exceeds surveillance_n")
         self._spot_age_anchor_ms: dict[str, int] = {}
 
     def _surveillance_with_benchmark(
@@ -52,20 +67,19 @@ class UniverseSelector:
         benchmark: Instrument | None,
         required_symbols: frozenset[str],
     ) -> tuple[Instrument, ...]:
-        selected = list(ranked[: self.settings.surveillance_n])
-        if benchmark is None or benchmark in selected:
-            return tuple(selected)
-        replaceable_index = next(
-            (
-                index
-                for index in range(len(selected) - 1, -1, -1)
-                if selected[index].symbol not in required_symbols
-            ),
-            None,
-        )
-        if replaceable_index is not None:
-            selected[replaceable_index] = benchmark
-        return tuple(selected)
+        required_items = [item for item in ranked if item.symbol in required_symbols]
+        chosen = {item.symbol for item in required_items}
+        if (
+            benchmark is not None
+            and benchmark.symbol not in chosen
+            and len(chosen) < self.settings.surveillance_n
+        ):
+            chosen.add(benchmark.symbol)
+        for item in ranked:
+            if len(chosen) >= self.settings.surveillance_n:
+                break
+            chosen.add(item.symbol)
+        return tuple(item for item in ranked if item.symbol in chosen)
 
     async def _spot_age_qualified(
         self,
@@ -134,19 +148,30 @@ class UniverseSelector:
         )
         if client.market is Market.SPOT:
             ranked = await self._spot_age_qualified(client, ranked)
+        available = {item.symbol for item in ranked}
+        missing_required = sorted(self.required_symbols - available)
+        if missing_required:
+            raise RequiredUniverseUnavailableError(
+                "required futures symbols unavailable: " + ", ".join(missing_required)
+            )
         liquid = [
             item
             for item in ranked
             if float(item.quote_volume) >= self.settings.min_quote_volume
         ]
-        tradable = tuple(liquid[: self.settings.top_n])
+        dynamic_slots = self.settings.top_n - len(self.required_symbols)
+        dynamic = [
+            item for item in liquid if item.symbol not in self.required_symbols
+        ][:dynamic_slots]
+        tradable_symbols = self.required_symbols | {item.symbol for item in dynamic}
+        tradable = tuple(item for item in ranked if item.symbol in tradable_symbols)
         benchmark = next(
             (item for item in ranked if item.symbol == BENCHMARK_SYMBOL), None
         )
         surveillance = self._surveillance_with_benchmark(
             ranked,
             benchmark,
-            frozenset(item.symbol for item in tradable),
+            self.required_symbols | frozenset(item.symbol for item in tradable),
         )
         context = () if benchmark is None else (benchmark,)
         return Universe(client.market, tradable, surveillance, context)

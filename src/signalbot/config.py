@@ -10,6 +10,20 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, m
 
 from signalbot.domain.enums import Market
 
+DIRECTIONAL_FROZEN_SYMBOLS = (
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "SUIUSDT",
+    "WIFUSDT",
+)
+DIRECTIONAL_PREREGISTRATION_SHA256 = (
+    "a1b2977c3de07959413d4509c888f34d275cd32a8070ca2e41ca288961fa5b31"
+)
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -110,6 +124,13 @@ class ShadowPolicySettings(StrictModel):
     directional_candidate_version: Literal["futures-bidirectional-v1"] = (
         "futures-bidirectional-v1"
     )
+    directional_symbols: tuple[str, ...] = ()
+    directional_preregistration_sha256: str | None = None
+
+    @field_validator("directional_symbols")
+    @classmethod
+    def normalize_directional_symbols(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(value.strip().upper() for value in values)
 
     @model_validator(mode="after")
     def freeze_observation_contract(self) -> ShadowPolicySettings:
@@ -144,6 +165,19 @@ class ShadowPolicySettings(StrictModel):
             if self.directional_activation_ms < self.directional_campaign_created_at_ms:
                 raise ValueError(
                     "directional activation_ms must be >= campaign_created_at_ms"
+                )
+            if len(self.directional_symbols) != len(set(self.directional_symbols)):
+                raise ValueError("directional_symbols must not contain duplicates")
+            if set(self.directional_symbols) != set(DIRECTIONAL_FROZEN_SYMBOLS):
+                raise ValueError(
+                    "directional observation requires the frozen eight-symbol universe"
+                )
+            if (
+                self.directional_preregistration_sha256
+                != DIRECTIONAL_PREREGISTRATION_SHA256
+            ):
+                raise ValueError(
+                    "directional observation requires the frozen preregistration sha256"
                 )
         if not self.observation_enabled:
             return self
@@ -413,6 +447,27 @@ class Settings(StrictModel):
                 raise ValueError(
                     "shadow observation requires subscribed intervals: "
                     + ", ".join(missing)
+                )
+        if self.shadow.directional_observation_enabled:
+            directional_count = len(self.shadow.directional_symbols)
+            if Market.FUTURES not in self.binance.markets:
+                raise ValueError("directional observation requires the futures market")
+            if self.binance.primary_interval != "5m":
+                raise ValueError("directional observation requires primary_interval=5m")
+            required_intervals = {"5m", "15m", "1h"}
+            missing = sorted(required_intervals.difference(self.binance.intervals))
+            if missing:
+                raise ValueError(
+                    "directional observation requires subscribed intervals: "
+                    + ", ".join(missing)
+                )
+            if self.binance.top_n < directional_count:
+                raise ValueError(
+                    "directional observation requires top_n >= directional symbol count"
+                )
+            if self.binance.surveillance_n < directional_count:
+                raise ValueError(
+                    "directional observation requires surveillance_n >= directional symbol count"
                 )
         return self
 

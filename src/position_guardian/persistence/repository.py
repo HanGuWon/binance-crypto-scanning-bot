@@ -13,13 +13,17 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from position_guardian.alert_contract import (
+    GUARDIAN_ALERT_DELIVERY_DISCORD_V1,
     GUARDIAN_ALERT_OUTBOX_ACTIVE_STATUSES,
     GUARDIAN_ALERT_SOURCE_EVENT_TYPES,
     GUARDIAN_RECONCILIATION_ALERT_SOURCE_V1,
+    GuardianAlertDeliveryMode,
+    guardian_alert_delivery_mode,
 )
 from position_guardian.domain import AdoptionCandidate, ManagedPositionIdentity
 from position_guardian.exchange.protocol import PositionSnapshot
 from position_guardian.persistence.models import (
+    GuardianAlertAttemptRow,
     GuardianAlertOutboxRow,
     GuardianBase,
     GuardianEventRow,
@@ -61,6 +65,17 @@ class GuardianAlertOutboxItem:
     updated_at_ms: int
     response_code: int | None
     message_id: str | None
+    detail_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GuardianAlertAttemptItem:
+    attempt_id: str
+    alert_id: str
+    attempt: int
+    status: str
+    occurred_at_ms: int
+    response_code: int | None
     detail_code: str | None
 
 
@@ -185,6 +200,18 @@ def _outbox_item(row: GuardianAlertOutboxRow) -> GuardianAlertOutboxItem:
         updated_at_ms=row.updated_at_ms,
         response_code=row.response_code,
         message_id=row.message_id,
+        detail_code=row.detail_code,
+    )
+
+
+def _attempt_item(row: GuardianAlertAttemptRow) -> GuardianAlertAttemptItem:
+    return GuardianAlertAttemptItem(
+        attempt_id=row.attempt_id,
+        alert_id=row.alert_id,
+        attempt=row.attempt,
+        status=row.status,
+        occurred_at_ms=row.occurred_at_ms,
+        response_code=row.response_code,
         detail_code=row.detail_code,
     )
 
@@ -347,6 +374,7 @@ class GuardianRepository:
         protective_order_confirmed: bool | None = None,
         uncertainty_state: str | None = None,
         shadow_mode: bool | None = None,
+        alert_delivery_mode: GuardianAlertDeliveryMode = "disabled",
         terminal_release_event_id: str | None = None,
         terminal_release_reason: str | None = None,
     ) -> bool:
@@ -376,6 +404,7 @@ class GuardianRepository:
                     protective_order_confirmed=protective_order_confirmed,
                     uncertainty_state=uncertainty_state,
                     shadow_mode=shadow_mode,
+                    alert_delivery_mode=alert_delivery_mode,
                     terminal_release_event_id=terminal_release_event_id,
                     terminal_release_reason=terminal_release_reason,
                 )
@@ -434,7 +463,7 @@ class GuardianRepository:
                 "position": position_payload,
             }
             if evidence_enabled:
-                payload["alert_source"] = {
+                alert_source: dict[str, object] = {
                     "schema_version": GUARDIAN_RECONCILIATION_ALERT_SOURCE_V1,
                     "protective_order_confirmed": cast(bool, protective_order_confirmed),
                     "uncertainty_state": cast(str, uncertainty_state),
@@ -442,6 +471,9 @@ class GuardianRepository:
                     "projection_state_before": projection.state if projection is not None else None,
                     "previous_quantity": projection.quantity if projection is not None else None,
                 }
+                if alert_delivery_mode != "disabled":
+                    alert_source["delivery_mode"] = alert_delivery_mode
+                payload["alert_source"] = alert_source
             if terminal_release_event_id is not None and terminal_release_reason is not None:
                 payload["terminal_release"] = {
                     "event_id": terminal_release_event_id,
@@ -573,6 +605,7 @@ class GuardianRepository:
         protective_order_confirmed: bool | None,
         uncertainty_state: str | None,
         shadow_mode: bool | None,
+        alert_delivery_mode: GuardianAlertDeliveryMode,
         terminal_release_event_id: str | None,
         terminal_release_reason: str | None,
     ) -> None:
@@ -626,6 +659,11 @@ class GuardianRepository:
             raise GuardianEventConflictError(
                 f"event_id={existing.event_id} is already bound to different "
                 "reconciliation evidence"
+            )
+        if alert_source.get("delivery_mode", "disabled") != alert_delivery_mode:
+            raise GuardianEventConflictError(
+                f"event_id={existing.event_id} is already bound to different "
+                "alert delivery authority"
             )
 
     def record_release(
@@ -863,6 +901,15 @@ class GuardianRepository:
                 raise GuardianProjectionError(
                     "Guardian alert source event type is not eligible for materialization"
                 )
+            delivery_mode = guardian_alert_delivery_mode(
+                source_event.event_type,
+                source_event.payload_json,
+            )
+            initial_status = (
+                "pending"
+                if delivery_mode == GUARDIAN_ALERT_DELIVERY_DISCORD_V1
+                else "disabled"
+            )
             existing = session.get(GuardianAlertOutboxRow, alert_id)
             if existing is not None:
                 if (
@@ -874,22 +921,25 @@ class GuardianRepository:
                         f"alert_id={alert_id} is already bound to different content"
                     )
                 return False
-            active = session.scalar(
-                select(func.count())
-                .select_from(GuardianAlertOutboxRow)
-                .where(GuardianAlertOutboxRow.status.in_(GUARDIAN_ALERT_OUTBOX_ACTIVE_STATUSES))
-            )
-            if int(active or 0) >= maximum_active_items:
-                raise GuardianAlertOutboxCapacityError(
-                    "active Guardian alert outbox reached its configured hard limit"
+            if initial_status == "pending":
+                active = session.scalar(
+                    select(func.count())
+                    .select_from(GuardianAlertOutboxRow)
+                    .where(
+                        GuardianAlertOutboxRow.status.in_(GUARDIAN_ALERT_OUTBOX_ACTIVE_STATUSES)
+                    )
                 )
+                if int(active or 0) >= maximum_active_items:
+                    raise GuardianAlertOutboxCapacityError(
+                        "active Guardian alert outbox reached its configured hard limit"
+                    )
             session.add(
                 GuardianAlertOutboxRow(
                     alert_id=alert_id,
                     source_event_id=source_event_id,
                     payload_json=payload_json,
                     payload_sha256=payload_sha256,
-                    status="disabled",
+                    status=initial_status,
                     attempts=0,
                     created_at_ms=created_at_ms,
                     updated_at_ms=created_at_ms,
@@ -941,6 +991,33 @@ class GuardianRepository:
         self, alert_id: str, updated_at_ms: int
     ) -> GuardianAlertOutboxItem | None:
         with Session(self._engine) as session:
+            row = session.get(GuardianAlertOutboxRow, alert_id)
+            if row is None or row.status != "pending":
+                return None
+            source_event = session.get(GuardianEventRow, row.source_event_id)
+            if source_event is None:
+                row.status = "dead"
+                row.updated_at_ms = updated_at_ms
+                row.detail_code = "SOURCE_EVENT_MISSING"
+                session.commit()
+                return None
+            try:
+                source_mode = guardian_alert_delivery_mode(
+                    source_event.event_type,
+                    source_event.payload_json,
+                )
+            except ValueError:
+                row.status = "dead"
+                row.updated_at_ms = updated_at_ms
+                row.detail_code = "SOURCE_AUTHORITY_INVALID"
+                session.commit()
+                return None
+            if source_mode != GUARDIAN_ALERT_DELIVERY_DISCORD_V1:
+                row.status = "disabled"
+                row.updated_at_ms = updated_at_ms
+                row.detail_code = "SOURCE_NOT_DELIVERY_AUTHORIZED"
+                session.commit()
+                return None
             result = cast(
                 CursorResult[Any],
                 session.execute(
@@ -966,6 +1043,44 @@ class GuardianRepository:
             row = session.get(GuardianAlertOutboxRow, alert_id)
             return None if row is None else _outbox_item(row)
 
+    def disable_unauthorized_pending_guardian_alerts(self, updated_at_ms: int) -> int:
+        """Fail closed any pending row whose immutable source never authorized Discord."""
+
+        disabled = 0
+        with Session(self._engine) as session, session.begin():
+            rows = list(
+                session.scalars(
+                    select(GuardianAlertOutboxRow).where(
+                        GuardianAlertOutboxRow.status == "pending"
+                    )
+                ).all()
+            )
+            for row in rows:
+                source_event = session.get(GuardianEventRow, row.source_event_id)
+                if source_event is None:
+                    row.status = "dead"
+                    row.updated_at_ms = updated_at_ms
+                    row.detail_code = "SOURCE_EVENT_MISSING"
+                    disabled += 1
+                    continue
+                try:
+                    source_mode = guardian_alert_delivery_mode(
+                        source_event.event_type,
+                        source_event.payload_json,
+                    )
+                except ValueError:
+                    row.status = "dead"
+                    row.updated_at_ms = updated_at_ms
+                    row.detail_code = "SOURCE_AUTHORITY_INVALID"
+                    disabled += 1
+                    continue
+                if source_mode != GUARDIAN_ALERT_DELIVERY_DISCORD_V1:
+                    row.status = "disabled"
+                    row.updated_at_ms = updated_at_ms
+                    row.detail_code = "SOURCE_NOT_DELIVERY_AUTHORIZED"
+                    disabled += 1
+            return disabled
+
     def mark_guardian_alert(
         self,
         alert_id: str,
@@ -982,8 +1097,15 @@ class GuardianRepository:
         allowed = {"pending", "delivered", "uncertain", "dead"}
         if status not in allowed:
             raise ValueError(f"unsupported Guardian alert outbox status: {status}")
+        if status == "pending" and (
+            response_code != 429 or detail_code != "RATE_LIMITED"
+        ):
+            raise ValueError("Guardian retry to pending is allowed only for HTTP 429")
         _validate_detail_code(detail_code)
         with Session(self._engine) as session:
+            row = session.get(GuardianAlertOutboxRow, alert_id)
+            if row is None or row.status != expected_status:
+                return False
             result = cast(
                 CursorResult[Any],
                 session.execute(
@@ -1001,27 +1123,99 @@ class GuardianRepository:
                     )
                 ),
             )
+            if result.rowcount == 1:
+                self._append_alert_attempt(
+                    session,
+                    alert_id=alert_id,
+                    attempt=row.attempts,
+                    status="rate_limited" if status == "pending" else status,
+                    occurred_at_ms=updated_at_ms,
+                    response_code=response_code,
+                    detail_code=detail_code,
+                )
             session.commit()
             return result.rowcount == 1
 
     def mark_inflight_guardian_alerts_uncertain(self, updated_at_ms: int) -> int:
         """Quarantine Guardian delivery attempts interrupted by process restart."""
 
-        with Session(self._engine) as session:
-            result = cast(
-                CursorResult[Any],
-                session.execute(
-                    update(GuardianAlertOutboxRow)
-                    .where(GuardianAlertOutboxRow.status == "sending")
-                    .values(
-                        status="uncertain",
-                        updated_at_ms=updated_at_ms,
-                        detail_code="PROCESS_RESTART_IN_FLIGHT",
+        with Session(self._engine) as session, session.begin():
+            rows = list(
+                session.scalars(
+                    select(GuardianAlertOutboxRow).where(
+                        GuardianAlertOutboxRow.status == "sending"
                     )
-                ),
+                ).all()
             )
-            session.commit()
-            return int(result.rowcount or 0)
+            for row in rows:
+                row.status = "uncertain"
+                row.updated_at_ms = updated_at_ms
+                row.detail_code = "PROCESS_RESTART_IN_FLIGHT"
+                self._append_alert_attempt(
+                    session,
+                    alert_id=row.alert_id,
+                    attempt=row.attempts,
+                    status="uncertain",
+                    occurred_at_ms=updated_at_ms,
+                    response_code=row.response_code,
+                    detail_code="PROCESS_RESTART_IN_FLIGHT",
+                )
+            return len(rows)
+
+    def list_guardian_alert_attempts(
+        self,
+        alert_id: str,
+    ) -> list[GuardianAlertAttemptItem]:
+        with Session(self._engine) as session:
+            rows = session.scalars(
+                select(GuardianAlertAttemptRow)
+                .where(GuardianAlertAttemptRow.alert_id == alert_id)
+                .order_by(
+                    GuardianAlertAttemptRow.attempt,
+                    GuardianAlertAttemptRow.occurred_at_ms,
+                    GuardianAlertAttemptRow.attempt_id,
+                )
+            ).all()
+            return [_attempt_item(row) for row in rows]
+
+    @staticmethod
+    def _append_alert_attempt(
+        session: Session,
+        *,
+        alert_id: str,
+        attempt: int,
+        status: str,
+        occurred_at_ms: int,
+        response_code: int | None,
+        detail_code: str | None,
+    ) -> None:
+        attempt_id = hashlib.sha256(
+            f"{alert_id}|{attempt}|{status}".encode()
+        ).hexdigest()
+        existing = session.get(GuardianAlertAttemptRow, attempt_id)
+        if existing is not None:
+            if (
+                existing.alert_id != alert_id
+                or existing.attempt != attempt
+                or existing.status != status
+                or existing.response_code != response_code
+                or existing.detail_code != detail_code
+            ):
+                raise GuardianAlertOutboxConflictError(
+                    "Guardian alert attempt identity is already bound to different content"
+                )
+            return
+        session.add(
+            GuardianAlertAttemptRow(
+                attempt_id=attempt_id,
+                alert_id=alert_id,
+                attempt=attempt,
+                status=status,
+                occurred_at_ms=occurred_at_ms,
+                response_code=response_code,
+                detail_code=detail_code,
+            )
+        )
 
     def _record_identity_event(
         self,

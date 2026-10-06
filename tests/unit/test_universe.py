@@ -6,7 +6,10 @@ from signalbot.clock import ReplayClock
 from signalbot.config import BinanceSettings
 from signalbot.domain.enums import Market
 from signalbot.exchange.binance.rest import BinanceRestClient
-from signalbot.exchange.binance.universe import UniverseSelector
+from signalbot.exchange.binance.universe import (
+    RequiredUniverseUnavailableError,
+    UniverseSelector,
+)
 
 
 class FakeRest:
@@ -147,3 +150,45 @@ async def test_btc_benchmark_uses_only_a_non_tradable_surveillance_slot() -> Non
     assert universe.tradable_symbols == ["ETHUSDT"]
     assert universe.surveillance_symbols == frozenset({"ETHUSDT", "BTCUSDT"})
     assert universe.context_symbols == frozenset({"BTCUSDT"})
+
+
+@pytest.mark.asyncio
+async def test_required_symbol_bypasses_volume_floor_without_exceeding_panels() -> None:
+    settings = BinanceSettings(
+        top_n=2,
+        surveillance_n=2,
+        min_quote_volume=900_000,
+        minimum_age_days=30,
+    )
+    selector = UniverseSelector(
+        settings,
+        ReplayClock(1_710_000_000_000),
+        required_symbols=("ETHUSDT",),
+    )
+    universe = await selector.select(cast(BinanceRestClient, FakeRest()))
+
+    assert universe.tradable_symbols == ["BTCUSDT", "ETHUSDT"]
+    assert universe.surveillance_symbols == frozenset({"BTCUSDT", "ETHUSDT"})
+    assert len(universe.tradable_symbols) == settings.top_n
+    assert len(universe.surveillance_symbols) == settings.surveillance_n
+
+
+@pytest.mark.asyncio
+async def test_missing_required_symbol_fails_closed() -> None:
+    settings = BinanceSettings(
+        top_n=2,
+        surveillance_n=2,
+        min_quote_volume=100,
+        minimum_age_days=30,
+    )
+    selector = UniverseSelector(
+        settings,
+        ReplayClock(1_710_000_000_000),
+        required_symbols=("SOLUSDT",),
+    )
+
+    with pytest.raises(
+        RequiredUniverseUnavailableError,
+        match="SOLUSDT",
+    ):
+        await selector.select(cast(BinanceRestClient, FakeRest()))

@@ -1,5 +1,6 @@
 {
   "blockers": [
+    "receipt integrity or identity check failed",
     "forward shadow evidence is incomplete",
     "Freqtrade sidecar was not installed or executed",
     "promotion evidence does not yet contain an independent pass"
@@ -11,15 +12,15 @@
     "config_matches": true,
     "historical_identity_matches": true,
     "output_hashes_match": true,
-    "source_identity_matches": true
+    "source_identity_matches": false
   },
   "forward_shadow_status": "NOT_STARTED",
   "freqtrade_status": "NOT_INSTALLED",
   "historical_screen": "PASS",
   "output_hash_mismatches": [],
   "protocol_version": "futures_bidirectional_independent_review_v1",
-  "review_sha256": "daa2bbc2562f01137ee730ca19794d751dcd86f91d0fefbce50fbd51148fff79",
-  "source_identity_current": "worktree-source-v1:0f629d1bb44ce10cfd8fec241ae2958105533fb066c189867605c47608dfcba6",
-  "source_identity_recorded": "worktree-source-v1:0f629d1bb44ce10cfd8fec241ae2958105533fb066c189867605c47608dfcba6",
+  "review_sha256": "82f6c9d35b09afd359b7c1dfd2f8eef9c830f0339265a961d4d98016e3dd0f3f",
+  "source_identity_current": "worktree-source-v1:490bd48f5a9f23277b472bbf2a4e9eaee9e695bf315a7d32fe0b85557c2af274",
+  "source_identity_recorded": "worktree-source-v1:c89e0e5aa776033c4550f1c4bc6139c94ea66718b63b775a7d05ff1ed1b7e334",
   "status": "BLOCKED"
 }

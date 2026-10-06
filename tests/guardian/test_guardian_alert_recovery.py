@@ -221,7 +221,11 @@ def test_restart_quarantines_sending_without_reopening_or_retrying() -> None:
             event_time_ms=3000,
             created_at_ms=3001,
             identity=_identity(),
-            payload={"schema_version": "non-alert-source-v1", "reason": "NONE"},
+            payload={
+                "schema_version": "non-alert-source-v1",
+                "reason": "NONE",
+                "delivery_mode": "discord_v1",
+            },
         )
         alert_id = "a" * 64
         _seed_pending_transport_row(
@@ -255,7 +259,11 @@ def test_delivered_alert_is_not_reopened_by_restart_recovery() -> None:
             event_time_ms=3000,
             created_at_ms=3001,
             identity=_identity(),
-            payload={"schema_version": "non-alert-source-v1", "reason": "NONE"},
+            payload={
+                "schema_version": "non-alert-source-v1",
+                "reason": "NONE",
+                "delivery_mode": "discord_v1",
+            },
         )
         alert_id = "b" * 64
         _seed_pending_transport_row(

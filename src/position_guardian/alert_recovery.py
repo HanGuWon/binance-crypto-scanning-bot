@@ -18,6 +18,7 @@ class GuardianAlertRecovery:
     alerts_projected: int
     alerts_inserted: int
     inflight_quarantined: int
+    unauthorized_pending_disabled: int = 0
     exchange_write_calls: int = 0
 
 
@@ -64,6 +65,7 @@ def recover_guardian_alerts(
     if now_ms < 0:
         raise ValueError("now_ms must be non-negative")
     quarantined = repository.mark_inflight_guardian_alerts_uncertain(now_ms)
+    unauthorized_pending_disabled = repository.disable_unauthorized_pending_guardian_alerts(now_ms)
     source_events = repository.list_alert_source_events()
     projected = 0
     inserted = 0
@@ -80,4 +82,5 @@ def recover_guardian_alerts(
         alerts_projected=projected,
         alerts_inserted=inserted,
         inflight_quarantined=quarantined,
+        unauthorized_pending_disabled=unauthorized_pending_disabled,
     )

@@ -8,6 +8,12 @@ from urllib.parse import urlsplit, urlunsplit
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
+from position_guardian.alert_contract import (
+    GUARDIAN_ALERT_DELIVERY_DISABLED,
+    GUARDIAN_ALERT_DELIVERY_DISCORD_V1,
+    GuardianAlertDeliveryMode,
+)
+
 GuardianMode = Literal["observe", "shadow", "testnet", "live_protection"]
 ExchangeEnvironment = Literal["production", "testnet"]
 
@@ -31,6 +37,46 @@ class GuardianCredentials(StrictModel):
         return SecretStr(raw)
 
 
+class GuardianAlertSettings(StrictModel):
+    discord_enabled: bool = False
+    discord_webhook_url: SecretStr | None = Field(default=None, repr=False)
+    max_attempts: int = Field(default=3, ge=1, le=10)
+    timeout_seconds: float = Field(default=10, ge=1, le=60)
+    retry_after_max_seconds: float = Field(default=30, ge=0.05, le=60)
+    outbox_max_active_items: int = Field(default=10_000, ge=100, le=1_000_000)
+    batch_limit: int = Field(default=100, ge=1, le=1_000)
+
+    @field_validator("discord_webhook_url")
+    @classmethod
+    def validate_discord_webhook_url(
+        cls, value: SecretStr | None
+    ) -> SecretStr | None:
+        if value is None:
+            return None
+        raw = value.get_secret_value().strip()
+        try:
+            parsed = urlsplit(raw)
+            hostname = parsed.hostname
+            _port = parsed.port
+        except ValueError as exc:
+            raise ValueError(
+                "discord_webhook_url must be an absolute HTTPS URL"
+            ) from exc
+        if (
+            parsed.scheme.lower() != "https"
+            or not hostname
+            or any(character.isspace() for character in raw)
+        ):
+            raise ValueError("discord_webhook_url must be an absolute HTTPS URL")
+        return SecretStr(raw)
+
+    @model_validator(mode="after")
+    def enabled_requires_url(self) -> GuardianAlertSettings:
+        if self.discord_enabled and self.discord_webhook_url is None:
+            raise ValueError("discord_enabled requires discord_webhook_url")
+        return self
+
+
 class GuardianSettings(StrictModel):
     mode: GuardianMode = "observe"
     account_alias: str
@@ -40,6 +86,7 @@ class GuardianSettings(StrictModel):
         repr=False,
     )
     credentials: GuardianCredentials = Field(default_factory=GuardianCredentials, repr=False)
+    alerts: GuardianAlertSettings = Field(default_factory=GuardianAlertSettings, repr=False)
     exchange_writes_enabled: bool = False
 
     @field_validator("account_alias")
@@ -127,7 +174,24 @@ def settings_summary(settings: GuardianSettings) -> dict[str, object]:
             and settings.credentials.api_secret is not None
         ),
         "exchange_writes_enabled": settings.exchange_writes_enabled,
+        "guardian_alert_transport": {
+            "discord_enabled": settings.alerts.discord_enabled,
+            "discord_webhook_configured": settings.alerts.discord_webhook_url is not None,
+            "max_attempts": settings.alerts.max_attempts,
+            "timeout_seconds": settings.alerts.timeout_seconds,
+            "retry_after_max_seconds": settings.alerts.retry_after_max_seconds,
+            "outbox_max_active_items": settings.alerts.outbox_max_active_items,
+            "batch_limit": settings.alerts.batch_limit,
+        },
     }
+
+
+def configured_guardian_alert_delivery_mode(
+    settings: GuardianSettings,
+) -> GuardianAlertDeliveryMode:
+    if settings.alerts.discord_enabled and settings.alerts.discord_webhook_url is not None:
+        return GUARDIAN_ALERT_DELIVERY_DISCORD_V1
+    return GUARDIAN_ALERT_DELIVERY_DISABLED
 
 
 def _apply_environment(data: dict[str, Any]) -> dict[str, Any]:
@@ -140,6 +204,10 @@ def _apply_environment(data: dict[str, Any]) -> dict[str, Any]:
         data["database_url"] = database_url
     if account_alias := os.getenv("POSITION_GUARDIAN_ACCOUNT_ALIAS"):
         data["account_alias"] = account_alias
+    alerts = dict(data.get("alerts", {}))
+    if webhook := os.getenv("POSITION_GUARDIAN_DISCORD_WEBHOOK_URL"):
+        alerts["discord_webhook_url"] = webhook
+    data["alerts"] = alerts
     data["credentials"] = credentials
     return data
 
@@ -155,5 +223,11 @@ def load_guardian_settings(path: str | Path) -> GuardianSettings:
         raise ValueError(
             "Guardian API credentials must be supplied through "
             "POSITION_GUARDIAN_API_KEY and POSITION_GUARDIAN_API_SECRET"
+        )
+    alerts = raw.get("alerts")
+    if isinstance(alerts, dict) and "discord_webhook_url" in alerts:
+        raise ValueError(
+            "Guardian Discord webhook must be supplied through "
+            "POSITION_GUARDIAN_DISCORD_WEBHOOK_URL"
         )
     return GuardianSettings.model_validate(_apply_environment(dict(raw)))
