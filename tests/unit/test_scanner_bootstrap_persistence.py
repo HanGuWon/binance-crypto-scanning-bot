@@ -78,7 +78,9 @@ async def test_scanner_bootstrap_persists_each_rest_batch_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scanner_prepares_tradable_and_independent_context_market_data() -> None:
+async def test_scanner_prepares_tradable_and_independent_context_market_data(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     class FakeSelector:
         async def select(self, _rest: object) -> Universe:
             eth = Instrument(
@@ -120,11 +122,21 @@ async def test_scanner_prepares_tradable_and_independent_context_market_data() -
             runtime=runtime,
             market=Market.SPOT,
             universe=None,
+            settings=SimpleNamespace(
+                binance=SimpleNamespace(bootstrap_close_margin_ms=1234)
+            ),
             _bootstrap=bootstrap,
         ),
     )
 
-    universe = await MarketScanner.prepare(scanner)
+    with caplog.at_level("INFO"):
+        universe = await MarketScanner.prepare(scanner)
+    margin_logs = [
+        r for r in caplog.records if "bootstrap close margin effective" in r.getMessage()
+    ]
+    assert [r.getMessage() for r in margin_logs] == [
+        "bootstrap close margin effective: 1234 ms"
+    ]
 
     assert universe.tradable_symbols == ["ETHUSDT"]
     assert runtime.active == (

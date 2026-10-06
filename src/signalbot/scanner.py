@@ -109,6 +109,13 @@ class MarketScanner:
         )
         if self.market is Market.FUTURES:
             await self._refresh_funding(universe.tradable_symbols, bootstrap=True)
+        # The margin is excluded from Settings.model_dump() (frozen hashes), so
+        # log the effective operational value once per market startup.
+        LOGGER.info(
+            "bootstrap close margin effective: %d ms",
+            self.settings.binance.bootstrap_close_margin_ms,
+            extra={"market": self.market.value},
+        )
         await self._bootstrap(market_data_symbols)
         LOGGER.info("market scanner prepared", extra={"market": self.market.value})
         return universe
