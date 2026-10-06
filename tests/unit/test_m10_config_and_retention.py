@@ -7,12 +7,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
 from conftest import make_candle, make_decision
 from signalbot.alerts.embeds import build_discord_payload
 from signalbot.cli import _parser
-from signalbot.config import Settings, load_settings, unevaluated_pullback_intervals
+from signalbot.config import (
+    DIRECTIONAL_FROZEN_SYMBOLS,
+    DIRECTIONAL_PREREGISTRATION_SHA256,
+    Settings,
+    _apply_environment,
+    load_settings,
+    unevaluated_pullback_intervals,
+)
 from signalbot.domain.enums import Market
 from signalbot.persistence.models import (
     AlertOutboxRow,
@@ -33,9 +39,62 @@ WEBHOOK = "https://discord.com/api/webhooks/1/test-token"
 # --------------------------------------------------------------------------
 
 
-def _render_directional_template(tmp_path: Path, **alert_overrides: Any) -> Path:
-    template = ROOT / "deployment" / "config" / "prospective-futures-bidirectional-v1.yaml.template"
-    text = template.read_text(encoding="utf-8")
+def _directional_data(**alert_overrides: Any) -> dict[str, Any]:
+    """In-memory directional settings (deployment/ is gitignored, so CI has no template)."""
+
+    return {
+        "shadow": {
+            "directional_observation_enabled": True,
+            "directional_campaign_id": "futures-bidirectional-test-1",
+            "directional_source_identity": "worktree-source-v1:" + "a" * 64,
+            "directional_campaign_created_at_ms": 100,
+            "directional_activation_ms": 200,
+            "directional_symbols": list(DIRECTIONAL_FROZEN_SYMBOLS),
+            "directional_preregistration_sha256": DIRECTIONAL_PREREGISTRATION_SHA256,
+        },
+        "alerts": alert_overrides,
+    }
+
+
+def test_directional_observation_validates_without_discord() -> None:
+    settings = Settings.model_validate(_directional_data())
+    assert settings.shadow.directional_observation_enabled is True
+    assert settings.alerts.discord_enabled is False
+
+
+def test_directional_with_discord_enabled_in_config_is_rejected() -> None:
+    data = _directional_data(discord_enabled=True, discord_webhook_url=WEBHOOK)
+    with pytest.raises(ValueError, match="directional_observation_enabled"):
+        Settings.model_validate(data)
+
+
+def test_webhook_env_var_auto_enable_is_named_in_the_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SIGNALBOT_DISCORD_WEBHOOK_URL", WEBHOOK)
+    data = _apply_environment(_directional_data())
+    assert data["alerts"]["discord_enabled"] is True  # the env var flips it on
+    with pytest.raises(ValueError) as caught:
+        Settings.model_validate(data)
+    assert "SIGNALBOT_DISCORD_WEBHOOK_URL" in str(caught.value)
+    assert "alerts.discord_enabled" in str(caught.value)
+
+
+def test_env_var_absent_keeps_directional_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SIGNALBOT_DISCORD_WEBHOOK_URL", raising=False)
+    data = _apply_environment(_directional_data())
+    assert Settings.model_validate(data).alerts.discord_enabled is False
+
+
+TEMPLATE = ROOT / "deployment" / "config" / "prospective-futures-bidirectional-v1.yaml.template"
+
+
+@pytest.mark.skipif(not TEMPLATE.exists(), reason="deployment/ is gitignored; local-only template")
+def test_directional_template_validates_when_the_webhook_env_var_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SIGNALBOT_DISCORD_WEBHOOK_URL", raising=False)
+    text = TEMPLATE.read_text(encoding="utf-8")
     for token, value in {
         "__CAMPAIGN_ID__": "futures-bidirectional-test",
         "__SOURCE_IDENTITY_HEX__": "a" * 64,
@@ -43,42 +102,11 @@ def _render_directional_template(tmp_path: Path, **alert_overrides: Any) -> Path
         "__ACTIVATION_MS__": "1700000300000",
     }.items():
         text = text.replace(token, value)
-    data = yaml.safe_load(text)
-    data["alerts"].update(alert_overrides)
     path = tmp_path / "directional.yaml"
-    path.write_text(yaml.safe_dump(data), encoding="utf-8")
-    return path
-
-
-def test_directional_template_validates_when_the_webhook_env_var_is_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("SIGNALBOT_DISCORD_WEBHOOK_URL", raising=False)
-    settings = load_settings(_render_directional_template(tmp_path))
+    path.write_text(text, encoding="utf-8")
+    settings = load_settings(path)
     assert settings.shadow.directional_observation_enabled is True
     assert settings.alerts.discord_enabled is False
-
-
-def test_directional_with_discord_enabled_in_config_is_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("SIGNALBOT_DISCORD_WEBHOOK_URL", raising=False)
-    path = _render_directional_template(
-        tmp_path, discord_enabled=True, discord_webhook_url=WEBHOOK
-    )
-    with pytest.raises(ValueError, match="directional_observation_enabled"):
-        load_settings(path)
-
-
-def test_webhook_env_var_auto_enable_is_named_in_the_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = _render_directional_template(tmp_path)
-    monkeypatch.setenv("SIGNALBOT_DISCORD_WEBHOOK_URL", WEBHOOK)
-    with pytest.raises(ValueError) as caught:
-        load_settings(path)
-    assert "SIGNALBOT_DISCORD_WEBHOOK_URL" in str(caught.value)
-    assert "alerts.discord_enabled" in str(caught.value)
 
 
 def test_discord_without_directional_observation_is_still_valid(
