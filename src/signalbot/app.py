@@ -17,6 +17,7 @@ from signalbot.signals.protection_context import ProtectionContext
 
 LOGGER = logging.getLogger(__name__)
 
+_OUTBOX_DRAIN_TASK_NAME = "discord-outbox-drain"
 _MONITOR_STOP_TIMEOUT_SECONDS = 5.0
 _GRACEFUL_DRAIN_TIMEOUT_SECONDS = 30.0
 _RESOURCE_CLOSE_TIMEOUT_SECONDS = 15.0
@@ -137,21 +138,33 @@ class SignalApplication:
             auxiliary_tasks.append(
                 asyncio.create_task(self._bounded_stop_timer(), name="bounded-stop-timer")
             )
+        drain_tasks: list[asyncio.Task[None]] = []
         if self.settings.alerts.discord_enabled:
-            auxiliary_tasks.append(
+            drain_tasks.append(
                 asyncio.create_task(
                     self.notifier.run_dispatch_loop(self.stop_event),
-                    name="discord-outbox-drain",
+                    name=_OUTBOX_DRAIN_TASK_NAME,
                 )
             )
+        reported_tasks: set[asyncio.Task[None]] = set()
         try:
             # Explicit task ownership (Phase-K supervisor):
             # - critical_tasks must ALL complete; whichever exits first decides.
             # - monitor is stop-aware and returns on normal stop.
             # - a scanner crash surfaces here and triggers fail-closed stop.
+            # - the Discord outbox drain is supervised too: it must only end on
+            #   stop or cancellation, otherwise alerts silently stop flowing.
             done, pending = await asyncio.wait(
-                critical_tasks, return_when=asyncio.FIRST_COMPLETED
+                [*critical_tasks, *drain_tasks], return_when=asyncio.FIRST_COMPLETED
             )
+            drain_error = self._drain_exit_error(done)
+            if drain_error is not None:
+                LOGGER.critical(
+                    "Discord outbox drain exited unexpectedly; failing closed",
+                    exc_info=drain_error,
+                )
+                reported_tasks.update(t for t in done if t in drain_tasks)
+                self.stop_event.set()
             if any(t in done for t in self._scanner_tasks(critical_tasks)):
                 # A scanner exited first: crash or unexpected exit. Capture its
                 # exception so it is never silently swallowed, then fail closed.
@@ -164,6 +177,7 @@ class SignalApplication:
                             "market scanner exited unexpectedly; failing closed",
                             exc_info=error,
                         )
+                        reported_tasks.add(scanner_task)
                 self.stop_event.set()
                 scanner_error: BaseException | None = None
                 for scanner_task in self._scanner_tasks(done):
@@ -181,13 +195,15 @@ class SignalApplication:
                 # the recorder-failure monitor with a fatal error, it already
                 # set stop_event. Await remaining critical tasks gracefully.
                 await self._wait_remaining_gracefully(pending)
+            if drain_error is not None:
+                raise drain_error
         finally:
             self.stop_event.set()
-            all_tasks = [*critical_tasks, *auxiliary_tasks]
+            all_tasks = [*critical_tasks, *drain_tasks, *auxiliary_tasks]
             for task in all_tasks:
                 task.cancel()
             try:
-                await asyncio.wait_for(
+                outcomes = await asyncio.wait_for(
                     asyncio.gather(*all_tasks, return_exceptions=True),
                     timeout=_GRACEFUL_DRAIN_TIMEOUT_SECONDS,
                 )
@@ -196,6 +212,17 @@ class SignalApplication:
                     "task teardown gather exceeded deadline; continuing resource "
                     "closes so repository close is still reached"
                 )
+            else:
+                for task, outcome in zip(all_tasks, outcomes, strict=True):
+                    if (
+                        isinstance(outcome, Exception)
+                        and task not in reported_tasks
+                    ):
+                        LOGGER.error(
+                            "task ended with an exception during teardown",
+                            extra={"task": task.get_name()},
+                            exc_info=outcome,
+                        )
             for scanner in self.scanners:
                 await self._bounded_close(
                     scanner.close(),
@@ -209,6 +236,18 @@ class SignalApplication:
                 await self._bounded_close(self.notifier.close(), "notifier-close")
             self.repository.close()
         LOGGER.info("signal application stopped")
+
+    def _drain_exit_error(self, done: set[asyncio.Task[None]]) -> BaseException | None:
+        """Return the failure for an outbox drain that ended without a stop."""
+        for task in done:
+            if task.get_name() != _OUTBOX_DRAIN_TASK_NAME or task.cancelled():
+                continue
+            error = task.exception()
+            if error is not None:
+                return error
+            if not self.stop_event.is_set():
+                return RuntimeError("Discord outbox drain exited without a stop request")
+        return None
 
     @staticmethod
     def _scanner_tasks(tasks) -> list[asyncio.Task]:

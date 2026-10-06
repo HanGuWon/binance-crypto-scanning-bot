@@ -236,17 +236,55 @@ class DiscordNotifier:
         *,
         batch_limit: int = 100,
         idle_seconds: float = 1.0,
+        error_backoff_initial_seconds: float = 1.0,
+        error_backoff_max_seconds: float = 60.0,
     ) -> None:
-        """Continuously drain bounded outbox batches until cancellation."""
+        """Continuously drain bounded outbox batches until stop or cancellation.
 
-        if batch_limit < 1 or idle_seconds <= 0:
+        A failing batch (for example a transient database error) is logged at
+        ERROR and retried with exponential backoff capped at
+        ``error_backoff_max_seconds``; the wait is interrupted by ``stop_event``.
+        An item that was claimed as ``sending`` when the error hit is not
+        retried by this loop; it is quarantined as ``uncertain`` by
+        ``recover_inflight`` on the next restart (existing behavior).
+        ``asyncio.CancelledError`` is never caught.
+        """
+
+        if (
+            batch_limit < 1
+            or idle_seconds <= 0
+            or error_backoff_initial_seconds <= 0
+            or error_backoff_max_seconds < error_backoff_initial_seconds
+        ):
             raise ValueError("outbox dispatch limits must be positive")
+        consecutive_failures = 0
         while not stop_event.is_set():
-            results = await self.dispatch_pending(batch_limit)
-            if len(results) >= batch_limit:
-                continue
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=idle_seconds)
+                results = await self.dispatch_pending(batch_limit)
+            except Exception:
+                consecutive_failures += 1
+                delay = min(
+                    error_backoff_initial_seconds * 2 ** min(consecutive_failures - 1, 16),
+                    error_backoff_max_seconds,
+                )
+                LOGGER.error(
+                    "Discord outbox dispatch batch failed; backing off",
+                    extra={"attempt": consecutive_failures},
+                    exc_info=True,
+                )
+                wait_seconds = delay
+            else:
+                if consecutive_failures:
+                    LOGGER.info(
+                        "Discord outbox dispatch recovered",
+                        extra={"attempt": consecutive_failures},
+                    )
+                consecutive_failures = 0
+                if len(results) >= batch_limit:
+                    continue
+                wait_seconds = idle_seconds
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=wait_seconds)
             except TimeoutError:
                 continue
 
