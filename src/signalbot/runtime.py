@@ -617,9 +617,45 @@ class MarketRuntime:
             self.state_machine.restore(checkpoint)
         return persisted
 
+    def _with_presentation_metadata(self, decision: SignalDecision) -> SignalDecision:
+        """Record which gates the active entry policy evaluates (display metadata).
+
+        Added at creation time, outside the frozen rule/gate modules. It is not an
+        identity input and does not affect any gate, score or transition; alerts use
+        it to render fixed participation/crowding constants as N/A.
+        """
+
+        if decision.gate is None or "entry_policy" in decision.metadata:
+            return decision
+        signals = self.settings.signals
+        r2_policy = signals.entry_policy == "r2_pit_htf_exec"
+        unevaluated = [
+            name
+            for name, evaluated in (
+                ("participation", signals.gate_use_participation and not r2_policy),
+                ("crowding", signals.gate_use_crowding and not r2_policy),
+            )
+            if not evaluated
+        ]
+        return decision.model_copy(
+            update={
+                "metadata": {
+                    **decision.metadata,
+                    "entry_policy": signals.entry_policy,
+                    "unevaluated_gates": unevaluated,
+                }
+            }
+        )
+
+    def persist_notice(self, decision: SignalDecision) -> bool:
+        """Persist a notice-only decision through the normal signal + outbox path."""
+
+        return self._persist_decision(decision)
+
     async def _publish_decision(
         self, decision: SignalDecision
     ) -> SignalDecision | None:
+        decision = self._with_presentation_metadata(decision)
         if not self._persist_decision(decision):
             return None
         self.decision_count += 1
@@ -638,6 +674,7 @@ class MarketRuntime:
         payload = build_discord_payload(
             decision,
             self.settings.alerts.discord_username,
+            validation_notice=self.settings.alerts.validation_notice,
         )
         return self.repository.save_signal_and_enqueue(
             decision,

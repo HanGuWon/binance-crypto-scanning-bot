@@ -326,6 +326,17 @@ class AlertSettings(StrictModel):
     # effective-Settings hashes derived from it stay unchanged.
     max_delivery_delay_seconds: int = Field(default=900, ge=60, le=86_400, exclude=True)
     risk_max_delivery_delay_seconds: int = Field(default=180, ge=30, le=86_400, exclude=True)
+    validation_notice: str = Field(
+        default="회고 검증 FAIL(R2) · prospective 검증 전 — 기대수익·확률 아님",
+        min_length=1,
+        max_length=300,
+        exclude=True,
+    )
+
+    @field_validator("validation_notice", mode="before")
+    @classmethod
+    def normalize_validation_notice(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("discord_username", mode="before")
     @classmethod

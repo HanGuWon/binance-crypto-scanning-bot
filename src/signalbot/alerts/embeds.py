@@ -23,6 +23,16 @@ DISCORD_EMBED_FIELD_VALUE_LIMIT = 1_024
 DISCORD_EMBED_FOOTER_LIMIT = 2_048
 DISCORD_USERNAME_LIMIT = 80
 
+# Bump when embed wording or layout changes. It is rendered in the embed footer so a
+# stored payload records which presentation produced it; the outbox conflict check
+# tolerates a presentation-only difference between versions (see repository.py).
+PRESENTATION_VERSION = 2
+PRESENTATION_FOOTER_MARKER = "view v"
+DEFAULT_VALIDATION_NOTICE = "회고 검증 FAIL(R2) · prospective 검증 전 — 기대수익·확률 아님"
+VALIDATION_FIELD_NAME = "검증 상태"
+GATE_NOT_USED = "N/A(정책 미사용)"
+ANOMALY_Z_DISPLAY_CAP = 1000
+
 
 def _truncate_text(value: object, limit: int) -> str:
     text = str(value)
@@ -149,6 +159,25 @@ def _color(d: SignalDecision) -> int:
     return 0x2ECC71 if d.direction in {Direction.LONG, Direction.RISK_UP} else 0xE74C3C
 
 
+def _market_tag(market: Market) -> str:
+    return "[SPOT]" if market is Market.SPOT else "[USDⓈ-M]"
+
+
+def _unevaluated_gates(d: SignalDecision) -> frozenset[str]:
+    """Gates the active entry policy does not evaluate (their score is a fixed constant).
+
+    Prefer the list recorded with the decision; fall back to the recorded entry
+    policy. Decisions without either (legacy rows) are rendered numerically.
+    """
+
+    recorded = d.metadata.get("unevaluated_gates")
+    if isinstance(recorded, (list, tuple)):
+        return frozenset(str(item) for item in recorded)
+    if d.metadata.get("entry_policy") == "r2_pit_htf_exec":
+        return frozenset({"participation", "crowding"})
+    return frozenset()
+
+
 def _recommendation_summary(d: SignalDecision) -> str:
     """Translate the existing decision state into a direct user-facing recommendation.
 
@@ -183,12 +212,14 @@ def _recommendation_summary(d: SignalDecision) -> str:
             else "하락 조건 형성 중"
         )
         return f"⏸️ 추천: 진입 보류 · {bias}"
+    # CONFIRMED means "a rule fired", not a forecast: the rules failed retrospective
+    # validation (R2) and have no prospective evidence yet, so no prediction wording.
     if d.direction is Direction.LONG:
-        action = "매수 후보" if d.market is Market.SPOT else "LONG 후보"
-        return f"🟢 추천: 상승 예상 · {action}"
+        action = "매수 검토 후보" if d.market is Market.SPOT else "LONG 검토 후보"
+        return f"🟢 규칙 트리거 · {action} (미검증 규칙)"
     if d.direction is Direction.SHORT:
-        action = "신규 매수 보류" if d.market is Market.SPOT else "SHORT 후보"
-        return f"🔴 추천: 하락 예상 · {action}"
+        action = "신규 매수 보류" if d.market is Market.SPOT else "SHORT 검토 후보"
+        return f"🔴 규칙 트리거 · {action} (미검증 규칙)"
     return "⏸️ 추천: 진입 보류"
 
 
@@ -352,7 +383,9 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
             f"Funding {_percent(funding, signed=True, digits=4)} · "
             f"z {_compact_number(feature.funding_zscore, signed=True)}"
         )
-    risk_lines.append(f"데이터 완전성 {feature.data_completeness:.0%} · 폐봉 기준")
+    risk_lines.append(
+        f"입력 가용성(체결흐름·호가) {feature.data_completeness:.0%} · 폐봉 기준"
+    )
 
     structure = feature.chart_structure
     pullback_depth = (
@@ -432,7 +465,12 @@ def _directional_fields(d: SignalDecision) -> list[dict[str, object]]:
     ]
 
 
-def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]:
+def build_discord_payload(
+    d: SignalDecision,
+    username: str,
+    *,
+    validation_notice: str | None = None,
+) -> dict[str, object]:
     d = SignalDecision.model_validate(d.model_dump(mode="python", warnings="none"))
     reasons = "\n".join(f"• {reason}" for reason in d.reasons[:10]) or "• No details"
     invalidation = str(d.invalidation) if d.invalidation is not None else "n/a"
@@ -523,13 +561,18 @@ def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]
         )
     if d.gate is not None:
         gate = d.gate
+        unused = _unevaluated_gates(d)
+        participation = (
+            GATE_NOT_USED if "participation" in unused else str(gate.participation_score)
+        )
+        crowding = GATE_NOT_USED if "crowding" in unused else str(gate.crowding_risk_score)
         fields.insert(
             3,
             {
                 "name": "Independent gates",
                 "value": (
-                    f"Trend {gate.trend_score} | Participation {gate.participation_score} | "
-                    f"Crowding risk {gate.crowding_risk_score} | "
+                    f"Trend {gate.trend_score} | Participation {participation} | "
+                    f"Crowding risk {crowding} | "
                     f"Execution {gate.execution_score} | Completeness {gate.completeness_score}"
                 )[:1024],
                 "inline": False,
@@ -546,12 +589,26 @@ def build_discord_payload(d: SignalDecision, username: str) -> dict[str, object]
                 "inline": False,
             },
         )
+    notice = (validation_notice or "").strip() or DEFAULT_VALIDATION_NOTICE
+    validation_index = next(
+        (index + 1 for index, field in enumerate(fields) if field["name"] == "Invalidation"),
+        len(fields),
+    )
+    fields.insert(
+        validation_index,
+        {"name": VALIDATION_FIELD_NAME, "value": notice[:1024], "inline": False},
+    )
     embed: dict[str, Any] = {
-        "title": f"{d.symbol} · {recommendation}",
+        "title": f"{_market_tag(d.market)} {d.symbol} · {recommendation}",
         "description": f"**{status_line}**",
         "color": _color(d),
         "fields": fields,
-        "footer": {"text": f"event {d.event_id} · rules {d.rule_version}"},
+        "footer": {
+            "text": (
+                f"event {d.event_id} · rules {d.rule_version} · "
+                f"{PRESENTATION_FOOTER_MARKER}{PRESENTATION_VERSION}"
+            )
+        },
         "timestamp": datetime.fromtimestamp(d.event_time_ms / 1000, tz=UTC).isoformat(),
     }
     return {

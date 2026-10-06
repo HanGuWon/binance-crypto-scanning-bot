@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from signalbot.alerts.embeds import PRESENTATION_FOOTER_MARKER, PRESENTATION_VERSION
 from signalbot.domain.enums import Market
 from signalbot.domain.models import Candle, SignalDecision
 from signalbot.persistence.models import (
@@ -122,6 +124,53 @@ def _signal_payload(decision: SignalDecision) -> str:
     return json.dumps(
         decision.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False
     )
+
+
+# Decision metadata that only drives how an alert is displayed. A re-evaluated
+# pre-upgrade event legitimately lacks these keys, so they never count as a
+# signal-semantics conflict.
+_PRESENTATION_METADATA_KEYS = frozenset({"entry_policy", "unevaluated_gates", "sigma_floor_hit"})
+_PRESENTATION_VERSION_PATTERN = re.compile(re.escape(PRESENTATION_FOOTER_MARKER) + r"(\d+)")
+
+
+def _signal_semantics(payload_json: str) -> str:
+    """Canonical signal payload without presentation-only metadata keys."""
+
+    try:
+        value = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return payload_json
+    if isinstance(value, dict) and isinstance(value.get("metadata"), dict):
+        value["metadata"] = {
+            key: item
+            for key, item in value["metadata"].items()
+            if key not in _PRESENTATION_METADATA_KEYS
+        }
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _signal_conflicts(stored_json: str, new_json: str) -> bool:
+    return stored_json != new_json and _signal_semantics(stored_json) != _signal_semantics(
+        new_json
+    )
+
+
+def _payload_presentation_version(payload_json: str) -> int:
+    """Presentation version recorded in an outbox payload footer (legacy payloads: 1)."""
+
+    try:
+        value = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return 0
+    embeds = value.get("embeds") if isinstance(value, dict) else None
+    if not isinstance(embeds, list) or not embeds or not isinstance(embeds[0], dict):
+        return 0
+    footer = embeds[0].get("footer")
+    text = footer.get("text") if isinstance(footer, dict) else None
+    if not isinstance(text, str):
+        return 0
+    match = _PRESENTATION_VERSION_PATTERN.search(text)
+    return int(match.group(1)) if match else 1
 
 
 def _protection_context_payload(context: ProtectionContext) -> str:
@@ -1181,7 +1230,7 @@ class SqlRepository:
             payload = _signal_payload(d)
             existing = session.get(SignalRow, d.event_id)
             if existing is not None:
-                if existing.payload_json != payload:
+                if _signal_conflicts(existing.payload_json, payload):
                     raise EventIdConflictError(
                         f"event ID {d.event_id} maps to conflicting signal payloads"
                     )
@@ -1229,16 +1278,24 @@ class SqlRepository:
         fingerprint = hashlib.sha256(outbox_payload.encode()).hexdigest()
         with Session(self.engine) as session:
             signal = session.get(SignalRow, decision.event_id)
-            if signal is not None and signal.payload_json != signal_payload:
+            if signal is not None and _signal_conflicts(signal.payload_json, signal_payload):
                 raise EventIdConflictError(
                     f"event ID {decision.event_id} maps to conflicting signal payloads"
                 )
             outbox = session.get(AlertOutboxRow, decision.event_id)
             if outbox is not None:
                 if outbox.payload_sha256 != fingerprint or outbox.payload_json != outbox_payload:
-                    raise EventIdConflictError(
-                        f"event ID {decision.event_id} maps to conflicting alert payloads"
+                    # Same signal semantics (checked above) re-persisted by a newer
+                    # presentation: keep the stored, possibly already delivered,
+                    # intent. Same-or-newer stored versions still conflict.
+                    older_presentation = signal is not None and (
+                        _payload_presentation_version(outbox.payload_json)
+                        < min(PRESENTATION_VERSION, _payload_presentation_version(outbox_payload))
                     )
+                    if not older_presentation:
+                        raise EventIdConflictError(
+                            f"event ID {decision.event_id} maps to conflicting alert payloads"
+                        )
                 return False
             if delivery_enabled and maximum_active_items is not None:
                 if maximum_active_items < 1:

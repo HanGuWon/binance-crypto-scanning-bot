@@ -6,7 +6,6 @@ import pytest
 
 from signalbot.prospective.directional_review import review_directional_validation
 
-
 TRACKED_RECEIPT_DIR = Path("artifacts/prospective/futures-bidirectional-v1")
 
 
