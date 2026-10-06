@@ -113,6 +113,27 @@ tracking; it never closes or changes an exchange position. A primary-candle
 gap fail-closes tracked PAPER state at the first post-gap open and records the
 modeled fill separately from the closed-candle alert observation time.
 
+## PostgreSQL schema: `rule_version` width
+
+`signals.rule_version` and `shadow_campaigns.rule_version` are `VARCHAR(64)`.
+Frozen campaign rule versions (for example the 35-character
+`v4.3.0-causal-structure-diagnostics`) do not fit the former `VARCHAR(32)`, and
+PostgreSQL enforces the length (SQLite does not). Rule version strings are
+campaign identities and are never shortened.
+
+`create_all` does not alter existing tables. A database created by an earlier
+build must be altered once, before starting the service:
+
+```sql
+ALTER TABLE signals ALTER COLUMN rule_version TYPE VARCHAR(64);
+ALTER TABLE shadow_campaigns ALTER COLUMN rule_version TYPE VARCHAR(64);
+```
+
+On startup the repository inspects these columns on PostgreSQL only. If a column
+is narrower than 64 it raises `SchemaMigrationRequiredError` naming the exact
+statements above and the service does not start. Nothing is migrated
+automatically. `SignalDecision.rule_version` is validated to 1-64 characters.
+
 ## Discord delivery runbook
 
 The `signals` row and `alert_outbox` intent are atomic. Inspect both

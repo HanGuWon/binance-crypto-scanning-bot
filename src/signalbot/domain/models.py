@@ -405,7 +405,7 @@ class SignalDecision(FrozenModel):
     invalidation: Decimal | None = None
     regime: MarketRegime = MarketRegime()
     gate: GateEvaluation | None = None
-    rule_version: str
+    rule_version: str = Field(min_length=1, max_length=64)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")

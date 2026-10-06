@@ -31,6 +31,42 @@ from signalbot.persistence.models import (
 )
 from signalbot.signals.protection_context import ProtectionContext
 
+RULE_VERSION_MAX_LENGTH = 64
+_RULE_VERSION_TABLES: tuple[str, ...] = ("signals", "shadow_campaigns")
+
+
+class SchemaMigrationRequiredError(RuntimeError):
+    """An existing database schema needs an operator-run migration."""
+
+
+def check_rule_version_column_width(inspector: Any) -> None:
+    """Fail closed when a PostgreSQL ``rule_version`` column is narrower than 64.
+
+    ``create_all`` never alters existing tables, and frozen campaign
+    ``rule_version`` identities are longer than 32 characters. Narrow columns
+    would raise ``DataError`` on the first signal insert, so the operator must
+    run the named ALTER TABLE statements; nothing is migrated automatically.
+    """
+
+    statements: list[str] = []
+    for table in _RULE_VERSION_TABLES:
+        if not inspector.has_table(table):
+            continue
+        for column in inspector.get_columns(table):
+            if column["name"] != "rule_version":
+                continue
+            length = getattr(column["type"], "length", None)
+            if length is not None and length < RULE_VERSION_MAX_LENGTH:
+                statements.append(
+                    f"ALTER TABLE {table} ALTER COLUMN rule_version "
+                    f"TYPE VARCHAR({RULE_VERSION_MAX_LENGTH});"
+                )
+    if statements:
+        raise SchemaMigrationRequiredError(
+            "PostgreSQL rule_version column is narrower than "
+            f"{RULE_VERSION_MAX_LENGTH}; run before starting: " + " ".join(statements)
+        )
+
 
 class EventIdConflictError(RuntimeError):
     """Raised when one deterministic event ID maps to different content."""
@@ -499,6 +535,8 @@ class SqlRepository:
         self._engine = create_engine(self.url, **kwargs)
         Base.metadata.create_all(self._engine)
         _migrate_sqlite_shadow_schema(self._engine)
+        if self._engine.dialect.name == "postgresql":
+            check_rule_version_column_width(inspect(self._engine))
         self.ready = True
 
     def close(self) -> None:

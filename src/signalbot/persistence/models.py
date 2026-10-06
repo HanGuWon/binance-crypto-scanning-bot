@@ -44,7 +44,7 @@ class SignalRow(Base):
     score: Mapped[int] = mapped_column(Integer)
     price: Mapped[str] = mapped_column(String(64))
     invalidation: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    rule_version: Mapped[str] = mapped_column(String(32))
+    rule_version: Mapped[str] = mapped_column(String(64))
     payload_json: Mapped[str] = mapped_column(Text)
 
 
@@ -162,7 +162,7 @@ class ShadowCampaignRow(Base):
     campaign_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     campaign_mode: Mapped[str] = mapped_column(String(16))
     source_identity: Mapped[str] = mapped_column(String(128))
-    rule_version: Mapped[str] = mapped_column(String(32))
+    rule_version: Mapped[str] = mapped_column(String(64))
     policy_name: Mapped[str] = mapped_column(String(64))
     policy_sha256: Mapped[str] = mapped_column(String(64))
     config_sha256: Mapped[str] = mapped_column(String(64))

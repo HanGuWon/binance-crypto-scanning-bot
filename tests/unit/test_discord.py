@@ -248,7 +248,7 @@ def test_discord_payload_enforces_component_and_total_text_limits() -> None:
                 breadth_ratio=0.5,
             ),
             event_id="e" * 3_000,
-            rule_version="r" * 3_000,
+            rule_version="r" * 64,
             metadata=metadata,
         ),
         "u" * 200,
