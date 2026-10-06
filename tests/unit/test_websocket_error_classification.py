@@ -175,3 +175,23 @@ def test_taxonomy_classification() -> None:
     assert not is_fatal_pipeline_error(RuntimeError("unrelated runtime failure"))
     assert not is_fatal_pipeline_error(RuntimeError("paper lifecycle exited normally"))
     assert OutboxCapacityError in FATAL_PIPELINE_ERRORS
+
+
+def test_paper_bound_messages_in_positions_py_are_pinned() -> None:
+    """errors.py classifies the PAPER bound RuntimeError by message prefix.
+
+    positions.py is frozen by the Guardian policy contract, so the classifier
+    depends on its exact wording. If the text changes, this must fail loudly.
+    """
+
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "src/signalbot/signals/positions.py").read_text(
+        encoding="utf-8"
+    )
+    for message in (
+        "paper lifecycle cannot restore beyond its symbol bound",
+        "paper lifecycle reached its configured symbol bound",
+    ):
+        assert f'RuntimeError("{message}")' in source
+        assert is_fatal_pipeline_error(RuntimeError(message))
