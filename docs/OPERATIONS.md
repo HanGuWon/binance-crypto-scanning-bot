@@ -222,6 +222,33 @@ sets the row to `delivered` or `dead`, and appends a `resolved_delivered` or
 `resolved_dead` audit row to `alerts` without overwriting earlier attempts.
 Reconcile each `uncertain` item against the Discord channel before resolving it.
 
+## PAPER tracking-reset notices
+
+The PAPER technical-exit lifecycle is in memory only, so a restart silently
+drops exit tracking for entries that were still open. When
+`signals.technical_exit.enabled` is set, startup persists exactly one
+notice-only alert per such entry: a persisted CONFIRMED, non-informational,
+non-risk entry on the primary interval whose `event_time` is within
+`max_holding_bars x primary interval` and that has no `TECHNICAL_EXIT` row
+referencing it (`metadata.entry_event_id`). The notice reads
+`PAPER 추적 중단 — 이 진입의 청산 알림은 더 이상 오지 않습니다`, is not an exit or a
+recommendation, and never becomes a PAPER position.
+
+- Event ID: `sha256(market|symbol|technical_exit|entry_event_id|tracking_reset|rule_version)[:24]`,
+  so repeated restarts never emit a second notice for the same entry.
+- The scan is bounded (500 entries per market per startup). If more entries are
+  open, the remainder is not covered.
+- Make-before-break WebSocket rotation (avoiding self-inflicted `DATA_GAP`
+  exits) is not implemented; it is a possible follow-up.
+
+## Alert presentation notes
+
+Embeds carry a fixed `검증 상태` field taken from `alerts.validation_notice`
+(default: `회고 검증 FAIL(R2) · prospective 검증 전 — 기대수익·확률 아님`). The
+setting is excluded from `Settings.model_dump()`. The embed footer records a
+presentation version (`view vN`); see `docs/ARCHITECTURE.md` for how a
+presentation-only difference is treated when an event ID is persisted again.
+
 ## Raw-event evidence capacity
 
 Raw capture is opt-in:

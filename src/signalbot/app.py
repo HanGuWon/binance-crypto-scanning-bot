@@ -14,6 +14,7 @@ from signalbot.heartbeat import HeartbeatRecorder, record_outbox_drain
 from signalbot.persistence.repository import SqlRepository
 from signalbot.runtime import MarketRuntime
 from signalbot.scanner import MarketScanner
+from signalbot.signals.paper_recovery import emit_tracking_reset_notices
 from signalbot.signals.protection_context import ProtectionContext
 
 LOGGER = logging.getLogger(__name__)
@@ -123,6 +124,10 @@ class SignalApplication:
             restore = getattr(runtime, "restore_persisted_state", None)
             if callable(restore):
                 restore()
+            # PAPER lifecycle state is in memory only: tell the operator once per
+            # orphaned entry that exit tracking restarted empty.
+            if self.settings.signals.technical_exit.enabled:
+                emit_tracking_reset_notices(runtime, self.clock.now_ms())
             self.scanners.append(
                 MarketScanner(
                     market,

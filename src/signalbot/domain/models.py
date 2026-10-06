@@ -427,6 +427,8 @@ class SignalDecision(FrozenModel):
         if self.family is SignalFamily.CRASH_RISK:
             return "CRASH_RISK"
         if self.family is SignalFamily.TECHNICAL_EXIT:
+            if self.metadata.get("notice_only") is True:
+                return "PAPER_TRACKING_NOTICE"
             if self.market is Market.SPOT:
                 return "SPOT_EXIT"
             return (

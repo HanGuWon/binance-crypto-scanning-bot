@@ -32,6 +32,7 @@ DEFAULT_VALIDATION_NOTICE = "회고 검증 FAIL(R2) · prospective 검증 전 �
 VALIDATION_FIELD_NAME = "검증 상태"
 GATE_NOT_USED = "N/A(정책 미사용)"
 ANOMALY_Z_DISPLAY_CAP = 1000
+TRACKING_RESET_NOTICE_TEXT = "PAPER 추적 중단 — 이 진입의 청산 알림은 더 이상 오지 않습니다"
 
 
 def _truncate_text(value: object, limit: int) -> str:
@@ -146,6 +147,8 @@ def _times(timestamp_ms: int) -> str:
 
 
 def _color(d: SignalDecision) -> int:
+    if _is_notice_only(d):
+        return 0x95A5A6
     if d.stage is SignalStage.INVALIDATED:
         return 0x808080
     if d.metadata.get("informational_only") is True:
@@ -157,6 +160,10 @@ def _color(d: SignalDecision) -> int:
     if d.stage is not SignalStage.CONFIRMED:
         return 0x3498DB
     return 0x2ECC71 if d.direction in {Direction.LONG, Direction.RISK_UP} else 0xE74C3C
+
+
+def _is_notice_only(d: SignalDecision) -> bool:
+    return d.family is SignalFamily.TECHNICAL_EXIT and d.metadata.get("notice_only") is True
 
 
 def _market_tag(market: Market) -> str:
@@ -188,6 +195,8 @@ def _recommendation_summary(d: SignalDecision) -> str:
     """
 
     if d.family is SignalFamily.TECHNICAL_EXIT:
+        if _is_notice_only(d):
+            return f"⚪ {TRACKING_RESET_NOTICE_TEXT}"
         if d.market is Market.SPOT:
             return "🟠 추천: 보유 포지션 정리 검토 · 신규 매수 보류"
         side = "LONG" if d.direction is Direction.LONG else "SHORT"
@@ -489,19 +498,48 @@ def build_discord_payload(
         },
         {"name": "Time", "value": _times(d.event_time_ms), "inline": False},
     ]
+    notice_only = _is_notice_only(d)
     paper_exit = (
         d.family is SignalFamily.TECHNICAL_EXIT
         and d.metadata.get("paper_only") is True
+        and not notice_only
     )
     informational_only = d.metadata.get("informational_only") is True
     if informational_only and d.stage is SignalStage.CONFIRMED:
         raise ValueError("informational-only decisions cannot be CONFIRMED")
     recommendation = _recommendation_summary(d)
-    status_line = (
-        "PAPER 포지션 종료 추적"
-        if paper_exit
-        else f"상태: {d.stage.value.upper()} · 근거 강도: {d.score}/100"
-    )
+    if notice_only:
+        status_line = "PAPER 추적 안내 · 청산 권고 아님"
+    elif paper_exit:
+        status_line = "PAPER 포지션 종료 추적"
+    else:
+        status_line = f"상태: {d.stage.value.upper()} · 근거 강도: {d.score}/100"
+    if notice_only:
+        entry_time_ms = d.metadata.get("entry_time_ms")
+        entry_time = _times(entry_time_ms) if isinstance(entry_time_ms, int) else "unavailable"
+        fields.insert(
+            0,
+            {
+                "name": "Execution scope",
+                "value": (
+                    "PAPER alert only — no exchange order was placed. This is a notice, "
+                    "not an exit or a recommendation."
+                ),
+                "inline": False,
+            },
+        )
+        fields.insert(
+            1,
+            {
+                "name": "Tracked entry",
+                "value": (
+                    f"Entry event: {d.metadata.get('entry_event_id', 'unknown')}\n"
+                    f"Entry time: {entry_time}\n"
+                    "PAPER state is in memory only and was lost at process restart."
+                )[:1024],
+                "inline": False,
+            },
+        )
     if paper_exit:
         fill_time_ms = d.metadata.get("fill_time_ms")
         observed_at_ms = d.metadata.get("observed_at_closed_candle_ms")

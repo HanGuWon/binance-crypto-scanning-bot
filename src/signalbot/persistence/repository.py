@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from signalbot.alerts.embeds import PRESENTATION_FOOTER_MARKER, PRESENTATION_VERSION
-from signalbot.domain.enums import Market
+from signalbot.domain.enums import Market, SignalFamily, SignalStage
 from signalbot.domain.models import Candle, SignalDecision
 from signalbot.persistence.models import (
     AlertOutboxRow,
@@ -1640,6 +1641,64 @@ class SqlRepository:
                 )
                 is not None
             )
+
+    def list_signals_since(
+        self,
+        *,
+        market: Market,
+        timeframe: str,
+        since_ms: int,
+        stage: SignalStage,
+        exclude_families: Collection[SignalFamily] = (),
+        limit: int = 500,
+    ) -> list[SignalDecision]:
+        """Bounded, newest-first listing of stored decisions for one market/timeframe."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        statement = (
+            select(SignalRow)
+            .where(
+                SignalRow.market == market.value,
+                SignalRow.timeframe == timeframe,
+                SignalRow.stage == stage.value,
+                SignalRow.event_time_ms >= since_ms,
+            )
+            .order_by(desc(SignalRow.event_time_ms), SignalRow.event_id)
+            .limit(limit)
+        )
+        excluded = [family.value for family in exclude_families]
+        if excluded:
+            statement = statement.where(SignalRow.family.not_in(excluded))
+        with Session(self.engine) as session:
+            rows = session.scalars(statement).all()
+        return [SignalDecision.model_validate(json.loads(row.payload_json)) for row in rows]
+
+    def entry_ids_with_exit_since(
+        self, *, market: Market, since_ms: int, limit: int = 2_000
+    ) -> set[str]:
+        """Entry event IDs referenced by stored TECHNICAL_EXIT rows (bounded)."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with Session(self.engine) as session:
+            payloads = session.scalars(
+                select(SignalRow.payload_json)
+                .where(
+                    SignalRow.market == market.value,
+                    SignalRow.family == SignalFamily.TECHNICAL_EXIT.value,
+                    SignalRow.event_time_ms >= since_ms,
+                )
+                .order_by(desc(SignalRow.event_time_ms), SignalRow.event_id)
+                .limit(limit)
+            ).all()
+        entry_ids: set[str] = set()
+        for payload_json in payloads:
+            metadata = json.loads(payload_json).get("metadata")
+            entry_id = metadata.get("entry_event_id") if isinstance(metadata, dict) else None
+            if isinstance(entry_id, str):
+                entry_ids.add(entry_id)
+        return entry_ids
 
     def recent_signals(
         self, limit: int = 100, *, market: Market | None = None
