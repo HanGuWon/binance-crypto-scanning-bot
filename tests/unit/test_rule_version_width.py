@@ -45,7 +45,10 @@ def test_postgresql_ddl_uses_varchar_64(model: Any) -> None:
 
 def test_frozen_rule_version_fits_the_column() -> None:
     assert len(LONG_FROZEN_VERSION) == 35
-    assert SignalRow.__table__.c.rule_version.type.length >= len(LONG_FROZEN_VERSION)
+    column_type = SignalRow.__table__.c.rule_version.type
+    assert isinstance(column_type, String)
+    assert column_type.length is not None
+    assert column_type.length >= len(LONG_FROZEN_VERSION)
 
 
 def test_rule_version_length_boundary() -> None:

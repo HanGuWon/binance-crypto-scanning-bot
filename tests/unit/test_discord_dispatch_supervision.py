@@ -203,7 +203,7 @@ async def test_normal_stop_logs_no_errors(caplog: pytest.LogCaptureFixture) -> N
     ],
 )
 @pytest.mark.asyncio
-async def test_invalid_backoff_limits_are_rejected(kwargs: dict[str, float]) -> None:
+async def test_invalid_backoff_limits_are_rejected(kwargs: dict[str, Any]) -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
     repo = _repo()
     notifier = _notifier(repo, client)
