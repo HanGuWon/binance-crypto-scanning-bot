@@ -14,9 +14,9 @@ from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from signalbot.alerts.embeds import PRESENTATION_FOOTER_MARKER, PRESENTATION_VERSION
 from signalbot.domain.enums import Market, SignalFamily, SignalStage
 from signalbot.domain.models import Candle, SignalDecision
+from signalbot.domain.presentation import PRESENTATION_FOOTER_MARKER, PRESENTATION_VERSION
 from signalbot.persistence.models import (
     AlertOutboxRow,
     AlertRow,

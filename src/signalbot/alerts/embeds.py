@@ -12,6 +12,7 @@ from signalbot.domain.models import (
     DirectionalSetupScore,
     SignalDecision,
 )
+from signalbot.domain.presentation import PRESENTATION_FOOTER_MARKER, PRESENTATION_VERSION
 
 KST = ZoneInfo("Asia/Seoul")
 DISCORD_EMBED_TOTAL_LIMIT = 6_000
@@ -23,11 +24,8 @@ DISCORD_EMBED_FIELD_VALUE_LIMIT = 1_024
 DISCORD_EMBED_FOOTER_LIMIT = 2_048
 DISCORD_USERNAME_LIMIT = 80
 
-# Bump when embed wording or layout changes. It is rendered in the embed footer so a
-# stored payload records which presentation produced it; the outbox conflict check
-# tolerates a presentation-only difference between versions (see repository.py).
-PRESENTATION_VERSION = 2
-PRESENTATION_FOOTER_MARKER = "view v"
+# PRESENTATION_VERSION / PRESENTATION_FOOTER_MARKER live in domain.presentation so the
+# repository can parse the footer without importing this package.
 DEFAULT_VALIDATION_NOTICE = "회고 검증 FAIL(R2) · prospective 검증 전 — 기대수익·확률 아님"
 VALIDATION_FIELD_NAME = "검증 상태"
 GATE_NOT_USED = "N/A(정책 미사용)"
