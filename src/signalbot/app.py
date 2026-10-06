@@ -7,7 +7,7 @@ from typing import Any
 
 from signalbot.alerts.discord import DiscordNotifier
 from signalbot.clock import SystemClock
-from signalbot.config import Settings
+from signalbot.config import Settings, unevaluated_pullback_intervals
 from signalbot.data.raw_events import RawEventRecorder
 from signalbot.domain.models import SignalDecision
 from signalbot.heartbeat import HeartbeatRecorder, record_outbox_drain
@@ -122,6 +122,14 @@ class SignalApplication:
             self.settings.runtime.loop_lag_warning_ms,
             self.settings.runtime.handler_slow_warning_ms,
         )
+        inert_pullback_intervals = unevaluated_pullback_intervals(self.settings)
+        if inert_pullback_intervals:
+            LOGGER.warning(
+                "signals.pullback_intervals %s are never evaluated live: rules run only on "
+                "the primary interval %s",
+                inert_pullback_intervals,
+                self.settings.binance.primary_interval,
+            )
         heartbeats: list[HeartbeatRecorder] = []
         for market in self.settings.binance.markets:
             runtime = MarketRuntime(

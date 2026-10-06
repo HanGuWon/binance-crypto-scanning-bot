@@ -403,6 +403,17 @@ class Settings(StrictModel):
     shadow: ShadowPolicySettings = ShadowPolicySettings()
 
     @model_validator(mode="after")
+    def reject_directional_observation_with_discord(self) -> Settings:
+        if self.shadow.directional_observation_enabled and self.alerts.discord_enabled:
+            raise ValueError(
+                "shadow.directional_observation_enabled cannot be combined with "
+                "alerts.discord_enabled (directional observation is shadow-only). Note that "
+                "setting the SIGNALBOT_DISCORD_WEBHOOK_URL environment variable enables "
+                "Discord automatically; unset it when running directional observation"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_funding_history_capacity(self) -> Settings:
         required = self.signals.funding_zscore_minimum_history + 1
         if self.binance.funding_history_points < required:
@@ -501,6 +512,23 @@ class Settings(StrictModel):
         if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError(f"unsupported log level: {value}")
         return normalized
+
+
+def unevaluated_pullback_intervals(settings: Settings) -> list[str]:
+    """Configured pullback intervals that can never be evaluated live.
+
+    Rules run only on the primary-interval candle, so entries other than
+    ``binance.primary_interval`` are inert. Only meaningful when pullback alerts
+    are on at all.
+    """
+
+    if settings.signals.pullback_alert_mode == "off":
+        return []
+    return [
+        interval
+        for interval in settings.signals.pullback_intervals
+        if interval != settings.binance.primary_interval
+    ]
 
 
 def _apply_environment(data: dict[str, Any]) -> dict[str, Any]:

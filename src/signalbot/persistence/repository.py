@@ -1542,6 +1542,42 @@ class SqlRepository:
                 for row in rows
             }
 
+    def count_candles_before(self, cutoff_ms: int) -> dict[tuple[str, str], int]:
+        """Candles with ``close_time_ms`` strictly before the cutoff, by (market, interval)."""
+
+        with Session(self.engine) as session:
+            rows = session.execute(
+                select(CandleRow.market, CandleRow.interval, func.count())
+                .where(CandleRow.close_time_ms < cutoff_ms)
+                .group_by(CandleRow.market, CandleRow.interval)
+            ).all()
+        return {(str(market), str(interval)): int(count) for market, interval, count in rows}
+
+    def delete_candles_before(self, cutoff_ms: int, limit: int) -> int:
+        """Delete at most ``limit`` candles older than the cutoff in one transaction.
+
+        Touches only the ``candles`` table.
+        """
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with Session(self.engine) as session:
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    delete(CandleRow).where(
+                        CandleRow.id.in_(
+                            select(CandleRow.id)
+                            .where(CandleRow.close_time_ms < cutoff_ms)
+                            .order_by(CandleRow.id)
+                            .limit(limit)
+                        )
+                    )
+                ),
+            )
+            session.commit()
+            return int(result.rowcount or 0)
+
     def signal_delivery_meta(self, event_id: str) -> tuple[str, int] | None:
         """Return ``(family, event_time_ms)`` of the stored signal, if any."""
 
