@@ -262,7 +262,9 @@ def test_embed_renders_the_notice_without_exit_recommendation_wording() -> None:
         "PAPER 추적 중단 — 이 진입의 청산 알림은 더 이상 오지 않습니다"
     )
     text = json.dumps(embed, ensure_ascii=False)
-    forbidden_terms = ("정리 검토", "추천", "예상", "후보", "Exit model", "Paper timing", "청산 가격")
+    forbidden_terms = (
+        "정리 검토", "추천", "예상", "후보", "Exit model", "Paper timing", "청산 가격",
+    )  # fmt: skip
     for forbidden in forbidden_terms:
         assert forbidden not in text, forbidden
     assert "no exchange order was placed" in text
