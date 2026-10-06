@@ -24,6 +24,7 @@ from signalbot.persistence.models import (
     ProtectionContextRow,
     RetestLifecycleRow,
     RetestTransitionRow,
+    RuntimeHeartbeatRow,
     ShadowCampaignRow,
     ShadowCoverageRow,
     ShadowObservationRow,
@@ -66,6 +67,21 @@ def check_rule_version_column_width(inspector: Any) -> None:
             "PostgreSQL rule_version column is narrower than "
             f"{RULE_VERSION_MAX_LENGTH}; run before starting: " + " ".join(statements)
         )
+
+
+class OutboxResolveError(RuntimeError):
+    """An operator outbox resolution was refused (unknown event or wrong status)."""
+
+
+@dataclass(frozen=True, slots=True)
+class HeartbeatRecord:
+    market: str
+    last_ws_message_ms: int | None
+    last_closed_candle_ms: int | None
+    last_decision_ms: int | None
+    last_outbox_drain_ms: int | None
+    max_loop_lag_ms: int | None
+    updated_at_ms: int
 
 
 class EventIdConflictError(RuntimeError):
@@ -1356,6 +1372,117 @@ class SqlRepository:
             )
             session.commit()
             return result.rowcount == 1
+
+    def outbox_summary(self, now_ms: int) -> dict[str, Any]:
+        """Counts by status plus ages; never returns payloads, URLs or detail text."""
+
+        with Session(self.engine) as session:
+            counts = {
+                str(status): int(count)
+                for status, count in session.execute(
+                    select(AlertOutboxRow.status, func.count()).group_by(AlertOutboxRow.status)
+                ).all()
+            }
+            oldest = session.scalar(
+                select(func.min(AlertOutboxRow.created_at_ms)).where(
+                    AlertOutboxRow.status == "pending"
+                )
+            )
+        return {
+            "counts_by_status": dict(sorted(counts.items())),
+            "pending_count": counts.get("pending", 0),
+            "uncertain_count": counts.get("uncertain", 0),
+            "oldest_pending_age_ms": (
+                None if oldest is None else max(0, now_ms - int(oldest))
+            ),
+        }
+
+    def resolve_uncertain_outbox(
+        self,
+        event_id: str,
+        resolution: str,
+        reason: str,
+        now_ms: int,
+        *,
+        message_id: str | None = None,
+    ) -> None:
+        """Operator resolution of an uncertain item to delivered or dead.
+
+        Only ``uncertain`` rows may be resolved (guarded update). The previous
+        ``alerts`` history is preserved; an audit row is appended.
+        """
+
+        if resolution not in {"delivered", "dead"}:
+            raise ValueError("resolution must be delivered or dead")
+        if not reason.strip():
+            raise ValueError("a non-empty reason is required")
+        if message_id is not None and (not message_id.strip() or len(message_id) > 64):
+            raise ValueError("message_id must be 1-64 characters")
+        item = self.get_outbox(event_id)
+        if item is None:
+            raise OutboxResolveError(f"unknown outbox event_id {event_id}")
+        if item.status != "uncertain":
+            raise OutboxResolveError(
+                f"outbox item {event_id} is {item.status}; only uncertain can be resolved"
+            )
+        detail = f"operator resolved as {resolution}: {reason.strip()}"
+        if not self.mark_outbox(
+            event_id,
+            resolution,
+            now_ms,
+            response_code=item.response_code,
+            message_id=message_id if resolution == "delivered" else None,
+            detail=detail,
+            expected_status="uncertain",
+        ):
+            raise OutboxResolveError(f"outbox item {event_id} changed concurrently")
+        self.append_alert_audit(event_id, f"resolved_{resolution}", now_ms, detail=detail)
+
+    def upsert_heartbeat(
+        self,
+        market: str,
+        now_ms: int,
+        *,
+        last_ws_message_ms: int | None = None,
+        last_closed_candle_ms: int | None = None,
+        last_decision_ms: int | None = None,
+        last_outbox_drain_ms: int | None = None,
+        max_loop_lag_ms: int | None = None,
+    ) -> None:
+        """Merge the provided liveness fields into the market's single row."""
+
+        with Session(self.engine) as session:
+            row = session.get(RuntimeHeartbeatRow, market)
+            if row is None:
+                row = RuntimeHeartbeatRow(market=market, updated_at_ms=now_ms)
+                session.add(row)
+            for name, value in (
+                ("last_ws_message_ms", last_ws_message_ms),
+                ("last_closed_candle_ms", last_closed_candle_ms),
+                ("last_decision_ms", last_decision_ms),
+                ("last_outbox_drain_ms", last_outbox_drain_ms),
+                ("max_loop_lag_ms", max_loop_lag_ms),
+            ):
+                if value is not None:
+                    setattr(row, name, value)
+            row.updated_at_ms = now_ms
+            session.commit()
+
+    def get_heartbeats(self) -> dict[str, HeartbeatRecord]:
+        with Session(self.engine) as session:
+            rows = session.scalars(select(RuntimeHeartbeatRow)).all()
+            return {
+                row.market: HeartbeatRecord(
+                    market=row.market,
+                    last_ws_message_ms=row.last_ws_message_ms,
+                    last_closed_candle_ms=row.last_closed_candle_ms,
+                    last_decision_ms=row.last_decision_ms,
+                    last_outbox_drain_ms=row.last_outbox_drain_ms,
+                    max_loop_lag_ms=row.max_loop_lag_ms,
+                    updated_at_ms=row.updated_at_ms,
+                )
+                for row in rows
+            }
 
     def signal_delivery_meta(self, event_id: str) -> tuple[str, int] | None:
         """Return ``(family, event_time_ms)`` of the stored signal, if any."""

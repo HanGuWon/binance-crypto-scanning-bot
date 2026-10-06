@@ -49,6 +49,7 @@ from signalbot.domain.enums import Market
 from signalbot.domain.models import Candle, SignalDecision
 from signalbot.exchange.binance.endpoints import build_websocket_plans
 from signalbot.observability.logging import configure_logging
+from signalbot.outbox_cli import register_outbox_parser, run_outbox_command
 from signalbot.persistence.repository import SqlRepository
 from signalbot.prospective.directional_review import review_directional_validation
 from signalbot.prospective.directional_validation import run_directional_validation
@@ -92,6 +93,7 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="Explicit frozen raw-event tape directory override",
     )
+    register_outbox_parser(subs)
     api = subs.add_parser("serve-api")
     api.add_argument("--config", required=True)
     api.add_argument("--host", default="127.0.0.1")
@@ -541,7 +543,17 @@ def main() -> None:
     if args.command == "serve-api":
         repository = SqlRepository(settings.storage.url, settings.storage.echo_sql)
         repository.initialize()
-        uvicorn.run(create_api(repository), host=args.host, port=args.port)
+        api_app = create_api(
+            repository,
+            markets=settings.binance.markets,
+            ready_max_staleness_seconds=settings.runtime.ready_max_staleness_seconds,
+        )
+        uvicorn.run(api_app, host=args.host, port=args.port)
+        return
+    if args.command == "outbox":
+        code = run_outbox_command(args, settings)
+        if code:
+            raise SystemExit(code)
         return
     if args.command == "backtest-run":
         spec = load_backtest_spec(args.spec)

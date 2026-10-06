@@ -186,6 +186,42 @@ For duplicate alerts, compare the deterministic `event_id`, payload hash, and
 Discord message ID. A repeated identical event is an idempotent no-op; the same
 event ID with different content is a hard data conflict.
 
+## Pipeline readiness and outbox operations
+
+The live process writes liveness evidence to the `runtime_heartbeats` table (one
+row per market: `last_ws_message_ms`, `last_closed_candle_ms`,
+`last_decision_ms`, `last_outbox_drain_ms`, `max_loop_lag_ms`, `updated_at_ms`).
+Writes are throttled to at most one per market per 15 s plus one per outbox
+drain cycle, and a failed write is logged at ERROR without blocking ingestion.
+`create_all` adds the table to existing databases; no manual migration is needed.
+`max_loop_lag_ms` is reserved for the event-loop lag monitor and stays empty
+until that monitor is enabled.
+
+`signalbot serve-api` now reports pipeline readiness:
+
+- `GET /health/live` is unchanged (`{"status":"alive"}`).
+- `GET /health/ready` returns 200 only if every configured market has a WebSocket
+  heartbeat no older than `runtime.ready_max_staleness_seconds` (default 120,
+  minimum 15). Otherwise it returns 503 with a JSON `reasons` list. A heartbeat
+  exactly at the limit is still ready. The setting is excluded from
+  `Settings.model_dump()` so frozen settings hashes do not change.
+- `GET /outbox/summary` returns counts by status, the age of the oldest
+  `pending` item and the `uncertain` count. It never returns payloads, URLs or
+  detail text.
+
+Operator commands (no network access; they only touch the database):
+
+```bash
+signalbot outbox status --config config/settings.yaml
+signalbot outbox resolve --config config/settings.yaml --event-id EVENT_ID \
+    --as delivered --reason "found in channel" --message-id MESSAGE_ID
+```
+
+`resolve` accepts only `uncertain` rows (guarded update), requires `--reason`,
+sets the row to `delivered` or `dead`, and appends a `resolved_delivered` or
+`resolved_dead` audit row to `alerts` without overwriting earlier attempts.
+Reconcile each `uncertain` item against the Discord channel before resolving it.
+
 ## Raw-event evidence capacity
 
 Raw capture is opt-in:

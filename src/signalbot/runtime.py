@@ -27,6 +27,7 @@ from signalbot.domain.models import (
     SignalDecision,
 )
 from signalbot.exchange.binance.schemas import PayloadError, parse_payload
+from signalbot.heartbeat import HeartbeatRecorder
 from signalbot.indicators.core import FeatureEngine
 from signalbot.persistence.repository import SqlRepository
 from signalbot.prospective.directional_shadow import DirectionalShadowObserver
@@ -64,6 +65,9 @@ class MarketRuntime:
         self.repository = repository
         self.clock = clock
         self.decision_handler = decision_handler
+        # Optional liveness writer; set by the live application only (never by
+        # replay or backtests).
+        self.heartbeat: HeartbeatRecorder | None = None
         self.gap_recoverer = gap_recoverer
         self.protection_context_handler = protection_context_handler
         self.candles = CandleStore(settings.binance.history_limit)
@@ -263,6 +267,8 @@ class MarketRuntime:
         *,
         received_at_ms: int | None = None,
     ) -> None:
+        if self.heartbeat is not None:
+            self.heartbeat.note_ws_message()
         try:
             events = parse_payload(self.market, payload)
         except PayloadError as exc:
@@ -333,6 +339,8 @@ class MarketRuntime:
     async def _handle_candle(self, candle: Candle) -> None:
         if not candle.is_closed:
             return
+        if self.heartbeat is not None:
+            self.heartbeat.note_closed_candle(candle.close_time_ms)
         latest = self.candles.latest(candle.market, candle.symbol, candle.interval)
         if latest is not None and candle.open_time_ms < latest.open_time_ms:
             return
@@ -615,6 +623,8 @@ class MarketRuntime:
         if not self._persist_decision(decision):
             return None
         self.decision_count += 1
+        if self.heartbeat is not None:
+            self.heartbeat.note_decision()
         await self.decision_handler(decision)
         return decision
 
@@ -664,4 +674,6 @@ class MarketRuntime:
 
         for decision in newly_persisted:
             self.decision_count += 1
+            if self.heartbeat is not None:
+                self.heartbeat.note_decision()
             await self.decision_handler(decision)

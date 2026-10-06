@@ -10,6 +10,7 @@ from signalbot.clock import SystemClock
 from signalbot.config import Settings
 from signalbot.data.raw_events import RawEventRecorder
 from signalbot.domain.models import SignalDecision
+from signalbot.heartbeat import HeartbeatRecorder, record_outbox_drain
 from signalbot.persistence.repository import SqlRepository
 from signalbot.runtime import MarketRuntime
 from signalbot.scanner import MarketScanner
@@ -61,6 +62,13 @@ class SignalApplication:
         else:
             self.raw_recorder = None
 
+    def _record_drain_heartbeat(self) -> None:
+        record_outbox_drain(
+            self.repository,
+            [market.value for market in self.settings.binance.markets],
+            self.clock,
+        )
+
     @staticmethod
     async def _after_decision_persisted(decision: SignalDecision) -> object:
         """Keep provider I/O out of the market-ingestion coroutine.
@@ -111,6 +119,7 @@ class SignalApplication:
                 self._after_decision_persisted,
                 protection_context_handler=self._persist_protection_context,
             )
+            runtime.heartbeat = HeartbeatRecorder(self.repository, market.value, self.clock)
             restore = getattr(runtime, "restore_persisted_state", None)
             if callable(restore):
                 restore()
@@ -143,7 +152,9 @@ class SignalApplication:
         if self.settings.alerts.discord_enabled:
             drain_tasks.append(
                 asyncio.create_task(
-                    self.notifier.run_dispatch_loop(self.stop_event),
+                    self.notifier.run_dispatch_loop(
+                        self.stop_event, on_cycle=self._record_drain_heartbeat
+                    ),
                     name=_OUTBOX_DRAIN_TASK_NAME,
                 )
             )

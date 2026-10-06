@@ -373,6 +373,8 @@ class RuntimeSettings(StrictModel):
         ge=1_048_576,
         le=10_995_116_277_760,
     )
+    # exclude=True keeps Settings.model_dump() and frozen settings hashes unchanged.
+    ready_max_staleness_seconds: int = Field(default=120, ge=15, le=3_600, exclude=True)
 
 
 class Settings(StrictModel):

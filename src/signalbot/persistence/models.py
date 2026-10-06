@@ -76,6 +76,19 @@ class AlertOutboxRow(Base):
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class RuntimeHeartbeatRow(Base):
+    """Latest pipeline liveness evidence per market (one row, upserted)."""
+
+    __tablename__ = "runtime_heartbeats"
+    market: Mapped[str] = mapped_column(String(16), primary_key=True)
+    last_ws_message_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_closed_candle_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_decision_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_outbox_drain_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    max_loop_lag_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
 class OutcomeRow(Base):
     __tablename__ = "outcomes"
     __table_args__ = (UniqueConstraint("event_id", "horizon_seconds", name="uq_outcome_horizon"),)

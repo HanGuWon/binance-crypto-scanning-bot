@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -258,6 +259,15 @@ class DiscordNotifier:
             results.append(await self.deliver_event(item.event_id))
         return results
 
+    @staticmethod
+    def _notify_cycle(on_cycle: Callable[[], None] | None) -> None:
+        if on_cycle is None:
+            return
+        try:
+            on_cycle()
+        except Exception:
+            LOGGER.error("outbox drain cycle callback failed", exc_info=True)
+
     def _embargoed(self) -> bool:
         return self.clock.now_ms() < self._embargo_until_ms
 
@@ -306,6 +316,7 @@ class DiscordNotifier:
         idle_seconds: float = 1.0,
         error_backoff_initial_seconds: float = 1.0,
         error_backoff_max_seconds: float = 60.0,
+        on_cycle: Callable[[], None] | None = None,
     ) -> None:
         """Continuously drain bounded outbox batches until stop or cancellation.
 
@@ -348,6 +359,7 @@ class DiscordNotifier:
                         extra={"attempt": consecutive_failures},
                     )
                 consecutive_failures = 0
+                self._notify_cycle(on_cycle)
                 if len(results) >= batch_limit:
                     continue
                 wait_seconds = idle_seconds
