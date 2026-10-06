@@ -60,6 +60,7 @@ async def test_scanner_bootstrap_persists_each_rest_batch_once() -> None:
                     rest_concurrency=1,
                     bootstrap_candles=2,
                     intervals=["5m", "15m"],
+                    bootstrap_close_margin_ms=0,
                 ),
                 runtime=SimpleNamespace(persist_candles=True),
             ),

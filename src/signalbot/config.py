@@ -39,6 +39,7 @@ class BinanceSettings(StrictModel):
     intervals: list[str] = Field(default_factory=lambda: ["1m", "5m", "15m", "1h"])
     primary_interval: str = "5m"
     bootstrap_candles: int = Field(default=260, ge=60, le=1500)
+    bootstrap_close_margin_ms: int = Field(default=2_000, ge=0, le=60_000)
     history_limit: int = Field(default=600, ge=250, le=5000)
     websocket_batch_size: int = Field(default=180, ge=1, le=1024)
     max_connection_age_seconds: int = Field(default=85_800, ge=60, le=86_399)

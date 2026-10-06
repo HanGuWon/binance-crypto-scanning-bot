@@ -15,6 +15,7 @@ from signalbot.data.raw_events import (
 )
 from signalbot.domain.enums import Market
 from signalbot.domain.models import Candle
+from signalbot.errors import is_fatal_pipeline_error
 from signalbot.exchange.binance.endpoints import build_websocket_plans
 from signalbot.exchange.binance.rest import BinanceRestClient, BinanceRestError
 from signalbot.exchange.binance.universe import Universe, UniverseSelector
@@ -200,6 +201,12 @@ class MarketScanner:
             raise asyncio.CancelledError
         error = task.exception()
         if error is not None:
+            if is_fatal_pipeline_error(error):
+                LOGGER.critical(
+                    "fatal pipeline error; scanner failing closed for operator attention",
+                    extra={"task": label},
+                    exc_info=error,
+                )
             raise error
         raise RuntimeError(f"{label} exited unexpectedly")
 
@@ -471,7 +478,10 @@ class MarketScanner:
                     symbol,
                     interval,
                     self.settings.binance.bootstrap_candles,
-                    now_ms=self.clock.now_ms(),
+                    # Bootstrap only: a local clock ahead of Binance must not admit a
+                    # still-open candle as closed (it would later conflict with x=true).
+                    now_ms=self.clock.now_ms()
+                    - self.settings.binance.bootstrap_close_margin_ms,
                 )
             try:
                 self.runtime.bootstrap(candles, rebuild=False)
