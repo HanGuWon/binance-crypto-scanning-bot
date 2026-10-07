@@ -1,0 +1,444 @@
+{
+  "baseline_immediate_24h_kline_return_bps": {
+    "day_block_bootstrap_95": {
+      "clusters": 85,
+      "lower_95": -428.81614445241905,
+      "replicates": 10000,
+      "upper_95": 241.49711027443908
+    },
+    "execution_and_actual_funding": "UNAVAILABLE",
+    "mean": -92.44882691677182,
+    "round_trip_cost_scenario_bps": [
+      15,
+      30,
+      60
+    ]
+  },
+  "complete_24h_kline_proxy_events_n": 744,
+  "confirmed_positive_expectancy": false,
+  "evidence_class": "RETROSPECTIVE_EXPOSED_KLINE_PROXY_NOT_PIT_ELIGIBLE",
+  "historical_funding_cap_change_chronology": "UNAVAILABLE; absent fundingInfo rows and current snapshots are not backfilled",
+  "notes": [
+    "Quote-volume and closed kline close references support retrospective prescreen only.",
+    "Unknown historical listing/metadata/OI/forced-liquidation/BBO/mark receipt times block full policy assessment.",
+    "All R3 association comparisons use a four-hour landmark and disjoint future twenty-hour follow-up; neither part supplies causal treatment effects.",
+    "R1/R2/R4 proxy entry uses the next 5m bar open; abstentions remain zero on the same parent population; values have no executable fill proof.",
+    "Proxy 24h price differences omit funding, spread and slippage and are not net tradable returns.",
+    "No synthetic observations are counted as strategy evidence.",
+    "P1 historical results previously opened; all events here are development evidence."
+  ],
+  "official_holm_p_values": null,
+  "policy_sha256": "d94099907b2476a8d168e43b6588c280c0af1a64b79ed998184d0d25237de138",
+  "policy_version": "pump-fade-v2-20261007-remediation-c",
+  "prefilter_events_n": 744,
+  "primary_squeeze_adverse_mark_excursion_pct": 15.0,
+  "r1_r2_r4_24h_kline_proxy_paired_parent_comparisons": {
+    "R1_NO_HIGH_60M": {
+      "4h_release_observed_n": 744,
+      "4h_release_squeeze_rate_among_observed": 0.05779569892473118,
+      "abstention_is_not_trade_pnl": true,
+      "abstention_policy_payoff_assumption": "zero capital allocation; missed-fade opportunity reported separately",
+      "day_block_95": {
+        "clusters": 85,
+        "lower_95": -93.5005368761704,
+        "replicates": 10000,
+        "upper_95": 36.752300788858655
+      },
+      "immediate_proxy_squeeze_rate": 0.3346774193548387,
+      "median_release_minutes": 95.0,
+      "missed_fade_10pct_denominator_n": 344,
+      "missed_fade_10pct_fraction": 0.0,
+      "missed_fade_10pct_n": 0,
+      "no_release_or_expired_n": 0,
+      "original_parent_denominator_n": 744,
+      "per_parent_mean_difference_to_immediate_bps": -30.91735508578462,
+      "release_n": 744,
+      "release_proxy_squeeze_rate_per_parent": 0.3279569892473118,
+      "release_proxy_squeeze_rate_ratio": 0.9799196787148594
+    },
+    "R2_15M_BREAK_FAILED_RETEST": {
+      "4h_release_observed_n": 744,
+      "4h_release_squeeze_rate_among_observed": 0.041666666666666664,
+      "abstention_is_not_trade_pnl": true,
+      "abstention_policy_payoff_assumption": "zero capital allocation; missed-fade opportunity reported separately",
+      "day_block_95": {
+        "clusters": 85,
+        "lower_95": -102.52978643990399,
+        "replicates": 10000,
+        "upper_95": 118.75541121880653
+      },
+      "immediate_proxy_squeeze_rate": 0.3346774193548387,
+      "median_release_minutes": 170.0,
+      "missed_fade_10pct_denominator_n": 344,
+      "missed_fade_10pct_fraction": 0.0,
+      "missed_fade_10pct_n": 0,
+      "no_release_or_expired_n": 0,
+      "original_parent_denominator_n": 744,
+      "per_parent_mean_difference_to_immediate_bps": 13.355530854627093,
+      "release_n": 744,
+      "release_proxy_squeeze_rate_per_parent": 0.3064516129032258,
+      "release_proxy_squeeze_rate_ratio": 0.9156626506024097
+    },
+    "R3_OI_FALL_5PCT_LAG": {
+      "4h_release_observed_n": 0,
+      "4h_release_squeeze_rate_among_observed": null,
+      "abstention_is_not_trade_pnl": true,
+      "abstention_policy_payoff_assumption": "zero capital allocation; missed-fade opportunity reported separately",
+      "day_block_95": {
+        "clusters": 85,
+        "lower_95": -241.48964587267048,
+        "replicates": 10000,
+        "upper_95": 428.8218833785773
+      },
+      "immediate_proxy_squeeze_rate": 0.3346774193548387,
+      "median_release_minutes": null,
+      "missed_fade_10pct_denominator_n": 344,
+      "missed_fade_10pct_fraction": 1.0,
+      "missed_fade_10pct_n": 344,
+      "no_release_or_expired_n": 744,
+      "original_parent_denominator_n": 744,
+      "per_parent_mean_difference_to_immediate_bps": 92.44882691677182,
+      "release_n": 0,
+      "release_proxy_squeeze_rate_per_parent": 0.0,
+      "release_proxy_squeeze_rate_ratio": 0.0
+    },
+    "R4_15M_CLOSE_BELOW_AVWAP": {
+      "4h_release_observed_n": 738,
+      "4h_release_squeeze_rate_among_observed": 0.06233062330623306,
+      "abstention_is_not_trade_pnl": true,
+      "abstention_policy_payoff_assumption": "zero capital allocation; missed-fade opportunity reported separately",
+      "day_block_95": {
+        "clusters": 85,
+        "lower_95": -74.21928674909164,
+        "replicates": 10000,
+        "upper_95": 85.92907158853221
+      },
+      "immediate_proxy_squeeze_rate": 0.3346774193548387,
+      "median_release_minutes": 40.0,
+      "missed_fade_10pct_denominator_n": 344,
+      "missed_fade_10pct_fraction": 0.0,
+      "missed_fade_10pct_n": 0,
+      "no_release_or_expired_n": 6,
+      "original_parent_denominator_n": 744,
+      "per_parent_mean_difference_to_immediate_bps": -10.511668352586257,
+      "release_n": 738,
+      "release_proxy_squeeze_rate_per_parent": 0.3118279569892473,
+      "release_proxy_squeeze_rate_ratio": 0.9317269076305221
+    },
+    "R5_PREDICTED_FUNDING_NORMALIZED": {
+      "4h_release_observed_n": 0,
+      "4h_release_squeeze_rate_among_observed": null,
+      "abstention_is_not_trade_pnl": true,
+      "abstention_policy_payoff_assumption": "zero capital allocation; missed-fade opportunity reported separately",
+      "day_block_95": {
+        "clusters": 85,
+        "lower_95": -241.48964587267048,
+        "replicates": 10000,
+        "upper_95": 428.8218833785773
+      },
+      "immediate_proxy_squeeze_rate": 0.3346774193548387,
+      "median_release_minutes": null,
+      "missed_fade_10pct_denominator_n": 344,
+      "missed_fade_10pct_fraction": 1.0,
+      "missed_fade_10pct_n": 344,
+      "no_release_or_expired_n": 744,
+      "original_parent_denominator_n": 744,
+      "per_parent_mean_difference_to_immediate_bps": 92.44882691677182,
+      "release_n": 0,
+      "release_proxy_squeeze_rate_per_parent": 0.0,
+      "release_proxy_squeeze_rate_ratio": 0.0
+    }
+  },
+  "r3_estimand": "four-hour landmark membership and disjoint twenty-hour follow-up association; does not identify causal skip benefit",
+  "r3_four_hour_landmark_post_twenty_hour_proxy_squeeze": {
+    "joint_20_10": {
+      "kept_n": 730,
+      "kept_squeeze_n": 231,
+      "post_landmark_proxy_risk_ratio": 1.805813234384663,
+      "skipped_n": 14,
+      "skipped_squeeze_n": 8
+    },
+    "joint_20_15": {
+      "kept_n": 735,
+      "kept_squeeze_n": 234,
+      "post_landmark_proxy_risk_ratio": 1.7450142450142452,
+      "skipped_n": 9,
+      "skipped_squeeze_n": 5
+    },
+    "joint_20_5": {
+      "kept_n": 727,
+      "kept_squeeze_n": 229,
+      "post_landmark_proxy_risk_ratio": 1.8674544053429234,
+      "skipped_n": 17,
+      "skipped_squeeze_n": 10
+    },
+    "joint_25_8": {
+      "kept_n": 741,
+      "kept_squeeze_n": 237,
+      "post_landmark_proxy_risk_ratio": 2.0843881856540083,
+      "skipped_n": 3,
+      "skipped_squeeze_n": 2
+    },
+    "joint_30_10": {
+      "kept_n": 744,
+      "kept_squeeze_n": 239,
+      "post_landmark_proxy_risk_ratio": null,
+      "skipped_n": 0,
+      "skipped_squeeze_n": 0
+    },
+    "joint_30_15": {
+      "kept_n": 744,
+      "kept_squeeze_n": 239,
+      "post_landmark_proxy_risk_ratio": null,
+      "skipped_n": 0,
+      "skipped_squeeze_n": 0
+    },
+    "joint_30_5": {
+      "kept_n": 744,
+      "kept_squeeze_n": 239,
+      "post_landmark_proxy_risk_ratio": null,
+      "skipped_n": 0,
+      "skipped_squeeze_n": 0
+    },
+    "joint_40_10": {
+      "kept_n": 744,
+      "kept_squeeze_n": 239,
+      "post_landmark_proxy_risk_ratio": null,
+      "skipped_n": 0,
+      "skipped_squeeze_n": 0
+    },
+    "joint_40_15": {
+      "kept_n": 744,
+      "kept_squeeze_n": 239,
+      "post_landmark_proxy_risk_ratio": null,
+      "skipped_n": 0,
+      "skipped_squeeze_n": 0
+    },
+    "joint_40_5": {
+      "kept_n": 744,
+      "kept_squeeze_n": 239,
+      "post_landmark_proxy_risk_ratio": null,
+      "skipped_n": 0,
+      "skipped_squeeze_n": 0
+    },
+    "unconditional_40": {
+      "kept_n": 744,
+      "kept_squeeze_n": 239,
+      "post_landmark_proxy_risk_ratio": null,
+      "skipped_n": 0,
+      "skipped_squeeze_n": 0
+    }
+  },
+  "r3_skip_joint_cell_proxy_hits": {
+    "joint_20_10": 14,
+    "joint_20_15": 9,
+    "joint_20_5": 17,
+    "joint_25_8": 3,
+    "joint_30_10": 0,
+    "joint_30_15": 0,
+    "joint_30_5": 0,
+    "joint_40_10": 0,
+    "joint_40_15": 0,
+    "joint_40_5": 0,
+    "unconditional_40": 0
+  },
+  "r4_continuation_long_new_high_wait_kline_proxy": {
+    "conditional_mean_return_bps": 14.683587361776775,
+    "day_block_95_per_parent": {
+      "clusters": 85,
+      "lower_95": -244.759866980154,
+      "replicates": 10000,
+      "upper_95": 270.5911238031375
+    },
+    "execution_cost_and_full_wait_inputs": "UNAVAILABLE",
+    "no_signal_n": 173,
+    "per_parent_mean_return_bps_with_abstention_zero": 11.269258580073306,
+    "signal_n": 571
+  },
+  "registered_arm_status": {
+    "P1_prior_pump_validation": "EXPOSED_PRIOR_RESULTS; independent clean replication input is not in this package",
+    "P2_post_crash": "KLINE_PROXY_ONLY_EXPOSED_DEVELOPMENT",
+    "P3_private_ladder": "NOT_EVALUATED_BY_PUBLIC_KLINE_RUNNER",
+    "R1": {
+      "R1_NO_HIGH_60M": "KLINE_PROXY_ONLY_INELIGIBLE_FOR_CONFIRMATION",
+      "R2_15M_BREAK_FAILED_RETEST": "KLINE_PROXY_ONLY_INELIGIBLE_FOR_CONFIRMATION",
+      "R3_OI_FALL_5PCT_LAG": "NO_OBSERVED_PROXY_RELEASE",
+      "R4_15M_CLOSE_BELOW_AVWAP": "KLINE_PROXY_ONLY_INELIGIBLE_FOR_CONFIRMATION",
+      "R5_PREDICTED_FUNDING_NORMALIZED": "NO_OBSERVED_PROXY_RELEASE"
+    },
+    "R2_eight_equal_additions_5pct_from_last_fill": "UNAVAILABLE_RISK_NORMALIZED_COUNTERFACTUAL_INPUTS",
+    "R2_first_fill_only": "UNAVAILABLE_EXECUTION_INPUTS",
+    "R2_primary_ladder": "UNAVAILABLE_FROZEN_I_R_AND_EXECUTABLE_COUNTERFACTUAL_FILLS",
+    "R2_q99_loss_reduction": "UNAVAILABLE_EXECUTABLE_LOSS_TAIL; bootstrap draws do not create tail observations",
+    "R2_three_addition_sensitivity": "UNAVAILABLE_P3_COUNTERFACTUAL_INPUTS_SEPARATE_SENSITIVITY",
+    "R3_25_8_sensitivity": "KLINE_PROXY_ONLY_EXPOSED_DEVELOPMENT",
+    "R3_nine_joint_skip_cells": "KLINE_PROXY_ONLY_HISTORICAL_POINT_IN_TIME_COHORT_MISSING",
+    "R3_unconditional_40_sensitivity": "KLINE_PROXY_ONLY_EXPOSED_DEVELOPMENT",
+    "R4_long_refutation": "KLINE_NEW_HIGH_WAIT_PROXY_ONLY_EXECUTION_UNAVAILABLE"
+  },
+  "releases_with_24h_proxy_coverage_n": {
+    "R1_NO_HIGH_60M": 744,
+    "R2_15M_BREAK_FAILED_RETEST": 744,
+    "R3_OI_FALL_5PCT_LAG": 0,
+    "R4_15M_CLOSE_BELOW_AVWAP": 738,
+    "R5_PREDICTED_FUNDING_NORMALIZED": 0
+  },
+  "schema_version": "pump_fade_v2_offline_kline_feasibility_v1",
+  "source_files": [
+    {
+      "end_ms": 1782863999999,
+      "name": "APT__APTUSDT__5m.csv.gz",
+      "proxy_events": 4,
+      "rows": 245376,
+      "sha256": "99f313777cc93c1a8c3e77f1d3e11fbee3f5ebb797a7b0751b71e42ec09d9a7f",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "ARB__ARBUSDT__5m.csv.gz",
+      "proxy_events": 5,
+      "rows": 245376,
+      "sha256": "72df5c2113b5384a7e75afa1d93b5f124d109e522d35e604bde7246b5ee003b9",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "BNB__BNBUSDT__5m.csv.gz",
+      "proxy_events": 0,
+      "rows": 245376,
+      "sha256": "e3ab201d4e2bbd28355f80b4b40a349f39f62857180ef1f8ad61d5fa1e111ad6",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "BONK__1000BONKUSDT__5m.csv.gz",
+      "proxy_events": 104,
+      "rows": 245376,
+      "sha256": "5fe39f2e413ac51c342c42f875e36c06eb6b356ab2cb4338c60f111b12b69247",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "BTC__BTCUSDT__5m.csv.gz",
+      "proxy_events": 0,
+      "rows": 245376,
+      "sha256": "d34772591f6d46e41f2a0e4b9368d13c5798ed34f218940bcf69ca204fe71bab",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "DOGE__DOGEUSDT__5m.csv.gz",
+      "proxy_events": 26,
+      "rows": 245376,
+      "sha256": "874ae17292c17bb6ac6c5d5531ad1ff886d1345b3613da2f419d8c965bcc783e",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "ENA__ENAUSDT__5m.csv.gz",
+      "proxy_events": 39,
+      "rows": 236010,
+      "sha256": "a68c49a99325148be26eac58f6d80c2faeec044a72110b8351643169b39f3fd4",
+      "start_ms": 1712061299999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "ETH__ETHUSDT__5m.csv.gz",
+      "proxy_events": 0,
+      "rows": 245376,
+      "sha256": "aa10b1d59b1c47fa033a46f9d474a8ddfec0ae6774a964b6147540601d68c383",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "FLOKI__1000FLOKIUSDT__5m.csv.gz",
+      "proxy_events": 111,
+      "rows": 245376,
+      "sha256": "a4cf7b23d9006ddef004eeb4dc67ef2b070e072c0ca1fa306c856d5007d21429",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "OP__OPUSDT__5m.csv.gz",
+      "proxy_events": 3,
+      "rows": 245376,
+      "sha256": "bfa948c8daf9f3410983e414bbefb5933916675727225b44cebf8e9654595175",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "PENGU__PENGUUSDT__5m.csv.gz",
+      "proxy_events": 101,
+      "rows": 161373,
+      "sha256": "cc73c0c678727f36a5f8a30e9f77431c15b00a60cfe026841ba91cff8b70a8fd",
+      "start_ms": 1734452399999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "PEPE__1000PEPEUSDT__5m.csv.gz",
+      "proxy_events": 129,
+      "rows": 245376,
+      "sha256": "82e7fcb6c786d7989a7bb2158b37a8ea7058b3fbd60eb14ab9c9aa87b2a411c9",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "SEI__SEIUSDT__5m.csv.gz",
+      "proxy_events": 27,
+      "rows": 245376,
+      "sha256": "d502d205aa5637e2a80b1b1b595ef2bd7f98dbeca4f1dabc5cdbd1202ccb1ed3",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "SOL__SOLUSDT__5m.csv.gz",
+      "proxy_events": 0,
+      "rows": 245376,
+      "sha256": "af204bd6992d7560a30af6b17ea887b26387482bda110a883ef23ea573ef58b8",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "SUI__SUIUSDT__5m.csv.gz",
+      "proxy_events": 35,
+      "rows": 245376,
+      "sha256": "0245fe7cc26d701eca69ebbcf5eb11924d22bd4f1d37c3e1a5394c665410a156",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "WIF__WIFUSDT__5m.csv.gz",
+      "proxy_events": 124,
+      "rows": 245376,
+      "sha256": "89bab01409bcf7eda4dbdc2b66161293abc15c3f2bff970367445c42177b50f8",
+      "start_ms": 1709251499999
+    },
+    {
+      "end_ms": 1782863999999,
+      "name": "XRP__XRPUSDT__5m.csv.gz",
+      "proxy_events": 36,
+      "rows": 245376,
+      "sha256": "550c737df796e73a33951366c6d80120b0e44c3181d89fa4f0058ea20c7dd426",
+      "start_ms": 1709251499999
+    }
+  ],
+  "squeeze_20pct_sensitivity": "reported per parent in proxy_events; not primary",
+  "status": "DATA_INCOMPLETE_FOR_OFFICIAL_R1_R2_R3_R4_GATES",
+  "symbol_counts": {
+    "1000BONKUSDT": 104,
+    "1000FLOKIUSDT": 111,
+    "1000PEPEUSDT": 129,
+    "APTUSDT": 4,
+    "ARBUSDT": 5,
+    "DOGEUSDT": 26,
+    "ENAUSDT": 39,
+    "OPUSDT": 3,
+    "PENGUUSDT": 101,
+    "SEIUSDT": 27,
+    "SUIUSDT": 35,
+    "WIFUSDT": 124,
+    "XRPUSDT": 36
+  },
+  "unverified_source_manifests": [],
+  "utc_day_clusters_n": 85
+}

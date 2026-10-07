@@ -32,7 +32,8 @@ __all__ = [
 _SYMBOL = r"[a-z0-9]+"
 _SPOT_STREAM = re.compile(rf"^{_SYMBOL}@(aggTrade|bookTicker|depth@100ms|kline_5m)$")
 _FUTURES_MARKET_STREAM = re.compile(
-    rf"^{_SYMBOL}@(aggTrade|kline_5m|markPrice@1s)$"
+    rf"^(?:{_SYMBOL}@(aggTrade|kline_(1m|5m|15m|1h|4h)|markPrice@1s|forceOrder)"
+    r"|!forceOrder@arr)$"
 )
 _FUTURES_PUBLIC_STREAM = re.compile(rf"^{_SYMBOL}@(bookTicker|depth@100ms)$")
 

@@ -1,0 +1,29 @@
+{
+  "schema_version": "pump_fade_v2_forward_evaluation_config_v1",
+  "policy_version": "pump-fade-v2-20261007-remediation-c",
+  "enabled": false,
+  "shadow_discord_enabled": false,
+  "market": "binance_usd_m_public_only",
+  "orders_enabled": false,
+  "research_namespace": "pump_fade_v2c_post_exposure_remediation",
+  "engineering_readiness_utc": null,
+  "offline_eligibility_decision_utc": null,
+  "effective_forward_start_utc": null,
+  "minimum_calendar_days": 56,
+  "minimum_valid_parent_alerts": 150,
+  "cluster_power_gate": "required; insufficient tail support blocks promotion",
+  "bootstrap_replicates": 10000,
+  "bootstrap_seed": 20261007,
+  "resampling": "UTC parent-event day blocks with all symbols and overlapping episodes together",
+  "inference_confidence_level": 0.95,
+  "positive_net_criterion": "one-sided 95% clustered lower confidence bound per original parent opportunity strictly greater than zero",
+  "live_production_wording_promotion": false,
+  "eligible": false,
+  "ineligibility_reasons": [
+    "historical outcomes were exposed before v2c remediation",
+    "official PIT offline data remain incomplete",
+    "engineering release and future readiness gates are not satisfied",
+    "forward start has not occurred",
+    "human deployment authorization is absent"
+  ]
+}

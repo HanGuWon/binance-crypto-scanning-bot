@@ -1,0 +1,101 @@
+{
+  "schema_version": "pump_fade_research_policy_v2d",
+  "policy_version": "pump-fade-v2-20261007-remediation-d",
+  "enabled": false,
+  "research_only": true,
+  "public_data_only": true,
+  "no_orders": true,
+  "supersedes": "pump-fade-v2-20261007-remediation-c",
+  "supersession_reason": "post-exposure engineering correction; no confirmatory historical claims",
+  "pump_event": {
+    "return_gte_pct": 30.0,
+    "quote_volume_gte_usdt": 2000000,
+    "trailing_closed_5m_bars": 288,
+    "same_symbol_cooldown_minutes": 60,
+    "point_in_time_universe_required": true
+  },
+  "state": {
+    "event_ttl_minutes": 1440,
+    "wait_four_hour_return_gt_pct": 15.0,
+    "wait_one_hour_return_gt_pct": 5.0,
+    "wait_one_hour_volume_ge_causal_baseline_ratio": 2.0,
+    "volume_reference": "median of previous 12 nonoverlapping complete one-hour periods, excluding current trailing hour",
+    "funding_cap_hit_tolerance_absolute": 0.0001,
+    "funding_cap_lookback_minutes": 1440,
+    "cap_wait_clearance": "three spaced observed normalized samples after the latest in-window cap hit clear only the cap-risk WAIT reason",
+    "r5_release_confirmation": "three spaced observed normalizations at or after event admission after a cap hit; separate from cap-risk clearance",
+    "interval_restore_baseline": "first observed interval immediately before the first shortening in the current lookback window; require fresh restoration",
+    "continuation_new_high": "strict observed high above earlier event-to-date high",
+    "continuation_oi_rise_from_event_gte_pct": 10.0,
+    "missing_mandatory_input": "WAIT_UNAVAILABLE",
+    "skip_absorbing_for_event": true,
+    "release_any_of": [
+      "R1_NO_HIGH_60M",
+      "R2_15M_BREAK_FAILED_RETEST",
+      "R3_OI_FALL_5PCT_LAG",
+      "R4_15M_CLOSE_BELOW_AVWAP",
+      "R5_PREDICTED_FUNDING_NORMALIZED"
+    ],
+    "release": {
+      "no_high_minutes": 60,
+      "break_low_previous_closed_15m_bars": 2,
+      "retest_within_closed_15m_bars": 4,
+      "oi_decline_from_observed_peak_gte_pct": 5.0,
+      "oi_lag_completed_rows": 1,
+      "funding_normalize_below_cap_by_absolute": 0.001,
+      "funding_normalize_persistence_samples": 3,
+      "funding_samples_min_spacing_seconds": 60
+    }
+  },
+  "skip": {
+    "primary_drawdown_pct": 30.0,
+    "primary_rebound_pct": 10.0,
+    "drawdown_grid_pct": [20, 30, 40],
+    "rebound_grid_pct": [5, 10, 15],
+    "sensitivity_arms": ["joint_25pct_8pct", "unconditional_drawdown_40pct"],
+    "new_market_min_listing_age_days": 7,
+    "maximum_spread_bps": 30.0,
+    "minimum_each_side_depth_50bps_usdt": 100000.0,
+    "maximum_bbo_age_ms": 5000,
+    "maximum_depth_age_ms": 5000,
+    "maximum_oi_age_ms": 900000,
+    "maximum_funding_age_ms": 300000
+  },
+  "ladder": {
+    "max_risk_increasing_additions": 2,
+    "max_each_addition_initial_qty_fraction": 0.5,
+    "max_total_initial_qty_multiple": 2.0,
+    "conservative_round_trip_cost_bps": 30,
+    "three_addition_variant": "separate sensitivity only; never primary policy",
+    "eight_addition_variant": "legacy comparator only; same parent cohort and frozen risk budget"
+  },
+  "evaluation": {
+    "horizons_hours": [4, 24],
+    "r3_skip_landmark_hours_after_event": 4,
+    "r3_post_landmark_squeeze_horizon_hours": 20,
+    "squeeze_adverse_mark_excursion_pct": 15.0,
+    "squeeze_adverse_mark_excursion_sensitivity_pct": [20.0],
+    "squeeze_boundary": ">=",
+    "missed_fade_threshold_favorable_pct": 10.0,
+    "cost_scenarios_round_trip_bps": [15, 30, 60],
+    "baseline_equal_additions_pct_from_last_fill": 5,
+    "baseline_max_additions": 8,
+    "bootstrap_replicates": 10000,
+    "bootstrap_seed": 20261007,
+    "bootstrap_cluster": "original parent UTC day; preserve all symbols and overlapping episodes",
+    "confidence": 0.95,
+    "multiplicity": "Holm within preregistered families only when supported observations exist",
+    "r2_q99_minimum_observed_parent_losses": 100,
+    "r2_net_noninferiority_margin_bp": 10,
+    "gates": "post-exposure engineering comparisons only; unsupported inputs and empirical claims remain unavailable"
+  },
+  "forward": {
+    "enabled": false,
+    "not_before_utc": null,
+    "minimum_days": 56,
+    "minimum_valid_alerts": 150,
+    "positive_net_expectancy_requires_lower_one_sided_95pct_cluster_confidence_bound_gt_zero": true,
+    "shadow_discord_enabled": false,
+    "production_promotion_enabled": false
+  }
+}

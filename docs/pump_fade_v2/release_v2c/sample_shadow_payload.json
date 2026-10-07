@@ -1,0 +1,34 @@
+{
+  "continuation_risk": false,
+  "continuation_risk_evidence": "observed_positive_only_liquidation_sampling_censored",
+  "cost_scenario_bps": 30.0,
+  "decision_time": {
+    "asia_seoul": "2027-01-07T09:49:36+09:00",
+    "utc": "2027-01-07T00:49:36+00:00"
+  },
+  "delivery_enabled": false,
+  "event_id": "SYNTHETIC_EXAMPLE_ONLY_DO_NOT_TRADE",
+  "expires": {
+    "asia_seoul": "2027-01-08T09:49:36+09:00",
+    "utc": "2027-01-08T00:49:36+00:00"
+  },
+  "freshness_ms": {},
+  "historical_probability": "UNAVAILABLE_UNTIL_COHORT_N_AND_CONFIDENCE_INTERVAL",
+  "invalidation_price": 130.0,
+  "message_id": "244ea3698711a0dfc9530304ea46d3c47650db12105630bbf16630cd7269eff9",
+  "metrics": {
+    "spread_bps": 10.0,
+    "trailing_1h_return_pct": 1.0
+  },
+  "policy_version": "pump-fade-v2-20261007-remediation-c",
+  "reasons": [
+    "60 minutes without a new fully closed five-minute high"
+  ],
+  "release_candidates": [
+    "R1_NO_HIGH_60M"
+  ],
+  "schema_version": "pump_v2_shadow_preview_v1",
+  "spread_bps": 10.0,
+  "state": "FADE-CANDIDATE",
+  "validation_tier": "EXPLORATORY"
+}
