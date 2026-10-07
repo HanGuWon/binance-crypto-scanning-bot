@@ -1,0 +1,9 @@
+# v2c corrected public-kline proxy (exposed development only)
+
+This result is separate from and does not replace the immutable v2b replay. It applies the source-plan-authoritative 15% primary adverse mark excursion with inclusive `>=` boundary under policy `pump-fade-v2-20261007-remediation-c`. The historical outcomes were exposed before v2c, so the result is development/replication evidence only.
+
+The offline runner read 17 locally manifested 5m USD-M kline files and produced 744 complete 24h proxy parents across 85 UTC-day clusters. Result and source hashes are recorded in `offline_public_kline_proxy_v2c_20261007/data_manifest.json`. The result status is `DATA_INCOMPLETE_FOR_OFFICIAL_R1_R2_R3_R4_GATES`.
+
+P1 is recorded as previously exposed; the separate clean replication input is not part of this package. P2 and R1, limited R2/R4 and R3 landmark/cell outputs are kline proxies. They cannot establish PIT listing/receipt chronology, point-in-time OI or funding, mark-price squeeze, executable BBO, fees/funding settlements, queue fills, or causal treatment benefit. R3 membership is measured only by the four-hour landmark and its squeeze outcome only in the disjoint following twenty hours; it is descriptive association, not a counterfactual estimate. Same-parent comparisons retain non-release/abstention parents and separately report missed-fade opportunity indicators; no trade is fabricated for an abstention.
+
+R2 primary two-addition ladder, first-fill-only, eight equal additions, and separate three-addition sensitivity remain unavailable without the P3 fill export, frozen invalidation/risk budget, execution path and costs. P1 source outcomes were previously exposed; P2 is only a retrospective kline landmark proxy. No p-values, q99 gate, alpha, net expectancy, or promotion conclusion is claimed. Forward remains disabled.

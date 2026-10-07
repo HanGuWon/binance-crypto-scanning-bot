@@ -1,0 +1,19 @@
+{
+  "schema_version": "pump_fade_v2_post_exposure_engineering_freeze_v1",
+  "engineering_freeze_utc": "2026-10-07T09:44:12Z",
+  "freeze_status": "POST_EXPOSURE_ENGINEERING_CORRECTION_NOT_CONFIRMATORY_PREREGISTRATION",
+  "policy_version": "pump-fade-v2-20261007-remediation-d",
+  "source_parent_commit": "c06e4ced3005bb8b28f3a75d94ffd25cbfa0c3fd",
+  "policy_path": "config/pump_fade_v2/policy_v2d.json",
+  "policy_config_sha256": "4485cfa163b85b984437e23563285d341467dd4b793a4c6c8db640325d095caf",
+  "remediation_contract_path": "docs/pump_fade_v2/PREREGISTRATION_REMEDIATION_D.md",
+  "remediation_contract_sha256": "b06a828281b68158ba11ddc6fea28c14583ee29eaa0589ea765e264da43f36df",
+  "source_plan_sha256": "bb0504050b157c0456fe309731a4ea2954cbbb9a1d2e4773d21edbbab522e986",
+  "supersedes_for_corrected_development_only": "pump-fade-v2-20261007-remediation-c",
+  "historical_outcomes_previously_exposed": true,
+  "historical_outcomes_confirmatory": false,
+  "forward_eligibility": "DISABLED_NOT_STARTED",
+  "capture_enabled": false,
+  "shadow_discord_enabled": false,
+  "production_orders_enabled": false
+}

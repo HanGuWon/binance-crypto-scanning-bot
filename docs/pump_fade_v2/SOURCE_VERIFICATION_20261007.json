@@ -1,0 +1,44 @@
+{
+  "schema_version": "pump_fade_v2_postfreeze_source_verification_v1",
+  "verified_at_kst": "2026-10-07T14:34:38+09:00",
+  "chronology": "post-v2b-freeze and post-prior-source exposure; this receipt does not amend frozen rule bytes",
+  "strategy_plan": {
+    "path": "D:\\Binance-trade-analysis\\handoff\\STRATEGY_PLAN_v2_2026-10-07.md",
+    "sha256": "bb0504050b157c0456fe309731a4ea2954cbbb9a1d2e4773d21edbbab522e986",
+    "matches_user_supplied_snapshot": true
+  },
+  "supporting_sources": [
+    {
+      "path": "D:\\Binance-trade-analysis\\handoff\\INTEGRATED_ASTRA_OPUS_ROADMAP_2026-10-06.md",
+      "sha256": "6f08494a6760545aedf1b7dfcab13d1cc36df1e2e4ccaa6f13f870c51d1d8090"
+    },
+    {
+      "path": "D:\\Binance-trade-analysis\\handoff\\HANDOFF_2026-10-06.md",
+      "sha256": "5e4e29e1407f000040442fc796b136df33f7eb77e4fb3cb368795d273af31350"
+    },
+    {
+      "path": "D:\\Binance-trade-analysis\\2026-10-07_oci-closeout\\CLOSEOUT_COMPLETE.md",
+      "sha256": "259ac94eb60d6b5412f90cd76885211aeb7517a9fbf81a82e096fc7ed43a0ddf"
+    },
+    {
+      "path": "D:\\Binance-trade-analysis\\2026-10-07_oci-closeout\\RESULTS.md",
+      "sha256": "657d2a096d9cd79c5ab1a537e4249821a18ca1ea35a277eeb59061714911b647"
+    },
+    {
+      "path": "D:\\Binance-trade-analysis\\2026-10-06_order-history\\README.md",
+      "sha256": "5f176a946dc2b1237870082dedb29ac6138283a1483e6f4ae28f7e443c5bcbf0"
+    },
+    {
+      "path": "D:\\Binance-trade-analysis\\2026-10-06_pump-validation\\PREREGISTRATION.md",
+      "sha256": "177794571f0e1ad17d3a372d630ab57b010b4518e3eb3ccb1144e61214230d0d"
+    },
+    {
+      "path": "D:\\Binance-trade-analysis\\2026-10-06_pump-validation\\RESULTS.md",
+      "sha256": "93b4407cd3625901947feb5610efac140beb89a89735fe850f1504208bca834f"
+    }
+  ],
+  "frozen_policy_v2b_sha256": "207fe5fd1e5c97155c7c52dae425918851ade771e40211b1619ae2428f5fe27d",
+  "base_preregistration_sha256": "075f5d4655dc6ccd61a0e7ae57aab19d0f0b46d4a39efdc451395d7935c12c8e",
+  "amendment_b_sha256": "b72c1633817050aafe6f9fbf023fa94d369dfe8039d2afa06194fd1f07410002",
+  "frozen_bytes_modified_by_this_receipt": false
+}

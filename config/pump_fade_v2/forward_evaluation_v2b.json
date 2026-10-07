@@ -1,0 +1,36 @@
+{
+  "schema_version": "pump_fade_v2_forward_evaluation_config_v1",
+  "policy_version": "pump-fade-v2-20261007-prereg-b",
+  "enabled": false,
+  "shadow_discord_enabled": false,
+  "market": "binance_usd_m_public_only",
+  "orders_enabled": false,
+  "research_namespace": "pump_fade_v2b_future_campaign_new_identity_required",
+  "freeze_utc": "2026-10-07T03:49:36Z",
+  "not_before_utc": "2026-10-08T00:00:00Z",
+  "engineering_readiness_utc": null,
+  "offline_eligibility_decision_utc": null,
+  "effective_forward_start_utc": null,
+  "minimum_calendar_days": 56,
+  "minimum_valid_parent_alerts": 150,
+  "additional_power_gate": "clustered effective sample size and tail-event sufficiency separately required",
+  "bootstrap_replicates": 10000,
+  "bootstrap_seed": 20261007,
+  "resampling": "UTC parent-event day blocks with all symbols, overlapping episodes remain in parent day",
+  "inference_confidence_level": 0.95,
+  "positive_net_criterion": "one-sided 95% clustered lower confidence bound of net value per original parent opportunity > 0",
+  "comparisons": {
+    "original_opportunity_baseline": "immediate same-cohort short at next executable quote",
+    "tail_constraint": "must meet separately frozen rule-specific P1 90% bootstrap interval; exact comparison remains unresolved until the exposed P1 tail estimand is reconstructed",
+    "rules": "Holm adjusted by registered R1/R2/R3/R4 family"
+  },
+  "live_production_wording_promotion": false,
+  "eligible": false,
+  "ineligibility_reasons": [
+    "official point-in-time offline experimental eligibility remains incomplete despite completed exposed kline proxy replay",
+    "P3 original raw order export plus frozen invalidation and risk-budget inputs are unavailable for official R2",
+    "engineering release checks pending",
+    "human OCI deployment authorization not supplied",
+    "forward start has not occurred"
+  ]
+}

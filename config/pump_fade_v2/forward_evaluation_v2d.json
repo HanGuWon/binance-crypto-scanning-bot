@@ -1,0 +1,29 @@
+{
+  "schema_version": "pump_fade_v2_forward_evaluation_config_v1",
+  "policy_version": "pump-fade-v2-20261007-remediation-d",
+  "enabled": false,
+  "shadow_discord_enabled": false,
+  "market": "binance_usd_m_public_only",
+  "orders_enabled": false,
+  "research_namespace": "pump_fade_v2d_post_exposure_engineering",
+  "engineering_readiness_utc": null,
+  "offline_eligibility_decision_utc": null,
+  "effective_forward_start_utc": null,
+  "minimum_calendar_days": 56,
+  "minimum_valid_parent_alerts": 150,
+  "cluster_power_gate": "required; insufficient empirical tail support blocks promotion",
+  "bootstrap_replicates": 10000,
+  "bootstrap_seed": 20261007,
+  "resampling": "UTC original parent-event day blocks; keep all symbols and overlapping episodes together",
+  "inference_confidence_level": 0.95,
+  "positive_net_criterion": "one-sided 95% clustered lower confidence bound per original parent opportunity strictly greater than zero",
+  "live_production_wording_promotion": false,
+  "eligible": false,
+  "ineligibility_reasons": [
+    "historical outcomes were exposed before v2d remediation",
+    "official point-in-time executable, mark and funding data are incomplete",
+    "no forward campaign was authorized or started",
+    "the full repository suite requires a compatible authorized Windows runner",
+    "human deployment authorization is absent"
+  ]
+}

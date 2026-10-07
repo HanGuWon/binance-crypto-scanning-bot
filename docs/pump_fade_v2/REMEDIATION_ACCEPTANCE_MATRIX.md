@@ -1,0 +1,33 @@
+# Independent acceptance-case remediation matrix
+
+The source cases are preserved at `var/luna-independent-review-20261007/ACCEPTANCE_CASES.json`. This matrix is the implementation tracker; a test name is not a PASS until the named test is run successfully on the settled worktree. Historical outputs remain exposed. Corrected replay is development-only.
+
+| Case | Acceptance contract | Test/evidence target | Status |
+|---|---|---|---|
+| PF2-AC-001 | Strict return `>` boundaries; volume `>=` | `test_policy_return_and_volume_boundaries_are_strict_and_inclusive` | PASS — included in final 25-test run |
+| PF2-AC-002 | Future receipt cannot establish release or clear unavailable input | `test_lagged_oi_release_and_wait_overrides_release` | PASS — included in final 25-test run |
+| PF2-AC-003 | 15m aggregation requires three closed, received, consecutive 5m bars | `test_closed_fifteen_aggregation_and_stale_book_does_not_skip` | PASS — included in final 25-test run |
+| PF2-AC-004 | Retest release is causal and cannot use future retest/final peak | `test_fully_closed_15m_failed_retest_and_post_event_anchor` | PASS — included in final 25-test run |
+| PF2-AC-005 | Pre-event cap-hit can be cleared only by three spaced normalized post-hit observations | `test_funding_normalization_clears_hit_but_interval_change_waits` covers pre-event chronology, streak length, spacing, current metadata and missing metadata | PASS — included in final 25-test run |
+| PF2-AC-006 | Shortened interval remains WAIT until observed original pre-shortening interval is restored | Same funding test; 8→4→2→4 WAIT and observed 8h restoration | PASS — included in final 25-test run |
+| PF2-AC-007 | Forced BUY is short continuation risk, never a bullish release | `test_funding_cap_observation_normalization_and_liquidation_censoring` | PASS — included in final 25-test run |
+| PF2-AC-008 | SELL is not short-liquidation evidence | `test_capture_normalizers_closed_bar_oi_and_predicted_funding` | PASS — included in final 25-test run |
+| PF2-AC-009 | Sampled liquidation silence is censored, not zero | `test_capture_normalizers_closed_bar_oi_and_predicted_funding` and replay gap semantics | PASS — included in final 25-test run |
+| PF2-AC-010 | Terminal SKIP is absorbing and precedes release | `test_causal_wait_missing_inputs_release_and_terminal_skip` | PASS — included in final 25-test run |
+| PF2-AC-011 | Ladder arithmetic separates initial risk, tranche fees, and risk-increasing additions | `test_private_addition_accounting_uses_risk_increases_not_total_orders`; `test_ladder_partial_fill_risk_budget_and_contra_stop` | PASS — included in final 25-test run |
+| PF2-AC-012 | Short invalidation is above each proposed fill | `test_ladder_partial_fill_risk_budget_and_contra_stop` | PASS — included in final 25-test run |
+| PF2-AC-013 | Missing/stale manual liquidation input yields unknown, not fabricated account risk | `test_manual_liquidation_requires_supplied_price_and_fresh_mark` | PASS — included in final 25-test run |
+| PF2-AC-014 | OHLC cannot invent stop/target ordering on same bar | `test_outcome_horizon_censor_and_append_only_identity` now includes simultaneous barrier crossing | PASS — included in final 25-test run |
+| PF2-AC-015 | Reconnect/raw evidence maps to idempotent versioned decisions and previews | disabled runtime/retry, generation ledger, verified directory replay, cap ordering, shadow transaction/restart/conflict/capacity tests | PASS — included in final 25-test run |
+| PF2-AC-016 | Never-released opportunities remain in original-parent accounting | `test_statistics_block_and_holm_boundary` exercises retained parent, no trade, missed-fade flag and `NOT_APPLICABLE` trade PnL | PASS — included in final 25-test run |
+| PF2-AC-017 | 10k bootstrap draws do not create independent clusters or tail support | `test_statistics_block_and_holm_boundary`; replay arm explicitly reports q99 unavailable absent executable loss-tail observations | PASS — descriptive-only/insufficient evidence |
+| PF2-AC-018 | Forward gate needs both duration and count; positive lower confidence bound | `test_statistics_block_and_holm_boundary` supplies 56 days/150 alerts, positive mean, negative lower bound | PASS — promotion remains false |
+| PF2-AC-019 | Landmark cohort is not causal intervention benefit | `test_replay_synthetic_closed_panel_with_hashed_manifest` asserts the explicit R3 estimand statement | PASS — association only |
+| PF2-AC-020 | Missing historical cap metadata cannot be backfilled from current snapshot | missing-cap WAIT_UNAVAILABLE test, absent `fundingInfo` normalizer test, and replay historical-cap status | PASS — chronology remains UNAVAILABLE |
+
+| PF2-AC-021 | Cap-risk clearance uses three spaced normalized samples after the latest hit; R5 remains post-event | `test_cap_risk_clearance_is_separate_from_event_specific_r5_release`; paired fixture first reproduced the old WAIT, then verified cleared cap risk with R5 absent | PASS — focused v2d test |
+| PF2-AC-022 | Executable counterfactual arms share parents, frozen risk, executable quotes, costs and funding coverage; censored/missing paths are not zero | `test_executable_ladder_comparators_replay_same_parent_and_partial_tranches`, `test_executable_ladder_censors_missing_exit_and_does_not_zero_missing_funding`, `test_executable_ladder_stop_precedes_later_add_and_rejected_confirmation`, `test_executable_comparator_supports_clustered_inference_and_observed_q99` | PASS — synthetic engineering fixtures only; no empirical conclusion |
+| PF2-AC-023 | Capture→materialization and event/alert 4h/24h outcomes remain durable; archive failures/capacity never prune before hash acknowledgement | `test_verified_capture_directory_replays_into_materializer`, `test_terminal_shadow_archive_is_hash_acknowledged_before_prune`, `test_outcome_horizon_censor_and_append_only_identity`, `test_shadow_episode_transaction_restart_conflict_and_bounded_capacity` | PASS — local recorded/synthetic fixtures; bounded stores fail closed |
+| PF2-AC-024 | Release identity includes complete local Python import closure, active v2d policy/freeze, lock inputs, and isolated package import | `test_release_import_closure_detects_changes_and_missing_local_dependencies`, `test_release_manifest_hashed_rules_and_local_example_only` | PASS — isolated smoke resolves extracted package; no private/runtime data included |
+
+The original v2c rows recorded **25 passed** in that earlier scoped run. The v2d package suite is rerun after remediation; its current count is recorded in `SONNET_FINALIZATION_HANDOFF.md`. These acceptance rows are engineering-contract results, not empirical strategy evidence. Full repository pytest remains unverified on this host.
