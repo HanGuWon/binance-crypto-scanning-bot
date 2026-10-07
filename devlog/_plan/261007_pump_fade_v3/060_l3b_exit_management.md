@@ -1,0 +1,7 @@
+# L3b — state-aware exit / runner study
+
+External development-only replay on P1-style parents reaching FADE-CANDIDATE and a favorable first leg. Freeze D=8% primary (5%,12% sensitivity), B=6% rebound, C=6% continuation and 4h vertical barrier in L1. Use mark price and closed 5m decisions. Order within the same bar is ambiguous and reported as such. Features are causal at each decision: dump/pump volume, OI change, censored SELL liquidation burst/decay, funding/premium, taker buy share, pump-origin and consolidation distances, lower highs, BTC 1h.
+
+Arms on the same parents/entries/costs: E0 +1% proxy and P3 aggregate distribution; E1 +2/+4/+8%; E2 50% first-leg then last-closed-15m-lower-high trail; E3 chandelier at 3× closed-5m ATR (user-approved); E4 dump AVWAP 15m reclaim; E5 hold only while OI falls and price below dump AVWAP, exit on 15m reclaim, forced-BUY burst, funding normalization, or qualified L4b score. Report capture ratio, net bp after costs/funding, give-back, q99 loss, time in trade, premature-exit-before-C continuation, label balance, ambiguous count. Promote only if mean net bp/parent vs E0 has day-block 95% CI excluding zero and q99 loss ≤ E0+50 bp; otherwise descriptive.
+
+Files and tests are in the external research project; each result has one deterministic command and input/code hashes. No tuned threshold based on these outcomes is written back to the frozen v3 policy.
