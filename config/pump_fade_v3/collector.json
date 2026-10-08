@@ -1,0 +1,13 @@
+{
+  "schema_version": "pump_fade_v3_collector_v1",
+  "enabled": false,
+  "data_directory": "/var/lib/binance-bot-2/prospective-r/pump-fade-v3",
+  "maximum_total_bytes": 17179869184,
+  "minimum_free_bytes": 12884901888,
+  "maximum_event_symbols": 25,
+  "event_lifetime_ms": 93600000,
+  "event_return_percent": 20.0,
+  "event_minimum_quote_volume_usdt": 2000000.0,
+  "rest_weight_budget_per_minute": 600,
+  "event_depth_enabled": true
+}

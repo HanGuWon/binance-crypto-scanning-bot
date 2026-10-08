@@ -20,6 +20,7 @@ from signalbot.capture.handoff import BoundedCaptureHandoff, CaptureFatalState
 from signalbot.capture.models import (
     CaptureEnvelopeV1,
     CoverageReason,
+    CoverageState,
     CoverageTransitionV1,
     RestEnvelopeV1,
     payload_bytes,
@@ -27,6 +28,7 @@ from signalbot.capture.models import (
 )
 from signalbot.capture.pipeline import CapturePipeline
 from signalbot.capture.plans import build_prospective_capture_plans
+from signalbot.capture.storage import SegmentedCaptureWriter
 from signalbot.capture.websocket import (
     IngestSequencer,
     PublicWebSocketCaptureAdapter,
@@ -35,6 +37,8 @@ from signalbot.capture.websocket import (
 )
 from signalbot.domain.enums import Market
 from signalbot.exchange.binance.endpoints import (
+    FUTURES_WS_MARKET,
+    FUTURES_WS_PUBLIC,
     SPOT_WS_COMBINED,
     SPOT_WS_MARKET_DATA_ONLY,
     WebSocketPlan,
@@ -42,6 +46,64 @@ from signalbot.exchange.binance.endpoints import (
 )
 
 PLAN_SHA256 = hashlib.sha256(b"prospective-capture-pipeline-test").hexdigest()
+
+
+def test_emergency_journal_bypasses_fatal_external_capacity_guard(tmp_path: Path) -> None:
+    calls: list[int] = []
+
+    def reject(_current: int, incoming: int) -> None:
+        calls.append(incoming)
+        raise CaptureStorageCapacityError("external data floor tripped")
+
+    writer = SegmentedCaptureWriter(
+        tmp_path, plan_sha256=PLAN_SHA256, process_boot_id="test-boot",
+        maximum_total_bytes=4096, emergency_reserve_bytes=1024,
+        capacity_guard=reject,
+    )
+    transition = CoverageTransitionV1(
+        received_at_ms=1000, received_monotonic_ns=1000,
+        plan_sha256=PLAN_SHA256, process_boot_id="test-boot",
+        connection_id="test-connection", frame_seq=1, ingest_seq=1,
+        market=Market.FUTURES, route="market", stream="!miniTicker@arr",
+        state=CoverageState.INVALID, reason=CoverageReason.STORAGE_CAPACITY,
+        detail="DATA cap reached",
+    )
+    writer.write_emergency_transition(transition)
+    assert (tmp_path / "coverage-fatal.jsonl").read_bytes() == record_to_json_line(transition)
+    assert calls == []
+
+
+def test_stream_compressed_counters_match_written_outer_frames(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from signalbot.capture.storage import read_segment_lines
+
+    writer = SegmentedCaptureWriter(
+        tmp_path, plan_sha256=PLAN_SHA256, process_boot_id="test-boot",
+        maximum_total_bytes=16 * 1024 * 1024,
+        emergency_reserve_bytes=1024,
+    )
+    original = _frame(1)
+    first = replace(
+        original, process_boot_id="test-boot",
+        stream="combined:pump-fade-v3-market-1",
+        subscription_streams=("!miniTicker@arr", "!forceOrder@arr"),
+        raw_payload='{"stream":"!miniTicker@arr","data":[]}',
+    )
+    second = replace(
+        first, ingest_seq=2, frame_seq=2, received_at_ms=1003,
+        raw_payload='{"stream":"!forceOrder@arr","data":[]}',
+    )
+    for record in (first, second):
+        writer.append(record, record_to_json_line(record))
+    writer.close()
+    counters = writer.compressed_bytes_by_stream
+    assert set(counters) == {"!miniTicker@arr", "!forceOrder@arr"}
+    assert all(size > 0 for size in counters.values())
+    segments = list(tmp_path.glob("*.zst"))
+    assert len(segments) == 1
+    assert sum(counters.values()) == segments[0].stat().st_size
+    assert len(read_segment_lines(segments[0])) == 2
 
 
 def _frame(ingest_seq: int, raw_payload: str = "{}") -> CaptureEnvelopeV1:
@@ -331,6 +393,32 @@ def test_capture_plan_is_distinct_from_scanner_plan_and_public_only() -> None:
         validate_public_websocket_plan(plan)
         assert "!miniTicker" not in plan.streams
         assert all("kline_1m" not in stream for stream in plan.streams)
+    partial_depth = WebSocketPlan(
+        name="pump-fade-depth5-500ms",
+        market=Market.FUTURES,
+        route="public",
+        streams=("btcusdt@depth5@500ms",),
+        url=f"{FUTURES_WS_PUBLIC}btcusdt@depth5@500ms",
+    )
+    validate_public_websocket_plan(partial_depth)
+    all_market = WebSocketPlan(
+        name="pump-fade-all-market-mini-ticker",
+        market=Market.FUTURES,
+        route="market",
+        streams=("!miniTicker@arr",),
+        url=f"{FUTURES_WS_MARKET}!miniTicker@arr",
+    )
+    validate_public_websocket_plan(all_market)
+    with pytest.raises(ValueError, match="non-allowlisted"):
+        validate_public_websocket_plan(
+            WebSocketPlan(
+                name="unsupported-partial-depth-speed",
+                market=Market.FUTURES,
+                route="public",
+                streams=("btcusdt@depth5@1000ms",),
+                url=f"{FUTURES_WS_PUBLIC}btcusdt@depth5@1000ms",
+            )
+        )
     spot_capture = next(plan for plan in plans if plan.market is Market.SPOT)
     assert spot_capture.url.startswith(SPOT_WS_MARKET_DATA_ONLY)
     assert not spot_capture.url.startswith(SPOT_WS_COMBINED)

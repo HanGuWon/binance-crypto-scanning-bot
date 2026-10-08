@@ -1,0 +1,24 @@
+# Packaging only. Do not enable or start until the documented two-hour A3 gate.
+[Unit]
+Description=Pump Fade v3 isolated public capture (disabled by default)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pumpfadev3
+Group=pumpfadev3
+WorkingDirectory=/opt/pump-fade-v3
+ExecStart=/opt/pump-fade-v3/.venv/bin/python -m signalbot.pump_fade_v3.collector --config config/pump_fade_v3/collector.json --enable --data-mount /var/lib/binance-bot-2/prospective-r
+Restart=no
+MemoryMax=2G
+CPUQuota=60%
+Nice=10
+IOWeight=50
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/binance-bot-2/prospective-r/pump-fade-v3
+PrivateTmp=true
+
+# Deliberately not installable: operator staging is a separate action.
