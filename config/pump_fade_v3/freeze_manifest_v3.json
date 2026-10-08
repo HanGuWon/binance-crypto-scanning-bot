@@ -1,0 +1,58 @@
+{
+  "schema": "pump_fade_v3_l1_freeze_manifest_v1",
+  "status": "L1_FREEZE_CONTENT",
+  "parent_commit_sha": "8984e6af40c0e58b3aa5dc78083bdb7a9c53ee15",
+  "resulting_commit_identity": "EXTERNAL_HOLDOUT_SEAL_ONLY_AFTER_COMMIT",
+  "source_manifest": {
+    "development_start_utc": "2025-01-01T00:00:00Z",
+    "development_end_utc": "2026-06-30T23:59:59.999Z",
+    "development_last_close_time_ms": 1782863999999,
+    "count": 33,
+    "manifest_root_sha256": "aba98924dde7e40ab7104c733ff95d95396d2656f5661b0b7ac8a572b8fdce0e",
+    "root_entry_encoding": "filename\\0manifest_sha\\n",
+    "directory_identity": "D:\\Binance bot-2\\data\\backtest\\futures",
+    "each_bound_data_sha_valid": true,
+    "each_gap_count": 0,
+    "each_missing_intervals": 0,
+    "all_last_close_time_ms": 1782863999999,
+    "max_tie_example": {
+      "symbol": "ADAUSDT",
+      "interval": "1h"
+    }
+  },
+  "holdout_spec": {
+    "start_utc": "2026-07-01T00:00:00Z",
+    "end_utc": "2026-10-06T23:59:59Z",
+    "universe": "binance_usdm_usdt_perpetual",
+    "include_delisted": true
+  },
+  "preregistration_path": "docs/pump_fade_v3/PREREGISTRATION_V3.md",
+  "preregistration_sha256": "39b26304b574292c287a23ce02f4b35b947a4a4a0e441c178559dbe92c4aef7f",
+  "policy_path": "config/pump_fade_v3/policy_v3.json",
+  "policy_sha256": "8f01bbc7d628d144fe13ce966b9ba6456795fc905d819ff2b476ec192a0a8f56",
+  "guard_path": "src/signalbot/pump_fade_v3/holdout_guard.py",
+  "guard_sha256": "f4944a4402736bf1a5932436e87739efe89d4450968b9df8787824bee1401064",
+  "source_code_sha256": {
+    "src/signalbot/pump_fade_v3/collector.py": "9ce096cc3d2d48a47e9a6552dbbc3314b0405988fd5c943c3bce9ca67e3d3790",
+    "src/signalbot/pump_fade_v3/config.py": "ff47236c4a062d11b0325a9dea7b98257753183396d379325f7f215fad82b1e1",
+    "src/signalbot/pump_fade_v3/runtime.py": "fab9db27dfb1ef5ac916d47c60e37aa762b62f62301cbfa7a7bbe7a3e7c9329d",
+    "src/signalbot/pump_fade_v3/disk_budget.py": "f61ebd2e8d6af90af4d701fa6067e6f0f1044e0731e129d56024a0ab4b5bc5b5",
+    "src/signalbot/pump_fade_v3/rest_budget.py": "55ce304543e7e647997b02895688cfbee5dadae628ef284a7e7727169fcf584b"
+  },
+  "holdout_guard": {
+    "implementation": "TWO_PHASE_AUTHORIZE_THEN_ONE_SHOT_CLAIM",
+    "cli_argument": "--holdout-unseal",
+    "require_exact_real_freeze_commit_sha_before_any_holdout_stat_list_open_hash": true,
+    "missing_malformed_wrong_stale_token": "FAIL_CLOSED",
+    "external_seal_required": true,
+    "seal_location_requirement": "OUTSIDE_SEALED_HOLDOUT_ROOT",
+    "holdout_data_accessed_during_l1": false
+  },
+  "authorization": {
+    "research_only": true,
+    "holdout_access_before_external_seal": false,
+    "orders": false,
+    "new_discord": false,
+    "production_writes": false
+  }
+}
