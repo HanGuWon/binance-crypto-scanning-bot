@@ -29,6 +29,7 @@ from signalbot.pump_fade_v3.config import (
 
 LOGGER = logging.getLogger(__name__)
 _PLAN_BATCH_SIZE = 24
+MAX_RESTART_GAPS_PER_HOUR = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +366,10 @@ def _recent_restart_gap_count(capture_root: Path, *, now_ms: int) -> int:
     return count
 
 
+def _restart_gap_limit_reached(restart_gaps: int) -> bool:
+    return restart_gaps >= MAX_RESTART_GAPS_PER_HOUR
+
+
 async def run_standalone(
     config_path: str | Path, *, enable: bool,
     expected_mount: str | Path,
@@ -412,7 +417,7 @@ async def run_standalone(
     restart_gaps = _recent_restart_gap_count(
         capture_root, now_ms=time.time_ns() // 1_000_000
     ) if capture_root.exists() else 0
-    if restart_gaps > 6:
+    if _restart_gap_limit_reached(restart_gaps):
         LOGGER.critical(
             "collector restart limit exceeded: %d incomplete generations in the last hour",
             restart_gaps,

@@ -163,12 +163,17 @@ class PumpFadeV3Runtime:
     ) -> RestEnvelopeV2 | None:
         assert self._plan is not None
         correlation = f"v3:{self._plan.sha256}:{poll.role}:{now_ms}"
+        started_monotonic = self._monotonic()
         for index in range(1, 4):
+            attempt_monotonic = self._monotonic()
+            attempt_now_ms = now_ms + max(
+                0, int((attempt_monotonic - started_monotonic) * 1000)
+            )
             if poll.weight and not self.budget.admit(
-                weight=poll.weight, now=self._monotonic()
+                weight=poll.weight, now=attempt_monotonic
             ):
                 return None
-            self.budget.record_request(weight=poll.weight, now_ms=now_ms)
+            self.budget.record_request(weight=poll.weight, now_ms=attempt_now_ms)
             envelope = await self.rest_adapter.capture_attempt(
                 method="GET", market=Market.FUTURES, url=_FAPI + poll.path,
                 request_role=poll.role, correlation_id=correlation,
@@ -177,6 +182,7 @@ class PumpFadeV3Runtime:
             self.budget.observe(
                 status=envelope.response_status,
                 headers=dict(envelope.response_headers), now=self._monotonic(),
+                now_ms=envelope.response_completed_at_ms,
             )
             decision = self.budget.retry(
                 status=envelope.response_status, attempt=index,

@@ -67,23 +67,22 @@ class RestWeightBudget:
     def record_request(self, *, weight: int, now_ms: int) -> None:
         if type(weight) is not int or weight < 0 or now_ms < 0:
             raise ValueError("non-negative request weight and UTC milliseconds required")
-        bucket = now_ms // 60_000
-        if self._summary_bucket is None:
-            self._summary_bucket = bucket
-        elif bucket > self._summary_bucket:
-            self._log_summary()
-            self._summary_bucket = bucket
-            self._summary_requests = 0
-            self._summary_weight = 0
-            self._last_used_weight_1m = None
+        self._advance_summary_bucket(now_ms // 60_000)
         self._summary_requests += 1
         self._summary_weight += weight
 
     def flush_minute(self, *, now_ms: int) -> None:
         if now_ms < 0:
             raise ValueError("UTC milliseconds must be non-negative")
-        bucket = now_ms // 60_000
-        if self._summary_bucket is None or bucket <= self._summary_bucket:
+        if self._summary_bucket is None:
+            return
+        self._advance_summary_bucket(now_ms // 60_000)
+
+    def _advance_summary_bucket(self, bucket: int) -> None:
+        if self._summary_bucket is None:
+            self._summary_bucket = bucket
+            return
+        if bucket <= self._summary_bucket:
             return
         self._log_summary()
         self._summary_bucket = bucket
@@ -100,7 +99,12 @@ class RestWeightBudget:
             self._last_used_weight_1m,
         )
 
-    def observe(self, *, status: int | None, headers: Mapping[str, str], now: float) -> None:
+    def observe(self, *, status: int | None, headers: Mapping[str, str], now: float,
+                now_ms: int | None = None) -> None:
+        if now_ms is not None:
+            if now_ms < 0:
+                raise ValueError("UTC milliseconds must be non-negative")
+            self._advance_summary_bucket(now_ms // 60_000)
         if status == 418:
             self._banned = True
         for key, value in headers.items():

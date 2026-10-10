@@ -62,3 +62,22 @@ def test_minute_summary_logs_request_count_weight_and_last_header(
         budget.flush_minute(now_ms=60_000)
 
     assert "requests=2 weight=11 last_x_mbx_used_weight_1m=27" in caplog.text
+
+
+def test_used_weight_header_is_assigned_to_response_minute(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    budget = RestWeightBudget()
+    with caplog.at_level("INFO", logger="signalbot.pump_fade_v3.rest_budget"):
+        budget.record_request(weight=10, now_ms=59_999)
+        budget.observe(
+            status=429,
+            headers={"X-MBX-USED-WEIGHT-1M": "27"},
+            now=60,
+            now_ms=60_001,
+        )
+        budget.record_request(weight=1, now_ms=60_002)
+        budget.flush_minute(now_ms=120_000)
+
+    assert "requests=1 weight=10 last_x_mbx_used_weight_1m=None" in caplog.text
+    assert "requests=1 weight=1 last_x_mbx_used_weight_1m=27" in caplog.text

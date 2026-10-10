@@ -26,7 +26,9 @@ class StubRest:
 
     async def capture_attempt(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
-        return SimpleNamespace(response_status=200, response_headers=())
+        return SimpleNamespace(
+            response_status=200, response_headers=(), response_completed_at_ms=0
+        )
 
 
 def _config(enabled: bool = True) -> CollectorConfig:
@@ -86,7 +88,9 @@ async def test_http_418_opens_circuit_and_preserves_capture_attempt() -> None:
 
     async def banned(**kwargs: Any) -> Any:
         adapter.calls.append(kwargs)
-        return SimpleNamespace(response_status=418, response_headers=())
+        return SimpleNamespace(
+            response_status=418, response_headers=(), response_completed_at_ms=0
+        )
 
     adapter.capture_attempt = banned  # type: ignore[method-assign]
     runtime = PumpFadeV3Runtime(_config(), ws_owner=owner,
@@ -103,26 +107,45 @@ async def test_http_418_opens_circuit_and_preserves_capture_attempt() -> None:
 @pytest.mark.asyncio
 async def test_http_429_retries_with_stable_correlation(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     owner, adapter = StubOwner(), StubRest()
     sleeps: list[float] = []
 
+    monotonic = [0.0]
+
     async def no_sleep(seconds: float) -> None:
         sleeps.append(seconds)
+        monotonic[0] += seconds
 
     async def responses(**kwargs: Any) -> Any:
         adapter.calls.append(kwargs)
         if len(adapter.calls) == 1:
             return SimpleNamespace(
-                response_status=429, response_headers=(("Retry-After", "3"),)
+                response_status=429,
+                response_headers=(("Retry-After", "3"),),
+                response_completed_at_ms=59_999,
             )
-        return SimpleNamespace(response_status=200, response_headers=())
+        return SimpleNamespace(
+            response_status=200,
+            response_headers=(("X-MBX-USED-WEIGHT-1M", "18"),),
+            response_completed_at_ms=62_050,
+        )
 
     adapter.capture_attempt = responses  # type: ignore[method-assign]
     runtime = PumpFadeV3Runtime(_config(), ws_owner=owner,
-                                rest_adapter=adapter, budget=RestWeightBudget(), sleep=no_sleep)
+                                rest_adapter=adapter, budget=RestWeightBudget(),
+                                monotonic=lambda: monotonic[0], sleep=no_sleep)
     runtime.refresh(now_ms=0)
-    await runtime.attempt_poll(rest_poll_plan(())[0], now_ms=0)
+    budget = runtime.budget
+    with caplog.at_level("INFO", logger="signalbot.pump_fade_v3.rest_budget"):
+        await runtime.attempt_poll(rest_poll_plan(())[0], now_ms=59_000)
+        budget.flush_minute(now_ms=120_000)
     assert [call["attempt"] for call in adapter.calls] == [1, 2]
     assert adapter.calls[0]["correlation_id"] == adapter.calls[1]["correlation_id"]
     assert sleeps == [3]
+    # The first request and retry belong to separate UTC minutes. The response
+    # header is bucketed by completion time, not the initial poll timestamp.
+    assert budget._summary_bucket == 2
+    assert "requests=1 weight=10 last_x_mbx_used_weight_1m=None" in caplog.text
+    assert "requests=1 weight=10 last_x_mbx_used_weight_1m=18" in caplog.text

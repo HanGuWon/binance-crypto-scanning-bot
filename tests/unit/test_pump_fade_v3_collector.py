@@ -179,7 +179,10 @@ def test_websocket_plans_are_routed_public_and_depth_is_optional() -> None:
 
 
 def test_recent_restart_gap_count_uses_one_hour_window(tmp_path: Path) -> None:
-    from signalbot.pump_fade_v3.collector import _recent_restart_gap_count
+    from signalbot.pump_fade_v3.collector import (
+        _recent_restart_gap_count,
+        _restart_gap_limit_reached,
+    )
 
     capture_root = tmp_path / "capture"
     capture_root.mkdir()
@@ -192,6 +195,8 @@ def test_recent_restart_gap_count_uses_one_hour_window(tmp_path: Path) -> None:
         }))
 
     assert _recent_restart_gap_count(capture_root, now_ms=3_660_000) == 1
+    assert not _restart_gap_limit_reached(5)
+    assert _restart_gap_limit_reached(6)
 
 
 def test_websocket_plan_rejects_more_than_25_symbols() -> None:
