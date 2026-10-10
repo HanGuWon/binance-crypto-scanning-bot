@@ -171,10 +171,27 @@ def test_websocket_plans_are_routed_public_and_depth_is_optional() -> None:
         assert len(plan.streams) <= 24
     assert any("!forceOrder@arr" in plan.streams for plan in plans)
     assert any("!miniTicker@arr" in plan.streams for plan in plans)
+    assert not any(stream.endswith("@bookTicker") for plan in plans for stream in plan.streams)
     assert sum(stream.endswith("@depth5@500ms") for plan in plans for stream in plan.streams) == 25
 
     no_depth = build_websocket_plans(symbols, include_event_depth=False)
     assert not any("@depth" in stream for plan in no_depth for stream in plan.streams)
+
+
+def test_recent_restart_gap_count_uses_one_hour_window(tmp_path: Path) -> None:
+    from signalbot.pump_fade_v3.collector import _recent_restart_gap_count
+
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    for index, terminal_at_ms in enumerate((10_000, 3_600_000, 3_660_001), start=1):
+        generation = capture_root / f"capture-boot-g{index:04d}"
+        generation.mkdir()
+        (generation / "generation-terminal.json").write_text(json.dumps({
+            "status": "RECOVERED_CRASH_INCOMPLETE",
+            "terminal_at_ms": terminal_at_ms,
+        }))
+
+    assert _recent_restart_gap_count(capture_root, now_ms=3_660_000) == 1
 
 
 def test_websocket_plan_rejects_more_than_25_symbols() -> None:

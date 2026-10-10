@@ -168,6 +168,7 @@ class PumpFadeV3Runtime:
                 weight=poll.weight, now=self._monotonic()
             ):
                 return None
+            self.budget.record_request(weight=poll.weight, now_ms=now_ms)
             envelope = await self.rest_adapter.capture_attempt(
                 method="GET", market=Market.FUTURES, url=_FAPI + poll.path,
                 request_role=poll.role, correlation_id=correlation,

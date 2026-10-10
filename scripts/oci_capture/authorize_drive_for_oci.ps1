@@ -33,7 +33,8 @@ if (-not ($probeText -match 'READY')) { Fail 'ssh-precheck' $probeText }
 
 # 2) Browser consent for drive.file scope
 Write-Host '브라우저가 열리면 구글 계정을 선택하고 "허용"을 누르세요...' -ForegroundColor Cyan
-$scope = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('{"scope":"drive.file"}'))
+# rclone expects unpadded URL-safe base64 (RawURLEncoding) for the config blob.
+$scope = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('{"scope":"drive.file"}')).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 $stdoutFile = [IO.Path]::GetTempFileName()
 $stderrFile = [IO.Path]::GetTempFileName()
 try {

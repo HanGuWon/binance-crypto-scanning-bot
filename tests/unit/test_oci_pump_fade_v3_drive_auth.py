@@ -79,6 +79,9 @@ def _write_auth_stubs(directory: Path) -> tuple[Path, dict[str, str]]:
         "args = ' '.join(sys.argv[1:])\n"
         "with open(os.environ['PFV3_TEST_SSH_ARGS'], 'a', encoding='utf-8') as f:\n"
         "    f.write(args + '\\n')\n"
+        "if 'echo CONNECTED;' in args:\n"
+        "    print('CONNECTED\\nREADY')\n"
+        "    raise SystemExit(0)\n"
         "if 'install_pump_fade_v3_rclone_config' in args:\n"
         "    pathlib.Path(os.environ['PFV3_TEST_SSH_INPUT']).write_bytes(sys.stdin.buffer.read())\n"
         "    result = os.environ.get('PFV3_TEST_SSH_RESULT', 'OK')\n"
@@ -139,12 +142,17 @@ def test_powershell_authorization_uses_ssh_stdin_and_never_prints_token(
         capture_output=True,
         check=False,
         text=True,
+        encoding="utf-8",
         env=environment,
         timeout=30,
     )
 
     assert result.returncode == (0 if remote_result == "OK" else 1)
-    assert result.stdout.strip() == remote_result
+    if remote_result == "OK":
+        assert "OCI Drive 인증 완료" in result.stdout
+    else:
+        assert "FAIL [remote-install]" in result.stdout
+        assert "exit 1: FAIL" in result.stdout
     assert "access-secret" not in result.stdout + result.stderr
     assert "refresh-secret" not in result.stdout + result.stderr
     ssh_args = (stub_dir / "ssh-args.txt").read_text(encoding="utf-8")

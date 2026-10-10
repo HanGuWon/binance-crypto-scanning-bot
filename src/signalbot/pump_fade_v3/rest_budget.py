@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RestCircuitOpen(RuntimeError):
@@ -34,6 +37,10 @@ class RestWeightBudget:
         self._shared_used = 0
         self._shared_observed_at = -1.0
         self._banned = False
+        self._summary_bucket: int | None = None
+        self._summary_requests = 0
+        self._summary_weight = 0
+        self._last_used_weight_1m: int | None = None
 
     @property
     def banned(self) -> bool:
@@ -57,6 +64,42 @@ class RestWeightBudget:
         self._shared_used += weight
         return True
 
+    def record_request(self, *, weight: int, now_ms: int) -> None:
+        if type(weight) is not int or weight < 0 or now_ms < 0:
+            raise ValueError("non-negative request weight and UTC milliseconds required")
+        bucket = now_ms // 60_000
+        if self._summary_bucket is None:
+            self._summary_bucket = bucket
+        elif bucket > self._summary_bucket:
+            self._log_summary()
+            self._summary_bucket = bucket
+            self._summary_requests = 0
+            self._summary_weight = 0
+            self._last_used_weight_1m = None
+        self._summary_requests += 1
+        self._summary_weight += weight
+
+    def flush_minute(self, *, now_ms: int) -> None:
+        if now_ms < 0:
+            raise ValueError("UTC milliseconds must be non-negative")
+        bucket = now_ms // 60_000
+        if self._summary_bucket is None or bucket <= self._summary_bucket:
+            return
+        self._log_summary()
+        self._summary_bucket = bucket
+        self._summary_requests = 0
+        self._summary_weight = 0
+        self._last_used_weight_1m = None
+
+    def _log_summary(self) -> None:
+        LOGGER.info(
+            "REST minute summary requests=%d weight=%d "
+            "last_x_mbx_used_weight_1m=%s",
+            self._summary_requests,
+            self._summary_weight,
+            self._last_used_weight_1m,
+        )
+
     def observe(self, *, status: int | None, headers: Mapping[str, str], now: float) -> None:
         if status == 418:
             self._banned = True
@@ -72,6 +115,8 @@ class RestWeightBudget:
                     raise RestCircuitOpen("negative shared used-weight header")
                 self._shared_used = max(self._shared_used, used)
                 self._shared_observed_at = now
+                if key.lower() == "x-mbx-used-weight-1m":
+                    self._last_used_weight_1m = used
 
     def retry(self, *, status: int | None, attempt: int,
               headers: Mapping[str, str]) -> RetryDecision:

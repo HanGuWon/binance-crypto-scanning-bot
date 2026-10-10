@@ -96,7 +96,10 @@ def test_service_isolated_and_not_installable() -> None:
         "CPUQuota=60%",
         "Nice=10",
         "IOWeight=50",
-        "Restart=no",
+        "Restart=on-failure",
+        "RestartSec=30",
+        "StartLimitIntervalSec=1h",
+        "StartLimitBurst=6",
         "ReadWritePaths=/var/lib/binance-bot-2/prospective-r/pump-fade-v3",
         "ProtectSystem=strict",
         "WorkingDirectory=/opt/pump-fade-v3",
@@ -191,3 +194,7 @@ def test_collector_service_config_and_data_mount_agree() -> None:
     assert f"--data-mount {DEFAULT_DATA_MOUNT.as_posix()}" in service
     assert f"ReadWritePaths={config.data_directory.as_posix()}" in service
     assert "WorkingDirectory=/opt/pump-fade-v3" in service
+    assert "Restart=on-failure" in service
+    assert "RestartSec=30" in service
+    assert "StartLimitIntervalSec=1h" in service
+    assert "StartLimitBurst=6" in service

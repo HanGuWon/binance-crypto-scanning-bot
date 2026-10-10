@@ -113,7 +113,6 @@ def build_websocket_plans(
         validate_usdt_symbol(symbol)
         normalized = symbol.lower()
         market_streams.append(f"{normalized}@markPrice@1s")
-        public_streams.append(f"{normalized}@bookTicker")
         if include_event_depth:
             public_streams.append(f"{normalized}@depth5@500ms")
 
@@ -348,6 +347,24 @@ def recover_previous_generations(capture_root: Path, *, budget: Any) -> int:
     return repaired
 
 
+def _recent_restart_gap_count(capture_root: Path, *, now_ms: int) -> int:
+    cutoff_ms = now_ms - 60 * 60 * 1000
+    count = 0
+    for directory in capture_root.iterdir():
+        terminal_path = directory / "generation-terminal.json"
+        if not directory.is_dir() or not terminal_path.is_file():
+            continue
+        terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
+        if (
+            terminal.get("status") == "RECOVERED_CRASH_INCOMPLETE"
+            and isinstance(terminal.get("terminal_at_ms"), int)
+            and terminal["terminal_at_ms"] >= cutoff_ms
+            and terminal["terminal_at_ms"] <= now_ms
+        ):
+            count += 1
+    return count
+
+
 async def run_standalone(
     config_path: str | Path, *, enable: bool,
     expected_mount: str | Path,
@@ -392,9 +409,19 @@ async def run_standalone(
     parent_stop = operator_stop or asyncio.Event()
     capture_root = root / "capture"
     recover_previous_generations(capture_root, budget=budget)
+    restart_gaps = _recent_restart_gap_count(
+        capture_root, now_ms=time.time_ns() // 1_000_000
+    ) if capture_root.exists() else 0
+    if restart_gaps > 6:
+        LOGGER.critical(
+            "collector restart limit exceeded: %d incomplete generations in the last hour",
+            restart_gaps,
+        )
+        raise RuntimeError("collector restart limit exceeded; capture remains stopped")
     capture_root.mkdir(mode=0o700, exist_ok=True)
     clock = SystemReceiptClock()
     plan_runtime: PumpFadeV3Runtime | None = None
+    rest_budget = RestWeightBudget(local_limit=active.rest_weight_budget_per_minute)
     boot = uuid.uuid4().hex
     generation = 0
     settings = WebSocketOwnerSettings(
@@ -418,7 +445,7 @@ async def run_standalone(
             rest_placeholder = object()
             plan_runtime = PumpFadeV3Runtime(
                 active, ws_owner=_PlanSink(), rest_adapter=rest_placeholder,  # type: ignore[arg-type]
-                budget=RestWeightBudget(local_limit=active.rest_weight_budget_per_minute),
+                budget=rest_budget,
             )
         plan = plan_runtime.refresh(now_ms=clock.capture().received_at_ms)
         assert plan is not None
@@ -512,6 +539,7 @@ async def run_standalone(
         try:
             while not parent_stop.is_set() and not generation_change.is_set() and not fatal.failed:
                 now_ms = clock.capture().received_at_ms
+                rest_budget.flush_minute(now_ms=now_ms)
                 updated_plan = plan_runtime.refresh(now_ms=now_ms)
                 if updated_plan is None or updated_plan.sha256 != generation_plan.sha256:
                     generation_change.set()

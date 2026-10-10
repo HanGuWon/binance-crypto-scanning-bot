@@ -3,6 +3,8 @@
 Description=Pump Fade v3 isolated public capture (disabled by default)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=6
 
 [Service]
 Type=simple
@@ -10,7 +12,8 @@ User=pumpfadev3
 Group=pumpfadev3
 WorkingDirectory=/opt/pump-fade-v3
 ExecStart=/opt/pump-fade-v3/.venv/bin/python -m signalbot.pump_fade_v3.collector --config config/pump_fade_v3/collector.json --enable --data-mount /var/lib/binance-bot-2/prospective-r
-Restart=no
+Restart=on-failure
+RestartSec=30
 MemoryMax=2G
 CPUQuota=60%
 Nice=10
