@@ -111,7 +111,8 @@ def test_probe_sets_nonexistent_home_and_cache(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+    def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+        captured["command"] = args
         captured.update(kwargs)
         return SimpleNamespace(returncode=0, stderr=b"")
 
@@ -125,6 +126,33 @@ def test_probe_sets_nonexistent_home_and_cache(
     assert isinstance(environment, dict)
     assert environment["HOME"] == "/nonexistent"
     assert environment["XDG_CACHE_HOME"] == "/nonexistent"
+    assert isinstance(captured["command"], list)
+    assert captured["command"][captured["command"].index("--tpslimit") + 1] == "2"
+
+
+def test_probe_retries_rate_limit_with_exponential_delays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    responses = iter(
+        [
+            SimpleNamespace(returncode=1, stderr=b"rateLimitExceeded"),
+            SimpleNamespace(returncode=1, stderr=b"userRateLimitExceeded"),
+            SimpleNamespace(returncode=0, stderr=b""),
+        ]
+    )
+    attempts: list[list[str]] = []
+    delays: list[int] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        attempts.append(command)
+        return next(responses)
+
+    monkeypatch.setattr(INSTALLER.subprocess, "run", fake_run)
+    monkeypatch.setattr(INSTALLER.time, "sleep", delays.append)
+
+    assert INSTALLER._probe_as_service_user(tmp_path / ".candidate") == (True, b"")
+    assert len(attempts) == 3
+    assert delays == [1, 2]
 
 
 def test_probe_failure_reports_only_redacted_last_three_lines(

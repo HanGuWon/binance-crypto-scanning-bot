@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -154,27 +155,42 @@ def _probe_as_service_user(config_path: Path) -> tuple[bool, bytes]:
     environment = os.environ.copy()
     environment["HOME"] = "/nonexistent"
     environment["XDG_CACHE_HOME"] = "/nonexistent"
-    try:
-        result = subprocess.run(
-            [
-                "runuser",
-                "-u",
-                "pumpfadev3",
-                "--",
-                "rclone",
-                "--config",
-                str(config_path),
-                "lsd",
-                "ocidrive:",
-            ],
-            capture_output=True,
-            check=False,
-            timeout=90,
-            env=environment,
+    command = [
+        "runuser",
+        "-u",
+        "pumpfadev3",
+        "--",
+        "rclone",
+        "--tpslimit",
+        "2",
+        "--config",
+        str(config_path),
+        "lsd",
+        "ocidrive:",
+    ]
+    for attempt in range(3):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                timeout=90,
+                env=environment,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False, b""
+        if result.returncode == 0:
+            return True, result.stderr
+        stderr = result.stderr or b""
+        lower_stderr = stderr.lower()
+        rate_limited = (
+            b"ratelimitexceeded" in lower_stderr
+            or b"userratelimitexceeded" in lower_stderr
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return False, b""
-    return result.returncode == 0, result.stderr
+        if not rate_limited or attempt == 2:
+            return False, stderr
+        time.sleep(2**attempt)
+    return False, b""
 
 
 def _fail(reason: str, *, probe_stderr: bytes = b"") -> int:

@@ -344,11 +344,15 @@ def _load_verified_daily_bundle(
     config: UploadConfig, utc_date: str
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     manifest_path, receipt_path = _daily_paths(config.receipt_root, utc_date)
-    if not manifest_path.exists() and not receipt_path.exists():
+    if not manifest_path.exists() and receipt_path.exists():
+        raise UploaderError("daily bundle receipt exists without its manifest")
+    if not manifest_path.exists():
         return None
-    if not manifest_path.exists() or not receipt_path.exists():
-        raise UploaderError("daily bundle receipt pair is incomplete")
     manifest, manifest_bytes = _read_json(manifest_path, limit=64 * 1024 * 1024)
+    if not receipt_path.exists():
+        # A prior attempt may have saved the deterministic manifest before
+        # failing. _upload_daily_bundle will reuse it only if current inputs match.
+        return None
     receipt, _ = _read_json(receipt_path, limit=1024 * 1024)
     expected_manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
     if (
@@ -541,7 +545,9 @@ def _record_failure(receipt_root: Path, failed: bool) -> None:
     state_path = receipt_root / "uploader-state.json"
     try:
         state, _ = _read_json(state_path, limit=65536)
-    except FileNotFoundError:
+    except UploaderError:
+        if state_path.exists() or state_path.is_symlink():
+            raise
         state = {"consecutive_failed_runs": 0}
     prior_count = int(state.get("consecutive_failed_runs", state.get("consecutive_failed_days", 0)))
     count = prior_count + 1 if failed else 0

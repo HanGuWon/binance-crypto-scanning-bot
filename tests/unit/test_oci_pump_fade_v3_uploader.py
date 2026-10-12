@@ -193,6 +193,37 @@ def test_daily_upload_verifies_tar_manifest_and_remote_size(
     assert len([call for call in observed if call[0] == "copyto"]) == 3
 
 
+def test_retry_after_partial_failure_reuses_manifest_and_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    generation = _generation(config.capture_root)
+    monkeypatch.setattr(UPLOADER, "RECEIPT_ROOT", config.receipt_root)
+    attempts = 0
+
+    def flaky_upload(
+        _config: UPLOADER.UploadConfig, utc_date: str, directories: list[Path]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        nonlocal attempts
+        attempts += 1
+        manifest_bytes = UPLOADER.build_daily_manifest(
+            directories, utc_date=utc_date, host=config.host
+        )
+        manifest_path, _ = UPLOADER._daily_paths(config.receipt_root, utc_date)
+        UPLOADER._save_deterministic(manifest_path, manifest_bytes)
+        if attempts == 1:
+            raise UPLOADER.UploaderError("rclone rate limit retries exhausted")
+        receipt = {"verified_on_drive": True, "rclone_check": "PASS"}
+        return json.loads(manifest_bytes), receipt
+
+    monkeypatch.setattr(UPLOADER, "_upload_daily_bundle", flaky_upload)
+
+    assert UPLOADER.run_once(config) == (0, 1)
+    assert UPLOADER.run_once(config) == (1, 0)
+    assert attempts == 2
+    assert generation.exists()
+
+
 def test_prune_requires_a_matching_verified_daily_receipt(tmp_path: Path) -> None:
     config = _config(tmp_path)
     old_ms = int(datetime(2026, 10, 1, tzinfo=UTC).timestamp() * 1000)
