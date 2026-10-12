@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,42 +32,71 @@ def test_config_writer_scopes_remote_and_sets_restrictive_mode(
         real_chmod(path, mode)
 
     monkeypatch.setattr(INSTALLER.os, "chmod", record_mode)
-    INSTALLER.write_config(
+    temporary = INSTALLER.write_config(
         {
-            "access_token": "access-secret",
-            "refresh_token": "refresh-secret",
-            "token_type": "Bearer",
-            "expiry": "2026-10-10T00:00:00Z",
-            "untrusted_extra": "discard-me",
+            "client_id": "123-abc.apps.googleusercontent.com",
+            "client_secret": "test-client-secret",
+            "token": {
+                "access_token": "access-value",
+                "refresh_token": "refresh-value",
+                "token_type": "Bearer",
+                "expiry": "2026-10-10T00:00:00Z",
+                "untrusted_extra": "discard-me",
+            },
         },
         path,
     )
 
-    contents = path.read_text(encoding="utf-8")
-    assert contents.startswith("[ocidrive]\ntype = drive\nscope = drive.file\n")
-    assert '"access_token":"access-secret"' in contents
+    contents = temporary.read_text(encoding="utf-8")
+    assert not path.exists()
+    assert contents.startswith(
+        "[ocidrive]\ntype = drive\nclient_id = 123-abc.apps.googleusercontent.com\n"
+        "client_secret = test-client-secret\nscope = drive.file\n"
+    )
+    assert '"access_token":"access-value"' in contents
     assert "untrusted_extra" not in contents
     assert modes == [0o600]
+    temporary.unlink()
 
 
-def test_config_writer_refuses_overwrite_and_invalid_token(tmp_path: Path) -> None:
+def test_config_writer_stages_replacement_and_rejects_invalid_input(tmp_path: Path) -> None:
     path = tmp_path / "rclone.conf"
     path.write_text("existing", encoding="utf-8")
-    with pytest.raises(INSTALLER.InstallError) as existing_error:
-        INSTALLER.write_config(
-            {"access_token": "a", "refresh_token": "r", "token_type": "Bearer"}, path
-        )
-    assert existing_error.value.reason == "exists"
+    temporary = INSTALLER.write_config(
+        {
+            "client_id": "123-abc.apps.googleusercontent.com",
+            "client_secret": "test-client-secret",
+            "token": {"access_token": "a", "refresh_token": "r", "token_type": "Bearer"},
+        },
+        path,
+    )
+    assert temporary.exists()
+    assert path.read_text(encoding="utf-8") == "existing"
+    temporary.unlink()
     with pytest.raises(INSTALLER.InstallError) as token_error:
-        INSTALLER.write_config({"access_token": "a"}, tmp_path / "other.conf")
-    assert token_error.value.reason == "token-invalid"
+        INSTALLER.write_config({"token": {"access_token": "a"}}, tmp_path / "other.conf")
+    assert token_error.value.reason == "client-id-invalid"
+    with pytest.raises(INSTALLER.InstallError) as client_error:
+        INSTALLER.write_config(
+            {
+                "client_id": "not-a-google-client-id",
+                "client_secret": "test-client-secret",
+                "token": {"access_token": "a", "refresh_token": "r", "token_type": "Bearer"},
+            },
+            tmp_path / "invalid.conf",
+        )
+    assert client_error.value.reason == "client-id-invalid"
     assert path.read_text(encoding="utf-8") == "existing"
 
 
 def test_config_writer_classifies_unsafe_directory(tmp_path: Path) -> None:
     with pytest.raises(INSTALLER.InstallError) as error:
         INSTALLER.write_config(
-            {"access_token": "a", "refresh_token": "r", "token_type": "Bearer"},
+            {
+                "client_id": "123-abc.apps.googleusercontent.com",
+                "client_secret": "test-client-secret",
+                "token": {"access_token": "a", "refresh_token": "r", "token_type": "Bearer"},
+            },
             tmp_path / "rclone.conf",
             owner_uid=100,
             owner_gid=100,
@@ -78,6 +106,7 @@ def test_config_writer_classifies_unsafe_directory(tmp_path: Path) -> None:
 
 
 def test_probe_sets_nonexistent_home_and_cache(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -88,7 +117,10 @@ def test_probe_sets_nonexistent_home_and_cache(
 
     monkeypatch.setattr(INSTALLER.subprocess, "run", fake_run)
 
-    assert INSTALLER._probe_as_service_user() == (True, b"")
+    assert INSTALLER._probe_as_service_user(tmp_path / ".rclone.conf.candidate") == (
+        True,
+        b"",
+    )
     environment = captured["env"]
     assert isinstance(environment, dict)
     assert environment["HOME"] == "/nonexistent"
@@ -117,106 +149,71 @@ def test_probe_failure_reports_only_redacted_last_three_lines(
     assert "probe ended" in output.err
 
 
-def _write_auth_stubs(directory: Path) -> tuple[Path, dict[str, str]]:
-    directory.mkdir()
-    response_path = directory / "rclone-response.json"
-    response_path.write_text(
-        '{"access_token":"access-secret","refresh_token":"refresh-secret",'
-        '"token_type":"Bearer","expiry":"2026-10-10T00:00:00Z"}',
-        encoding="utf-8",
-    )
-    rclone_args = directory / "rclone-args.txt"
-    ssh_args = directory / "ssh-args.txt"
-    ssh_input = directory / "ssh-stdin.json"
-    ssh_stub = directory / "ssh_stub.py"
-    ssh_stub.write_text(
-        "import os, pathlib, sys\n"
-        "args = ' '.join(sys.argv[1:])\n"
-        "with open(os.environ['PFV3_TEST_SSH_ARGS'], 'a', encoding='utf-8') as f:\n"
-        "    f.write(args + '\\n')\n"
-        "if 'echo CONNECTED;' in args:\n"
-        "    print('CONNECTED\\nREADY')\n"
-        "    raise SystemExit(0)\n"
-        "if 'install_pump_fade_v3_rclone_config' in args:\n"
-        "    pathlib.Path(os.environ['PFV3_TEST_SSH_INPUT']).write_bytes(sys.stdin.buffer.read())\n"
-        "    result = os.environ.get('PFV3_TEST_SSH_RESULT', 'OK')\n"
-        "    print(result)\n"
-        "    raise SystemExit(0 if result == 'OK' else 1)\n",
-        encoding="utf-8",
-    )
-    (directory / "rclone.cmd").write_text(
-        '@echo off\r\n'
-        '> "%PFV3_TEST_RCLONE_ARGS%" echo %*\r\n'
-        'type "%PFV3_TEST_RCLONE_OUTPUT%"\r\n'
-        'exit /b 0\r\n',
-        encoding="ascii",
-    )
-    (directory / "ssh.cmd").write_text(
-        '@echo off\r\n'
-        '"%PFV3_TEST_PYTHON%" "%PFV3_TEST_SSH_STUB%" %*\r\n'
-        'exit /b %ERRORLEVEL%\r\n',
-        encoding="ascii",
-    )
-    environment = {
-        "PFV3_TEST_RCLONE_OUTPUT": str(response_path),
-        "PFV3_TEST_RCLONE_ARGS": str(rclone_args),
-        "PFV3_TEST_SSH_ARGS": str(ssh_args),
-        "PFV3_TEST_SSH_INPUT": str(ssh_input),
-        "PFV3_TEST_SSH_STUB": str(ssh_stub),
-        "PFV3_TEST_PYTHON": sys.executable,
-        "PATH": str(directory) + os.pathsep + os.environ["PATH"],
-    }
-    return directory, environment
-
-
-@pytest.mark.skipif(
-    os.name != "nt" or shutil.which("powershell.exe") is None,
-    reason="Windows PowerShell required",
-)
-@pytest.mark.parametrize("remote_result", ["OK", "FAIL"])
-def test_powershell_authorization_uses_ssh_stdin_and_never_prints_token(
-    tmp_path: Path, remote_result: str
+@pytest.mark.parametrize("probe_ok", [False, True])
+def test_installer_commits_only_after_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    probe_ok: bool,
 ) -> None:
-    stub_dir, extra_environment = _write_auth_stubs(tmp_path / "stubs")
-    environment = os.environ.copy()
-    environment.update(extra_environment)
-    environment["PFV3_TEST_SSH_RESULT"] = remote_result
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(POWERSHELL_PATH),
-            "-SshHost",
-            "trendguard-osaka-a1",
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        encoding="utf-8",
-        env=environment,
-        timeout=30,
+    path = tmp_path / "rclone.conf"
+    path.write_text("old-config-marker", encoding="utf-8")
+    candidate = tmp_path / ".rclone.conf.candidate"
+    monkeypatch.setattr(INSTALLER, "CONFIG_PATH", path)
+    monkeypatch.setitem(
+        sys.modules,
+        "pwd",
+        SimpleNamespace(getpwnam=lambda _: SimpleNamespace(pw_uid=123, pw_gid=456)),
+    )
+    monkeypatch.setattr(
+        INSTALLER.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "client_id": "123-abc.apps.googleusercontent.com",
+                    "client_secret": "test-client-secret",
+                    "token": {
+                        "access_token": "test-access-value",
+                        "refresh_token": "test-refresh-value",
+                        "token_type": "Bearer",
+                    },
+                }
+            )
+        ),
     )
 
-    assert result.returncode == (0 if remote_result == "OK" else 1)
-    if remote_result == "OK":
-        assert "OCI Drive 인증 완료" in result.stdout
-    else:
-        assert "FAIL [remote-install]" in result.stdout
-        assert "exit 1: FAIL" in result.stdout
-    assert "access-secret" not in result.stdout + result.stderr
-    assert "refresh-secret" not in result.stdout + result.stderr
-    ssh_args = (stub_dir / "ssh-args.txt").read_text(encoding="utf-8")
-    assert "access-secret" not in ssh_args and "refresh-secret" not in ssh_args
-    assert "install_pump_fade_v3_rclone_config" in ssh_args
-    rclone_args = (stub_dir / "rclone-args.txt").read_text(encoding="utf-8")
-    assert "authorize drive" in rclone_args
-    assert "access-secret" not in rclone_args and "refresh-secret" not in rclone_args
-    payload = json.loads((stub_dir / "ssh-stdin.json").read_text(encoding="utf-8"))
-    assert payload["access_token"] == "access-secret"
-    assert payload["refresh_token"] == "refresh-secret"
+    def stage_config(*args: object, **kwargs: object) -> Path:
+        candidate.write_text("new-config-marker", encoding="utf-8")
+        return candidate
 
+    monkeypatch.setattr(INSTALLER, "write_config", stage_config)
+    monkeypatch.setattr(
+        INSTALLER,
+        "_probe_as_service_user",
+        lambda candidate_path: (probe_ok, b'client_secret="hidden-test-value"'),
+    )
+
+    result = INSTALLER.main()
+    output = capsys.readouterr()
+    assert "hidden-test-value" not in output.out + output.err
+    if probe_ok:
+        assert result == 0
+        assert output.out == "OK\n"
+        assert output.err == ""
+        assert path.read_text(encoding="utf-8") == "new-config-marker"
+    else:
+        assert result == 1
+        assert output.out == "FAIL\n"
+        assert output.err.startswith("reason=probe\nclient_secret=[REDACTED]")
+        assert path.read_text(encoding="utf-8") == "old-config-marker"
+        assert not candidate.exists()
+
+
+def test_powershell_auth_uses_expected_narrow_install_contract() -> None:
+    script = POWERSHELL_PATH.read_text(encoding="utf-8")
+    assert '"scope":"drive.file"' in script
+    assert "client_id" in script and "client_secret" in script
+    assert "TrimEnd('=').Replace('+', '-').Replace('/', '_')" in script
+    assert "install_pump_fade_v3_rclone_config" in script
+    assert "enable pump-fade-v3-uploader.timer" not in script

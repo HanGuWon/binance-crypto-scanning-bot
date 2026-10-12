@@ -31,10 +31,22 @@ if ($probeText -match 'NO_SUDO') { Fail 'ssh-precheck' 'connected, but passwordl
 if ($probeText -match 'NO_INSTALLER') { Fail 'ssh-precheck' 'connected, but /usr/local/libexec/install_pump_fade_v3_rclone_config is missing on OCI' }
 if (-not ($probeText -match 'READY')) { Fail 'ssh-precheck' $probeText }
 
-# 2) Browser consent for drive.file scope
+# 2) Own Google OAuth client (rclone's shared default client hits rateLimitExceeded).
+#    The client secret is read hidden and never printed.
+$clientId = (Read-Host '구글 OAuth 클라이언트 ID 붙여넣기 (…apps.googleusercontent.com)').Trim()
+if ($clientId -notmatch '^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$') { Fail 'client-id' 'client ID format is wrong' }
+$sec = Read-Host '클라이언트 보안 비밀번호 붙여넣기 (화면에 안 보임)' -AsSecureString
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+try { $clientSecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr).Trim() }
+finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+$sec = $null
+if (-not $clientSecret) { Fail 'client-secret' 'empty client secret' }
+$cfgJson = '{"scope":"drive.file","client_id":' + (ConvertTo-Json $clientId) + ',"client_secret":' + (ConvertTo-Json $clientSecret) + '}'
+
 Write-Host '브라우저가 열리면 구글 계정을 선택하고 "허용"을 누르세요...' -ForegroundColor Cyan
 # rclone expects unpadded URL-safe base64 (RawURLEncoding) for the config blob.
-$scope = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('{"scope":"drive.file"}')).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$scope = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cfgJson)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$cfgJson = $null
 $stdoutFile = [IO.Path]::GetTempFileName()
 $stderrFile = [IO.Path]::GetTempFileName()
 try {
@@ -49,18 +61,38 @@ try {
     Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
 }
 
-$s = $out.IndexOf('{'); $e = $out.LastIndexOf('}')
-if ($s -lt 0 -or $e -le $s) { Fail 'token-parse' 'no JSON token in rclone output' }
-$tokenJson = $out.Substring($s, $e - $s + 1)
-$out = $null
-try { $token = $tokenJson | ConvertFrom-Json } catch { Fail 'token-parse' 'token is not valid JSON' }
-if (-not $token.access_token -or -not $token.refresh_token) { Fail 'token-parse' 'token missing fields' }
-$token = $null
-
-# 3) Send token over SSH stdin to the remote installer
-$remote = $tokenJson | & ssh -o BatchMode=yes -o ConnectTimeout=15 $SshHost $remoteInstaller 2>&1
-$rc = $LASTEXITCODE
+# Old rclone prints the token JSON directly. Newer rclone, given a base64 config blob,
+# answers with a base64url blob of {"token":"<token JSON>"} between the paste markers.
+function Get-Prop($obj, [string]$name) {
+    $p = $obj.PSObject.Properties[$name]; if ($p) { return $p.Value } else { return $null }
+}
 $tokenJson = $null
+if ($out -match '--->\s*([A-Za-z0-9_-]{20,})\s*<---') {
+    $b64 = $Matches[1].Replace('-', '+').Replace('_', '/')
+    $b64 += '=' * ((4 - $b64.Length % 4) % 4)
+    try { $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json }
+    catch { Fail 'token-parse' 'rclone output blob is not valid base64 JSON' }
+    $inner = Get-Prop $decoded 'token'
+    if ($inner -is [string]) { $tokenJson = $inner }
+    elseif (Get-Prop $decoded 'access_token') { $tokenJson = $decoded | ConvertTo-Json -Compress }
+    $decoded = $null; $inner = $null; $b64 = $null
+} else {
+    $s = $out.IndexOf('{'); $e = $out.LastIndexOf('}')
+    if ($s -ge 0 -and $e -gt $s) { $tokenJson = $out.Substring($s, $e - $s + 1) }
+}
+$out = $null
+if (-not $tokenJson) { Fail 'token-parse' 'no token found in rclone output' }
+try { $token = $tokenJson | ConvertFrom-Json } catch { Fail 'token-parse' 'token is not valid JSON' }
+if (-not (Get-Prop $token 'access_token') -or -not (Get-Prop $token 'refresh_token')) { Fail 'token-parse' 'token missing fields' }
+$token = $null
+$tokenJson = ($tokenJson -replace '[\r\n]', '')
+$payload = '{"client_id":' + (ConvertTo-Json $clientId) + ',"client_secret":' + (ConvertTo-Json $clientSecret) + ',"token":' + $tokenJson + '}'
+$clientSecret = $null; $scope = $null; $tokenJson = $null
+
+# 3) Send client + token over SSH stdin to the remote installer
+$remote = $payload | & ssh -o BatchMode=yes -o ConnectTimeout=15 $SshHost $remoteInstaller 2>&1
+$rc = $LASTEXITCODE
+$payload = $null
 if ($rc -ne 0 -or (($remote | Out-String).Trim() -cne 'OK')) {
     Fail 'remote-install' ("exit ${rc}: " + (($remote | Out-String).Trim()))
 }
