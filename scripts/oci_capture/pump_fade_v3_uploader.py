@@ -191,6 +191,8 @@ def _create_daily_tar(config: UploadConfig, *, utc_date: str, manifest: bytes) -
     manifest_value = json.loads(manifest)
     staging = config.receipt_root / "staging"
     staging.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if staging.is_symlink() or not staging.is_dir():
+        raise UploaderError("daily staging directory is unsafe")
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{utc_date}.", suffix=".tar.tmp", dir=staging
     )
@@ -222,8 +224,9 @@ def _create_daily_tar(config: UploadConfig, *, utc_date: str, manifest: bytes) -
                                 f"{record['generation']}/{relative.as_posix()}"
                             )
                             tar_info.size = info.st_size
-                            tar_info.mode = stat.S_IMODE(info.st_mode)
-                            tar_info.mtime = int(info.st_mtime)
+                            # Keep tar bytes stable when only filesystem metadata changes.
+                            tar_info.mode = 0o644
+                            tar_info.mtime = 0
                             archive.addfile(tar_info, input_stream)
                             if _sha256(source) != entry["sha256"]:
                                 raise UploaderError("generation changed while bundling")
@@ -237,7 +240,9 @@ def _create_daily_tar(config: UploadConfig, *, utc_date: str, manifest: bytes) -
 
 def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if path.exists() and path.is_symlink():
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise UploaderError("receipt directory is unsafe")
+    if path.is_symlink():
         raise UploaderError("receipt path is a symlink")
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -359,8 +364,18 @@ def _load_verified_daily_bundle(
         or receipt.get("remote_tar") != _remote_daily_object(config, utc_date, "tar")
         or receipt.get("remote_manifest") != _remote_daily_object(config, utc_date, "manifest.json")
         or receipt.get("remote_receipt") != _remote_daily_object(config, utc_date, "receipt.json")
+        or not isinstance(manifest.get("generations"), list)
+        or type(manifest.get("generation_count")) is not int
+        or manifest.get("generation_count") != len(manifest["generations"])
     ):
         raise UploaderError("daily bundle receipt is not verified")
+    for record in manifest["generations"]:
+        if (
+            not isinstance(record, dict)
+            or not isinstance(record.get("generation"), str)
+            or not isinstance(record.get("files"), list)
+        ):
+            raise UploaderError("daily bundle manifest structure is invalid")
     return manifest, receipt
 
 

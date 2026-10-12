@@ -212,8 +212,13 @@ def test_installer_commits_only_after_probe(
 
 def test_powershell_auth_uses_expected_narrow_install_contract() -> None:
     script = POWERSHELL_PATH.read_text(encoding="utf-8")
-    assert '"scope":"drive.file"' in script
+    assert "https://www.googleapis.com/auth/drive.file" in script
     assert "client_id" in script and "client_secret" in script
-    assert "TrimEnd('=').Replace('+', '-').Replace('/', '_')" in script
     assert "install_pump_fade_v3_rclone_config" in script
+    assert "rclone authorize" not in script
+    assert "Start-Process -ArgumentList" not in script
+    assert "client_secret = $clientSecret" in script
+    assert "code_challenge_method=S256" in script
+    assert "code_verifier = $codeVerifier" in script
+    assert "$payload | & ssh" in script
     assert "enable pump-fade-v3-uploader.timer" not in script

@@ -1,14 +1,13 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [ValidatePattern('^trendguard-osaka-a1$')]
     [string]$SshHost = 'trendguard-osaka-a1'
 )
-# Authorizes a drive.file-scoped rclone remote for the OCI uploader.
-# The token goes PC -> SSH stdin -> remote installer. It is never printed.
-# Windows PowerShell 5.1 turns native stderr into terminating errors when
-# ErrorActionPreference=Stop, so native calls run with 'Continue' and are
-# checked by exit code. Each failure prints the stage name (never secrets).
-# The uploader timer is NOT enabled here; Luna enables it after a verified manual run.
+
+# Authorizes an OAuth desktop client for the OCI drive.file uploader.
+# The client secret and token stay in this process and are sent only over TLS
+# to Google and through SSH stdin to the root-owned installer. They are never
+# placed in a child process command line or written to disk.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
@@ -19,83 +18,146 @@ function Fail([string]$stage, [string]$detail = '') {
     exit 1
 }
 
-if (-not (Get-Command rclone -CommandType Application -ErrorAction SilentlyContinue)) {
-    Fail 'rclone' 'rclone not found on this PC'
+if (-not (Get-Command ssh -CommandType Application -ErrorAction SilentlyContinue)) {
+    Fail 'ssh' 'ssh not found on this PC'
 }
 
-# 1) SSH reachability and remote installer presence (no secrets involved)
+# Verify SSH and the installer before collecting OAuth inputs.
 $probe = & ssh -o BatchMode=yes -o ConnectTimeout=15 $SshHost 'echo CONNECTED; if ! sudo -n true 2>/dev/null; then echo NO_SUDO; elif ! sudo -n test -x /usr/local/libexec/install_pump_fade_v3_rclone_config; then echo NO_INSTALLER; else echo READY; fi' 2>&1
 $probeText = (($probe | Out-String).Trim())
-if (-not ($probeText -match 'CONNECTED')) { Fail 'ssh-precheck' ("cannot connect: " + $probeText) }
-if ($probeText -match 'NO_SUDO') { Fail 'ssh-precheck' 'connected, but passwordless sudo is not available' }
-if ($probeText -match 'NO_INSTALLER') { Fail 'ssh-precheck' 'connected, but /usr/local/libexec/install_pump_fade_v3_rclone_config is missing on OCI' }
-if (-not ($probeText -match 'READY')) { Fail 'ssh-precheck' $probeText }
+if (-not ($probeText -match 'CONNECTED')) { Fail 'ssh-precheck' 'cannot connect to OCI' }
+if ($probeText -match 'NO_SUDO') { Fail 'ssh-precheck' 'passwordless sudo is unavailable' }
+if ($probeText -match 'NO_INSTALLER') { Fail 'ssh-precheck' 'remote installer is missing' }
+if (-not ($probeText -match 'READY')) { Fail 'ssh-precheck' 'remote installer preflight failed' }
 
-# 2) Own Google OAuth client (rclone's shared default client hits rateLimitExceeded).
-#    The client secret is read hidden and never printed.
 $clientId = (Read-Host '구글 OAuth 클라이언트 ID 붙여넣기 (…apps.googleusercontent.com)').Trim()
-if ($clientId -notmatch '^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$') { Fail 'client-id' 'client ID format is wrong' }
-$sec = Read-Host '클라이언트 보안 비밀번호 붙여넣기 (화면에 안 보임)' -AsSecureString
-$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
-try { $clientSecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr).Trim() }
-finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-$sec = $null
-if (-not $clientSecret) { Fail 'client-secret' 'empty client secret' }
-$cfgJson = '{"scope":"drive.file","client_id":' + (ConvertTo-Json $clientId) + ',"client_secret":' + (ConvertTo-Json $clientSecret) + '}'
-
-Write-Host '브라우저가 열리면 구글 계정을 선택하고 "허용"을 누르세요...' -ForegroundColor Cyan
-# rclone expects unpadded URL-safe base64 (RawURLEncoding) for the config blob.
-$scope = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cfgJson)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-$cfgJson = $null
-$stdoutFile = [IO.Path]::GetTempFileName()
-$stderrFile = [IO.Path]::GetTempFileName()
+if ($clientId -notmatch '^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$') {
+    Fail 'client-id' 'client ID format is wrong'
+}
+$secureSecret = Read-Host '클라이언트 보안 비밀번호 붙여넣기 (화면에 안 보임)' -AsSecureString
+$secretPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureSecret)
 try {
-    $p = Start-Process -FilePath (Get-Command rclone).Source -ArgumentList @('authorize', 'drive', $scope) `
-        -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
-    $out = Get-Content -Raw -LiteralPath $stdoutFile
-    if ($p.ExitCode -ne 0) {
-        $err = (Get-Content -LiteralPath $stderrFile | Select-Object -Last 5) -join ' | '
-        Fail 'rclone-authorize' "exit $($p.ExitCode): $err"
-    }
+    $clientSecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($secretPtr).Trim()
 } finally {
-    Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($secretPtr)
+}
+$secureSecret = $null
+if (-not $clientSecret) { Fail 'client-secret' 'client secret is empty' }
+
+# Google desktop OAuth uses a loopback redirect. Use TcpListener so the script
+# does not need an HttpListener URL reservation or an additional local file.
+$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+$listener.Start()
+$port = $listener.LocalEndpoint.Port
+$redirectUri = "http://127.0.0.1:$port/"
+$state = [guid]::NewGuid().ToString('N')
+$randomBytes = New-Object byte[] 32
+$randomGenerator = [Security.Cryptography.RandomNumberGenerator]::Create()
+$randomGenerator.GetBytes($randomBytes)
+$codeVerifier = [Convert]::ToBase64String($randomBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$randomGenerator.Dispose()
+$randomBytes = $null
+$sha256 = [Security.Cryptography.SHA256]::Create()
+$codeChallenge = [Convert]::ToBase64String($sha256.ComputeHash([Text.Encoding]::ASCII.GetBytes($codeVerifier))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$sha256.Dispose()
+$authQuery = @(
+    'client_id=' + [Uri]::EscapeDataString($clientId)
+    'redirect_uri=' + [Uri]::EscapeDataString($redirectUri)
+    'response_type=code'
+    'scope=' + [Uri]::EscapeDataString('https://www.googleapis.com/auth/drive.file')
+    'access_type=offline'
+    'prompt=consent'
+    'state=' + [Uri]::EscapeDataString($state)
+    'code_challenge=' + [Uri]::EscapeDataString($codeChallenge)
+    'code_challenge_method=S256'
+) -join '&'
+$authUri = "https://accounts.google.com/o/oauth2/v2/auth?$authQuery"
+
+try {
+    Write-Host '브라우저에서 Google 계정을 선택하고 권한을 허용하세요...' -ForegroundColor Cyan
+    Start-Process -FilePath $authUri
+    $acceptTask = $listener.AcceptTcpClientAsync()
+    if (-not $acceptTask.Wait(180000)) { Fail 'oauth-callback' 'authorization timed out' }
+    $browser = $acceptTask.Result
+    $stream = $browser.GetStream()
+    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::ASCII)
+    $requestLine = $reader.ReadLine()
+    while ($null -ne ($headerLine = $reader.ReadLine()) -and $headerLine.Length -gt 0) { }
+    if (-not $requestLine) { Fail 'oauth-callback' 'empty browser callback' }
+    $requestPath = ($requestLine -split ' ')[1]
+    Add-Type -AssemblyName System.Web
+    $callback = [Uri]::new("http://127.0.0.1:$port$requestPath")
+    $query = [System.Web.HttpUtility]::ParseQueryString($callback.Query)
+    $code = $query.Get('code')
+    if ($query.Get('state') -cne $state -or -not $code) {
+        $responseBody = [Text.Encoding]::UTF8.GetBytes('Authorization failed. You may close this tab.')
+        $responseHeader = "HTTP/1.1 400 Bad Request`r`nContent-Length: $($responseBody.Length)`r`nConnection: close`r`n`r`n"
+        $headerBytes = [Text.Encoding]::ASCII.GetBytes($responseHeader)
+        $stream.Write($headerBytes, 0, $headerBytes.Length)
+        $stream.Write($responseBody, 0, $responseBody.Length)
+        Fail 'oauth-callback' 'state or authorization code did not match'
+    }
+    $responseBody = [Text.Encoding]::UTF8.GetBytes('Authorization complete. You may close this tab.')
+    $responseHeader = "HTTP/1.1 200 OK`r`nContent-Type: text/plain; charset=utf-8`r`nContent-Length: $($responseBody.Length)`r`nConnection: close`r`n`r`n"
+    $headerBytes = [Text.Encoding]::ASCII.GetBytes($responseHeader)
+    $stream.Write($headerBytes, 0, $headerBytes.Length)
+    $stream.Write($responseBody, 0, $responseBody.Length)
+    $browser.Close()
+} catch {
+    Fail 'oauth-callback' 'could not complete the local browser authorization'
+} finally {
+    $listener.Stop()
 }
 
-# Old rclone prints the token JSON directly. Newer rclone, given a base64 config blob,
-# answers with a base64url blob of {"token":"<token JSON>"} between the paste markers.
-function Get-Prop($obj, [string]$name) {
-    $p = $obj.PSObject.Properties[$name]; if ($p) { return $p.Value } else { return $null }
+try {
+    $tokenResponse = Invoke-RestMethod -Method Post -Uri 'https://oauth2.googleapis.com/token' `
+        -ContentType 'application/x-www-form-urlencoded' `
+        -Body @{
+            code = $code
+            client_id = $clientId
+            client_secret = $clientSecret
+            redirect_uri = $redirectUri
+            grant_type = 'authorization_code'
+            code_verifier = $codeVerifier
+        }
+} catch {
+    Fail 'token-exchange' 'Google token exchange failed; response details were suppressed'
 }
-$tokenJson = $null
-if ($out -match '--->\s*([A-Za-z0-9_-]{20,})\s*<---') {
-    $b64 = $Matches[1].Replace('-', '+').Replace('_', '/')
-    $b64 += '=' * ((4 - $b64.Length % 4) % 4)
-    try { $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json }
-    catch { Fail 'token-parse' 'rclone output blob is not valid base64 JSON' }
-    $inner = Get-Prop $decoded 'token'
-    if ($inner -is [string]) { $tokenJson = $inner }
-    elseif (Get-Prop $decoded 'access_token') { $tokenJson = $decoded | ConvertTo-Json -Compress }
-    $decoded = $null; $inner = $null; $b64 = $null
-} else {
-    $s = $out.IndexOf('{'); $e = $out.LastIndexOf('}')
-    if ($s -ge 0 -and $e -gt $s) { $tokenJson = $out.Substring($s, $e - $s + 1) }
+if (
+    -not $tokenResponse -or
+    -not $tokenResponse.PSObject.Properties['access_token'] -or
+    -not $tokenResponse.PSObject.Properties['refresh_token'] -or
+    -not $tokenResponse.PSObject.Properties['expires_in'] -or
+    -not $tokenResponse.access_token -or
+    -not $tokenResponse.refresh_token -or
+    -not $tokenResponse.token_type
+) {
+    Fail 'token-invalid' 'Google response did not contain the required token fields'
 }
-$out = $null
-if (-not $tokenJson) { Fail 'token-parse' 'no token found in rclone output' }
-try { $token = $tokenJson | ConvertFrom-Json } catch { Fail 'token-parse' 'token is not valid JSON' }
-if (-not (Get-Prop $token 'access_token') -or -not (Get-Prop $token 'refresh_token')) { Fail 'token-parse' 'token missing fields' }
+$token = @{
+    access_token = [string]$tokenResponse.access_token
+    refresh_token = [string]$tokenResponse.refresh_token
+    token_type = [string]$tokenResponse.token_type
+    expiry = [DateTime]::UtcNow.AddSeconds([int]$tokenResponse.expires_in).ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+}
+$payload = @{
+    client_id = $clientId
+    client_secret = $clientSecret
+    token = $token
+} | ConvertTo-Json -Compress -Depth 4
+$clientSecret = $null
+$codeVerifier = $null
+$codeChallenge = $null
+$tokenResponse = $null
 $token = $null
-$tokenJson = ($tokenJson -replace '[\r\n]', '')
-$payload = '{"client_id":' + (ConvertTo-Json $clientId) + ',"client_secret":' + (ConvertTo-Json $clientSecret) + ',"token":' + $tokenJson + '}'
-$clientSecret = $null; $scope = $null; $tokenJson = $null
 
-# 3) Send client + token over SSH stdin to the remote installer
+# The payload travels only over the SSH pipe. The command line has no OAuth data.
 $remote = $payload | & ssh -o BatchMode=yes -o ConnectTimeout=15 $SshHost $remoteInstaller 2>&1
-$rc = $LASTEXITCODE
+$exitCode = $LASTEXITCODE
 $payload = $null
-if ($rc -ne 0 -or (($remote | Out-String).Trim() -cne 'OK')) {
-    Fail 'remote-install' ("exit ${rc}: " + (($remote | Out-String).Trim()))
+if ($exitCode -ne 0 -or (($remote | Out-String).Trim() -cne 'OK')) {
+    Fail 'remote-install' "exit ${exitCode}: installer did not return OK"
 }
 
-Write-Host 'OK — OCI Drive 인증 완료 (업로더 타이머는 Luna가 검증 후 켭니다)' -ForegroundColor Green
+Write-Host 'OK — OCI Drive 인증 완료 (업로더 타이머는 검증 후 별도로 켭니다)' -ForegroundColor Green
 exit 0

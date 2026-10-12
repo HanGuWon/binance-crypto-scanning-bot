@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import tarfile
 from datetime import UTC, datetime
@@ -132,6 +133,7 @@ def test_daily_tar_is_uncompressed_and_contains_generation_inventory(
     generation = _generation(config.capture_root)
     manifest = UPLOADER.build_daily_manifest([generation], utc_date="2026-10-01", host=config.host)
     tar_path = UPLOADER._create_daily_tar(config, utc_date="2026-10-01", manifest=manifest)
+    second_tar_path: Path | None = None
     try:
         with tarfile.open(tar_path, mode="r:") as archive:
             assert set(archive.getnames()) == {
@@ -140,8 +142,17 @@ def test_daily_tar_is_uncompressed_and_contains_generation_inventory(
                 f"{generation.name}/1791443400000-00000001.jsonl.zst",
                 f"{generation.name}/1791443400000-00000001.jsonl.zst.manifest.json",
             }
+        source = generation / "1791443400000-00000001.jsonl.zst"
+        os.utime(source, (1_800_000_000, 1_800_000_000))
+        source.chmod(0o600)
+        second_tar_path = UPLOADER._create_daily_tar(
+            config, utc_date="2026-10-01", manifest=manifest
+        )
+        assert second_tar_path.read_bytes() == tar_path.read_bytes()
     finally:
         tar_path.unlink()
+        if second_tar_path is not None:
+            second_tar_path.unlink()
 
 
 def test_daily_upload_verifies_tar_manifest_and_remote_size(
