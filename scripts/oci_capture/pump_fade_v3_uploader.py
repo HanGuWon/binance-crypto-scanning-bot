@@ -680,14 +680,30 @@ def load_config(path: Path) -> UploadConfig:
 def validate_data_mount(capture_root: Path) -> None:
     if capture_root != CAPTURE_ROOT or capture_root.is_symlink() or not capture_root.is_dir():
         raise UploaderError("capture root is unavailable or unsafe")
-    result = subprocess.run(
-        ["findmnt", "-T", str(capture_root), "-n", "-o", "TARGET"],
+    data_mount = "/var/lib/binance-bot-2/prospective-r"
+    mount_result = subprocess.run(
+        ["findmnt", "-T", data_mount, "-n", "-o", "TARGET,MAJ:MIN"],
         capture_output=True,
         check=False,
         text=True,
         timeout=10,
     )
-    if result.returncode != 0 or result.stdout.strip() != "/var/lib/binance-bot-2/prospective-r":
+    capture_result = subprocess.run(
+        ["findmnt", "-T", str(capture_root), "-n", "-o", "MAJ:MIN"],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    mount_fields = mount_result.stdout.split()
+    if (
+        mount_result.returncode != 0
+        or capture_result.returncode != 0
+        or len(mount_fields) != 2
+        or mount_fields[0] != data_mount
+        or not mount_fields[1]
+        or capture_result.stdout.strip() != mount_fields[1]
+    ):
         raise UploaderError("capture root is not on the DATA filesystem")
 
 

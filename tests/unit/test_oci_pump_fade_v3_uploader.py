@@ -98,6 +98,48 @@ def _verified_receipt(
     }
 
 
+def test_data_mount_validation_accepts_systemd_bind_mount_on_same_filesystem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    monkeypatch.setattr(UPLOADER, "CAPTURE_ROOT", capture_root)
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        assert command[0] == "findmnt"
+        if command[-1] == "TARGET,MAJ:MIN":
+            return SimpleNamespace(
+                returncode=0,
+                stdout="/var/lib/binance-bot-2/prospective-r 8:16\n",
+            )
+        return SimpleNamespace(returncode=0, stdout="8:16\n")
+
+    monkeypatch.setattr(UPLOADER.subprocess, "run", fake_run)
+
+    UPLOADER.validate_data_mount(capture_root)
+
+
+def test_data_mount_validation_rejects_different_filesystem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    monkeypatch.setattr(UPLOADER, "CAPTURE_ROOT", capture_root)
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        if command[-1] == "TARGET,MAJ:MIN":
+            return SimpleNamespace(
+                returncode=0,
+                stdout="/var/lib/binance-bot-2/prospective-r 8:16\n",
+            )
+        return SimpleNamespace(returncode=0, stdout="8:32\n")
+
+    monkeypatch.setattr(UPLOADER.subprocess, "run", fake_run)
+
+    with pytest.raises(UPLOADER.UploaderError, match="DATA filesystem"):
+        UPLOADER.validate_data_mount(capture_root)
+
+
 def test_daily_manifest_binds_clean_generation_inventory_and_hashes(
     tmp_path: Path,
 ) -> None:
