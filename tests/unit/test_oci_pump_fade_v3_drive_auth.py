@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,13 +54,67 @@ def test_config_writer_scopes_remote_and_sets_restrictive_mode(
 def test_config_writer_refuses_overwrite_and_invalid_token(tmp_path: Path) -> None:
     path = tmp_path / "rclone.conf"
     path.write_text("existing", encoding="utf-8")
-    with pytest.raises(INSTALLER.InstallError):
+    with pytest.raises(INSTALLER.InstallError) as existing_error:
         INSTALLER.write_config(
             {"access_token": "a", "refresh_token": "r", "token_type": "Bearer"}, path
         )
-    with pytest.raises(INSTALLER.InstallError):
+    assert existing_error.value.reason == "exists"
+    with pytest.raises(INSTALLER.InstallError) as token_error:
         INSTALLER.write_config({"access_token": "a"}, tmp_path / "other.conf")
+    assert token_error.value.reason == "token-invalid"
     assert path.read_text(encoding="utf-8") == "existing"
+
+
+def test_config_writer_classifies_unsafe_directory(tmp_path: Path) -> None:
+    with pytest.raises(INSTALLER.InstallError) as error:
+        INSTALLER.write_config(
+            {"access_token": "a", "refresh_token": "r", "token_type": "Bearer"},
+            tmp_path / "rclone.conf",
+            owner_uid=100,
+            owner_gid=100,
+        )
+
+    assert error.value.reason == "dir-unsafe"
+
+
+def test_probe_sets_nonexistent_home_and_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(INSTALLER.subprocess, "run", fake_run)
+
+    assert INSTALLER._probe_as_service_user() == (True, b"")
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert environment["HOME"] == "/nonexistent"
+    assert environment["XDG_CACHE_HOME"] == "/nonexistent"
+
+
+def test_probe_failure_reports_only_redacted_last_three_lines(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    stderr = (
+        b"discard this line\n"
+        b'{"access_token":"access-value","refresh_token":"refresh-value"}\n'
+        b"access_token = another-access-value\n"
+        b"probe ended\n"
+    )
+
+    assert INSTALLER._fail("probe", probe_stderr=stderr) == 1
+    output = capsys.readouterr()
+    assert output.out == "FAIL\n"
+    assert output.err.startswith("reason=probe\n")
+    assert "discard this line" not in output.err
+    assert "access-value" not in output.err
+    assert "refresh-value" not in output.err
+    assert "another-access-value" not in output.err
+    assert output.err.count("[REDACTED]") == 3
+    assert "probe ended" in output.err
 
 
 def _write_auth_stubs(directory: Path) -> tuple[Path, dict[str, str]]:
