@@ -424,6 +424,7 @@ def _upload_daily_bundle(
     manifest_path, receipt_path = _daily_paths(config.receipt_root, utc_date)
     _save_deterministic(manifest_path, manifest_bytes)
     tar_path = _create_daily_tar(config, utc_date=utc_date, manifest=manifest_bytes)
+    check_root: Path | None = None
     try:
         tar_sha = _sha256(tar_path)
         tar_size = tar_path.stat(follow_symlinks=False).st_size
@@ -431,11 +432,18 @@ def _upload_daily_bundle(
         remote_manifest = _remote_daily_object(config, utc_date, "manifest.json")
         remote_receipt = _remote_daily_object(config, utc_date, "receipt.json")
         _rclone(config, "copyto", str(tar_path), remote_tar, "--immutable", timeout=6 * 3600)
+        check_root = Path(
+            tempfile.mkdtemp(prefix=f".{utc_date}.check.", dir=config.receipt_root / "staging")
+        )
+        check_tar = check_root / f"{utc_date}.tar"
+        os.replace(tar_path, check_tar)
         _rclone(
             config,
             "check",
-            str(tar_path),
+            str(check_root),
             _remote_daily_directory(config),
+            "--include",
+            check_tar.name,
             "--checksum",
             "--one-way",
             timeout=6 * 3600,
@@ -501,6 +509,8 @@ def _upload_daily_bundle(
         return manifest_value, receipt
     finally:
         tar_path.unlink(missing_ok=True)
+        if check_root is not None:
+            shutil.rmtree(check_root)
 
 
 def _save_deterministic(path: Path, data: bytes) -> None:

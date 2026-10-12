@@ -181,6 +181,7 @@ def test_daily_upload_verifies_tar_manifest_and_remote_size(
     config = _config(tmp_path)
     generation = _generation(config.capture_root)
     observed: list[tuple[str, ...]] = []
+    check_source_files: list[list[str]] = []
     uploaded_tar_size = 0
 
     def fake_rclone(_config: UPLOADER.UploadConfig, *args: str, **_kwargs: object) -> bytes:
@@ -188,6 +189,9 @@ def test_daily_upload_verifies_tar_manifest_and_remote_size(
         observed.append(args)
         if args[0] == "copyto" and args[2].endswith(".tar"):
             uploaded_tar_size = Path(args[1]).stat().st_size
+            return b""
+        if args[0] == "check":
+            check_source_files.append(sorted(path.name for path in Path(args[1]).iterdir()))
             return b""
         if args[0] == "cat":
             return Path(config.receipt_root / "daily" / "2026-10-01.manifest.json").read_bytes()
@@ -210,6 +214,9 @@ def test_daily_upload_verifies_tar_manifest_and_remote_size(
     check = next(call for call in observed if call[0] == "check")
     assert "--checksum" in check and "--one-way" in check
     assert check[2] == UPLOADER._remote_daily_directory(config)
+    assert check_source_files == [["2026-10-01.tar"]]
+    assert check[check.index("--include") + 1] == "2026-10-01.tar"
+    assert not Path(check[1]).exists()
     assert manifest["generation_count"] == 1
     assert len([call for call in observed if call[0] == "copyto"]) == 3
 
