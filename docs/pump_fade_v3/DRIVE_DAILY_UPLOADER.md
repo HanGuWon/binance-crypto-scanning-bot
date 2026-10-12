@@ -19,3 +19,14 @@ verification, and its files still match that bundle's manifest. The configured
 retention remains seven days. Keep `pump-fade-v3-uploader.timer` disabled and
 `prune_enabled=false` until an independent review passes and a manual upload has
 been verified.
+
+## Deployment checklist
+
+- Confirm the deployed auth installer starts with `#!/usr/bin/python3` using
+  `head -1`, and run the empty-input smoke check:
+  `echo '{}' | sudo -n /usr/local/libexec/install_pump_fade_v3_rclone_config`.
+  Expect stdout `FAIL`, stderr `reason=token-invalid`, and exit status 1;
+  confirm the existing `rclone.conf` metadata is unchanged.
+- The uploader service invokes its script through `/usr/bin/python3` in
+  `ExecStart`, so a script shebang is not used. Verify that invocation from the
+  installed unit when deploying it.

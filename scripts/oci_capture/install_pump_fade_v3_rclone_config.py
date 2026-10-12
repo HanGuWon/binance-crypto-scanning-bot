@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """Install an OCI-only, drive.file-scoped rclone token received on stdin."""
 
 from __future__ import annotations
@@ -56,6 +57,8 @@ def _validated_oauth_input(value: object) -> tuple[str, str, dict[str, Any]]:
         raise InstallError("token-invalid")
     client_id = value.get("client_id")
     client_secret = value.get("client_secret")
+    if not isinstance(client_id, str) or not client_id:
+        raise InstallError("token-invalid")
     if not isinstance(client_id, str) or not CLIENT_ID_PATTERN.fullmatch(client_id):
         raise InstallError("client-id-invalid")
     if (

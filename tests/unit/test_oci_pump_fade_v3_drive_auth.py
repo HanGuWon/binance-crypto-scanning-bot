@@ -20,6 +20,10 @@ sys.modules[SPEC.name] = INSTALLER
 SPEC.loader.exec_module(INSTALLER)
 
 
+def test_installer_has_system_python_shebang() -> None:
+    assert INSTALLER_PATH.read_bytes().startswith(b"#!/usr/bin/python3\n")
+
+
 def test_config_writer_scopes_remote_and_sets_restrictive_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -75,7 +79,7 @@ def test_config_writer_stages_replacement_and_rejects_invalid_input(tmp_path: Pa
     temporary.unlink()
     with pytest.raises(INSTALLER.InstallError) as token_error:
         INSTALLER.write_config({"token": {"access_token": "a"}}, tmp_path / "other.conf")
-    assert token_error.value.reason == "client-id-invalid"
+    assert token_error.value.reason == "token-invalid"
     with pytest.raises(INSTALLER.InstallError) as client_error:
         INSTALLER.write_config(
             {
