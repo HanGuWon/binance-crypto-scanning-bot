@@ -15,7 +15,7 @@ import tarfile
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -324,7 +324,11 @@ def _rclone(config: UploadConfig, *args: str, timeout: int = 3600) -> bytes:
 def _remote_daily_object(config: UploadConfig, utc_date: str, suffix: str) -> str:
     if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", utc_date):
         raise UploaderError("unsafe daily archive date")
-    return f"{config.remote}:{REMOTE_ROOT}/{config.host}/daily/{utc_date}.{suffix}"
+    return f"{_remote_daily_directory(config)}/{utc_date}.{suffix}"
+
+
+def _remote_daily_directory(config: UploadConfig) -> str:
+    return f"{config.remote}:{REMOTE_ROOT}/{config.host}/daily"
 
 
 def _remote_manifest_sha256(config: UploadConfig, remote_path: str) -> str:
@@ -383,6 +387,35 @@ def _load_verified_daily_bundle(
     return manifest, receipt
 
 
+def _manifest_contains_current_generations(
+    verified_manifest: dict[str, Any], current_manifest: dict[str, Any]
+) -> bool:
+    if any(
+        verified_manifest.get(key) != current_manifest.get(key)
+        for key in ("schema", "utc_date", "host")
+    ):
+        return False
+    verified_records = verified_manifest.get("generations")
+    current_records = current_manifest.get("generations")
+    if not isinstance(verified_records, list) or not isinstance(current_records, list):
+        return False
+    verified_by_name = {
+        item.get("generation"): item
+        for item in verified_records
+        if isinstance(item, dict) and isinstance(item.get("generation"), str)
+    }
+    if len(verified_by_name) != len(verified_records):
+        return False
+    current_by_name = {
+        item.get("generation"): item
+        for item in current_records
+        if isinstance(item, dict) and isinstance(item.get("generation"), str)
+    }
+    if len(current_by_name) != len(current_records):
+        return False
+    return all(verified_by_name.get(name) == record for name, record in current_by_name.items())
+
+
 def _upload_daily_bundle(
     config: UploadConfig, utc_date: str, directories: list[Path]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -402,7 +435,7 @@ def _upload_daily_bundle(
             config,
             "check",
             str(tar_path),
-            remote_tar,
+            _remote_daily_directory(config),
             "--checksum",
             "--one-way",
             timeout=6 * 3600,
@@ -478,34 +511,42 @@ def _save_deterministic(path: Path, data: bytes) -> None:
     _atomic_write(path, data)
 
 
-def _safe_prune(
+def _safe_prune_date(
     config: UploadConfig,
-    directory: Path,
+    directories: list[Path],
     manifest: dict[str, Any],
     receipt: dict[str, Any],
     *,
     now_ms: int | None = None,
-) -> bool:
-    terminal, _, _ = _clean_terminal(directory)
+) -> int:
+    if not directories:
+        return 0
     current_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    cutoff_ms = current_ms - config.keep_days * 86_400_000
-    if int(terminal["terminal_at_ms"]) > cutoff_ms:
-        return False
-    terminal_at = datetime.fromtimestamp(
-        int(terminal["terminal_at_ms"]) / 1000, UTC
+    utc_date = manifest.get("utc_date")
+    if not isinstance(utc_date, str):
+        raise UploaderError("unsafe daily prune date")
+    try:
+        date_value = datetime.strptime(str(utc_date), "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise UploaderError("unsafe daily prune date") from exc
+    prune_before = datetime.fromtimestamp(current_ms / 1000, UTC).date() - timedelta(
+        days=config.keep_days
     )
-    utc_date = terminal_at.date().isoformat()
-    generation_record = next(
-        (
-            item
-            for item in manifest.get("generations", [])
-            if item.get("generation") == directory.name
-        ),
-        None,
-    )
+    if date_value >= prune_before:
+        return 0
+    records = manifest.get("generations")
+    if not isinstance(records, list):
+        raise UploaderError("daily prune manifest structure is invalid")
+    records_by_name = {
+        item.get("generation"): item
+        for item in records
+        if isinstance(item, dict) and isinstance(item.get("generation"), str)
+    }
+    if len(records_by_name) != len(records):
+        raise UploaderError("daily prune manifest contains duplicate generations")
     if (
         manifest.get("schema") != "pump_fade_v3_drive_daily_manifest_v1"
-        or manifest.get("utc_date") != utc_date
+        or date_value.isoformat() != utc_date
         or manifest.get("host") != config.host
         or receipt.get("schema") != "pump_fade_v3_drive_daily_receipt_v1"
         or receipt.get("utc_date") != utc_date
@@ -516,29 +557,58 @@ def _safe_prune(
         or receipt.get("remote_tar") != _remote_daily_object(config, utc_date, "tar")
         or receipt.get("remote_manifest") != _remote_daily_object(config, utc_date, "manifest.json")
         or receipt.get("remote_receipt") != _remote_daily_object(config, utc_date, "receipt.json")
-        or generation_record is None
-        or generation_record.get("files") != _inventory(directory)
+        or manifest.get("generation_count") != len(records)
+        or receipt.get("generation_count") != len(records)
     ):
         raise UploaderError("prune lacks matching verified daily bundle receipt")
-    root_device = directory.parent.stat(follow_symlinks=False).st_dev
-    quarantine_root = directory.parent / ".prune-staging"
+    root = config.capture_root
+    if root.is_symlink() or not root.is_dir():
+        raise UploaderError("unsafe capture root for daily prune")
+    root_device = root.stat(follow_symlinks=False).st_dev
+    quarantine_root = root / ".prune-staging"
     quarantine_root.mkdir(mode=0o700, exist_ok=True)
     if (
         quarantine_root.is_symlink()
         or quarantine_root.stat(follow_symlinks=False).st_dev != root_device
     ):
         raise UploaderError("unsafe prune quarantine")
-    quarantine = quarantine_root / directory.name
-    if quarantine.exists():
-        raise UploaderError("prune quarantine already exists")
-    before = _inventory(directory)
-    os.rename(directory, quarantine)
-    after = _inventory(quarantine)
-    if before != after or after != generation_record.get("files"):
-        raise UploaderError("quarantined generation changed; preserved for recovery")
-    shutil.rmtree(quarantine)
-    LOGGER.info("pruned verified daily generation: %s", directory.name)
-    return True
+    staged: list[tuple[Path, Path]] = []
+    for directory in directories:
+        if directory.parent != root or directory.is_symlink():
+            raise UploaderError("unsafe generation path for daily prune")
+        terminal, _, _ = _clean_terminal(directory)
+        generation_date = datetime.fromtimestamp(
+            int(terminal["terminal_at_ms"]) / 1000, UTC
+        ).date().isoformat()
+        record = records_by_name.get(directory.name)
+        if (
+            generation_date != utc_date
+            or record is None
+            or record.get("files") != _inventory(directory)
+        ):
+            raise UploaderError("daily prune sources are not a subset of verified bundle")
+    try:
+        for directory in directories:
+            quarantine = quarantine_root / directory.name
+            if quarantine.exists() or quarantine.is_symlink():
+                raise UploaderError("prune quarantine already exists")
+            before = _inventory(directory)
+            generation_record = records_by_name[directory.name]
+            if before != generation_record.get("files"):
+                raise UploaderError("daily prune source changed after verification")
+            os.rename(directory, quarantine)
+            staged.append((directory, quarantine))
+            if _inventory(quarantine) != generation_record.get("files"):
+                raise UploaderError("quarantined generation changed; preserved for recovery")
+    except (OSError, UploaderError):
+        for original, quarantine in reversed(staged):
+            if quarantine.exists() and not original.exists():
+                os.rename(quarantine, original)
+        raise
+    for _, quarantine in staged:
+        shutil.rmtree(quarantine)
+    LOGGER.info("pruned verified daily UTC date %s generations=%d", utc_date, len(staged))
+    return len(staged)
 
 
 def _record_failure(receipt_root: Path, failed: bool) -> None:
@@ -652,14 +722,13 @@ def run_once(config: UploadConfig) -> tuple[int, int]:
                 current_manifest = json.loads(
                     build_daily_manifest(directories, utc_date=utc_date, host=config.host)
                 )
-                if current_manifest != manifest:
+                if not _manifest_contains_current_generations(manifest, current_manifest):
                     raise UploaderError(
-                        "verified daily bundle no longer matches source generations"
+                        "verified daily bundle does not contain the current source generations"
                     )
             completed_bundles += 1
             if config.prune_enabled:
-                for directory in directories:
-                    _safe_prune(config, directory, manifest, receipt)
+                _safe_prune_date(config, directories, manifest, receipt)
         except (OSError, UploaderError):
             failures += 1
             LOGGER.error("daily bundle upload or verification failed: %s", utc_date)
