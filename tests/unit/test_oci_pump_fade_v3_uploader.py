@@ -18,9 +18,10 @@ MODULE_PATH = (
 )
 SPEC = importlib.util.spec_from_file_location("pump_fade_v3_uploader", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
-UPLOADER = importlib.util.module_from_spec(SPEC)
+UPLOADER: Any = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = UPLOADER
 SPEC.loader.exec_module(UPLOADER)
+UploadConfig = Any
 
 
 def _generation(
@@ -66,7 +67,7 @@ def _generation(
 
 def _config(
     tmp_path: Path, *, keep_days: int = 7, prune_enabled: bool = False
-) -> UPLOADER.UploadConfig:
+) -> UploadConfig:
     capture_root = tmp_path / "capture"
     capture_root.mkdir(exist_ok=True)
     return UPLOADER.UploadConfig(
@@ -81,7 +82,7 @@ def _config(
 
 
 def _verified_receipt(
-    config: UPLOADER.UploadConfig, manifest: dict[str, Any]
+    config: UploadConfig, manifest: dict[str, Any]
 ) -> dict[str, Any]:
     utc_date = str(manifest["utc_date"])
     return {
@@ -210,6 +211,7 @@ def test_daily_tar_is_uncompressed_and_contains_generation_inventory(
         second_tar_path = UPLOADER._create_daily_tar(
             config, utc_date="2026-10-01", manifest=manifest
         )
+        assert second_tar_path is not None
         assert second_tar_path.read_bytes() == tar_path.read_bytes()
     finally:
         tar_path.unlink()
@@ -226,7 +228,7 @@ def test_daily_upload_verifies_tar_manifest_and_remote_size(
     check_source_files: list[list[str]] = []
     uploaded_tar_size = 0
 
-    def fake_rclone(_config: UPLOADER.UploadConfig, *args: str, **_kwargs: object) -> bytes:
+    def fake_rclone(_config: UploadConfig, *args: str, **_kwargs: object) -> bytes:
         nonlocal uploaded_tar_size
         observed.append(args)
         if args[0] == "copyto" and args[2].endswith(".tar"):
@@ -272,7 +274,7 @@ def test_retry_after_partial_failure_reuses_manifest_and_recovers(
     attempts = 0
 
     def flaky_upload(
-        _config: UPLOADER.UploadConfig, utc_date: str, directories: list[Path]
+        _config: UploadConfig, utc_date: str, directories: list[Path]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         nonlocal attempts
         attempts += 1
