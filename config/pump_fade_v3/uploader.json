@@ -1,0 +1,10 @@
+{
+  "schema_version": "pump_fade_v3_uploader_v1",
+  "host": "trendguard-osaka-a1",
+  "capture_root": "/var/lib/binance-bot-2/prospective-r/pump-fade-v3/capture",
+  "receipt_root": "/var/lib/binance-bot-2/prospective-r/pump-fade-v3/archive-receipts",
+  "rclone_config": "/etc/pump-fade-v3/rclone.conf",
+  "remote": "ocidrive",
+  "prune_enabled": false,
+  "keep_days": 7
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Pump Fade v3 verified Drive upload
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+Unit=pump-fade-v3-uploader.service
+
+[Install]
+WantedBy=timers.target

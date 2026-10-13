@@ -184,6 +184,7 @@ class SegmentedCaptureWriter:
         emergency_reserve_bytes: int = 512 * 1024 * 1024,
         compression_level: int = 3,
         recover_partials: bool = True,
+        capacity_guard: Callable[[int, int], None] | None = None,
     ) -> None:
         if rotation_interval_ms < 1:
             raise ValueError("rotation_interval_ms must be positive")
@@ -207,6 +208,8 @@ class SegmentedCaptureWriter:
         self.maximum_frames = maximum_frames
         self.maximum_total_bytes = maximum_total_bytes
         self.emergency_reserve_bytes = emergency_reserve_bytes
+        self.capacity_guard = capacity_guard
+        self.compressed_bytes_by_stream: dict[str, int] = {}
         self._compressor = zstd.ZstdCompressor(
             level=compression_level,
             write_checksum=True,
@@ -279,6 +282,23 @@ class SegmentedCaptureWriter:
         assert self._handle is not None
         _write_all(self._handle, storage_frame)
         self._known_disk_bytes += len(storage_frame)
+        stream_key = (
+            record.stream
+            if isinstance(record, CaptureEnvelopeV1)
+            else getattr(record, "request_role", type(record).__name__)
+        )
+        if isinstance(record, CaptureEnvelopeV1) and record.stream.startswith(
+            "combined:pump-fade-v3-"
+        ):
+            try:
+                wrapper = json.loads(record.raw_payload)
+                if isinstance(wrapper, dict) and isinstance(wrapper.get("stream"), str):
+                    stream_key = wrapper["stream"]
+            except (ValueError, TypeError):
+                pass
+        self.compressed_bytes_by_stream[stream_key] = (
+            self.compressed_bytes_by_stream.get(stream_key, 0) + len(storage_frame)
+        )
         self._record_count += 1
         self._frame_count += int(is_frame)
         self._uncompressed_bytes += len(encoded_line)
@@ -306,6 +326,9 @@ class SegmentedCaptureWriter:
         """Best-effort reserved-space journal for failures of the primary writer."""
 
         encoded = record_to_json_line(transition)
+        # Fatal coverage uses the writer's reserved emergency bytes. The external
+        # guard has already rejected the triggering ordinary write and must not
+        # suppress this best-effort diagnostic journal.
         if self._known_disk_bytes + len(encoded) > self.maximum_total_bytes:
             raise CaptureStorageCapacityError("emergency coverage reserve is exhausted")
         path = self.directory / "coverage-fatal.jsonl"
@@ -418,6 +441,8 @@ class SegmentedCaptureWriter:
         self._known_disk_bytes += len(encoded)
 
     def _ensure_data_capacity(self, next_bytes: int) -> None:
+        if self.capacity_guard is not None:
+            self.capacity_guard(self._known_disk_bytes, next_bytes)
         if (
             self._known_disk_bytes + next_bytes + self.emergency_reserve_bytes
             > self.maximum_total_bytes
@@ -464,9 +489,20 @@ class SegmentedCaptureWriter:
         temporary = path.with_suffix(path.suffix + ".recovery")
         temporary_size = 0
         try:
+            if self.capacity_guard is not None:
+                # Opening the transient recovery file is itself a write-side
+                # transition.  Recheck the external filesystem floor before
+                # creating it, then account every encoded frame while the old
+                # partial and the recovery copy coexist.
+                self.capacity_guard(self._known_disk_bytes, 0)
             with temporary.open("xb", buffering=0) as handle:
                 for line in lines:
                     storage_frame = _encode_outer_frame(self._compressor, line)
+                    if self.capacity_guard is not None:
+                        self.capacity_guard(
+                            self._known_disk_bytes + temporary_size,
+                            len(storage_frame),
+                        )
                     if (
                         self._known_disk_bytes
                         + temporary_size

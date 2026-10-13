@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import zstandard as zstd
 
-from signalbot.capture.errors import CaptureIntegrityError
+from signalbot.capture.errors import CaptureIntegrityError, CaptureStorageCapacityError
 from signalbot.capture.models import (
     CaptureEnvelopeV1,
     CoverageReason,
@@ -245,6 +245,38 @@ def test_partial_recovery_seals_complete_prefix_and_drops_only_true_torn_payload
         record_to_json_line(first),
         record_to_json_line(second),
     ]
+
+
+def test_partial_recovery_transient_copy_obeys_external_capacity_guard(
+    tmp_path: Path,
+) -> None:
+    writer = _writer(tmp_path)
+    first = _frame(1)
+    writer.append(first, record_to_json_line(first))
+    writer.abort()
+    [partial] = tmp_path.glob("*.jsonl.zst.partial")
+    original = partial.read_bytes()
+    calls: list[tuple[int, int]] = []
+
+    def guard(current_bytes: int, incoming_bytes: int) -> None:
+        calls.append((current_bytes, incoming_bytes))
+        if incoming_bytes > 0:
+            raise CaptureStorageCapacityError("synthetic DATA free-space floor")
+
+    with pytest.raises(CaptureStorageCapacityError, match="free-space floor"):
+        SegmentedCaptureWriter(
+            tmp_path,
+            plan_sha256=PLAN_SHA256,
+            process_boot_id="boot-2",
+            maximum_total_bytes=4 * 1024 * 1024,
+            emergency_reserve_bytes=1024,
+            capacity_guard=guard,
+        )
+
+    assert calls[0][1] == 0
+    assert any(incoming > 0 for _, incoming in calls)
+    assert partial.read_bytes() == original
+    assert not list(tmp_path.glob("*.recovery"))
 
 
 def test_authenticated_absurd_payload_length_recovers_without_length_allocation(

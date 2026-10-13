@@ -1,0 +1,7 @@
+# L2 — isolated public full-universe data
+
+Create external project only at `D:\Binance-trade-analysis\2026-10-08_pump-v3\`; own manifest, venv, lockfile and reproducible scripts. No torch/LightGBM/TabPFN/TSFM dependency enters bot `pyproject.toml` or `uv.lock`. Download development-period public USDⓈ-M data only: all USDT perpetuals including delisted, 5m contract/mark/premium klines, 5m open-interest/top-trader-account/top-trader-position/global-long-short/taker-buy-sell metrics, and funding history. Universe listing date is first available historical kline, never current exchangeInfo projected backward.
+
+NEW external files: `pyproject.toml`, lockfile, `src/pump_v3_data/{download,validate,manifest}.py`, `tests/`, `data_manifest.json`, and `README.md`. Keep data under external `data/`; never copy P3 private fills. Verify published checksums, continuity, gaps, row counts and timestamp order; record source URL, retrieval time, response hashes, schema, and all holes. For 5m metrics, earliest usable time is row timestamp +10 minutes total (5-minute publication delay plus the user-approved 5-minute margin). Historical funding caps/intervals are unavailable; R5 is UNTESTABLE historically. Output a non-secret aggregate P3 accounting table only where needed.
+
+Gate: external path write/network approval and L1 freeze commit must exist; otherwise do not download. Tests use recorded fixtures/no network. Every result later names the exact command and input hashes.

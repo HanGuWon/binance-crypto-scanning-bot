@@ -1,0 +1,7 @@
+# L4 — offline prediction track
+
+Run offline on the PC in the isolated L2 project. At event decision time after rule prefilter, primary label is mark squeeze ≥15% within 4h; secondary 24h lower and continuous 4h MAE. Feature availability uses timestamp + 5m + frozen extra margin. Walk-forward by month, purged and embargoed ≥24h day blocks. Metrics: PR-AUC, Brier, calibration slope/intercept and decision action: move top-q score tercile FADE-CANDIDATE→WAIT; require ≥25% squeeze-rate reduction vs rules-only and missed-fade ≤50%, with day-block CIs.
+
+Compare M0 marker-only LR; M1 all-feature L2 LR; M2 small depth≤4 LightGBM with calibrated probabilities; M3 TabPFN v2 CPU/licence feasibility; M4 M2 plus pre-decision OHLCV TSFM features. Every step must beat its predecessor or stop. Record each foundation model's stated training cutoff and treat pre-cutoff crypto exposure as contaminated; only L5 after the cutoff is confirmatory. Freeze at most one model only if it beats M0 on PR-AUC with 95% day-block CI excluding zero and improves the decision metric. Else choose rules-only.
+
+OCI fit: Arm64 one-core inference latency ≤2 s/event and RSS ≤1.5 GB, measured on compatible local emulation plus short OCI benchmark if needed. CPU-only; no GPU. Exact candidate/license/cutoff evidence is from original model cards/repos; do not use the third-party catalog as authority. Files/tests in external project only; no model dependency in bot.

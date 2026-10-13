@@ -33,9 +33,11 @@ _SYMBOL = r"[a-z0-9]+"
 _SPOT_STREAM = re.compile(rf"^{_SYMBOL}@(aggTrade|bookTicker|depth@100ms|kline_5m)$")
 _FUTURES_MARKET_STREAM = re.compile(
     rf"^(?:{_SYMBOL}@(aggTrade|kline_(1m|5m|15m|1h|4h)|markPrice@1s|forceOrder)"
-    r"|!forceOrder@arr)$"
+    r"|!(forceOrder|miniTicker)@arr)$"
 )
-_FUTURES_PUBLIC_STREAM = re.compile(rf"^{_SYMBOL}@(bookTicker|depth@100ms)$")
+_FUTURES_PUBLIC_STREAM = re.compile(
+    rf"^{_SYMBOL}@(bookTicker|depth@(100|500)ms|depth(5|10|20)@(100|500)ms)$"
+)
 
 class PublicWebSocketCaptureAdapter:
     """Receipt-at-iterator seam for public Binance WebSocket frames.

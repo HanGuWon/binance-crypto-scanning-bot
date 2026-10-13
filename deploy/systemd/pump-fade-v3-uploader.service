@@ -1,0 +1,19 @@
+[Unit]
+Description=Pump Fade v3 verified Google Drive uploader
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/binance-bot-2/prospective-r
+
+[Service]
+Type=oneshot
+User=pumpfadev3
+Group=pumpfadev3
+WorkingDirectory=/opt/pump-fade-v3-uploader
+ExecStart=/usr/bin/python3 /opt/pump-fade-v3-uploader/pump_fade_v3_uploader.py --config /etc/pump-fade-v3/uploader.json --once
+Nice=15
+CPUQuota=20%
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/binance-bot-2/prospective-r/pump-fade-v3

@@ -69,3 +69,5 @@ data/backtest/
 /tools/_wp9_policy_probe.py
 /tools/resume_bot2_u001_r2.ps1
 /tools/resume_bot2_u001_spot_r2.ps1
+
+.pytest-tmp/
