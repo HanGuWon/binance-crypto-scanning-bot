@@ -55,6 +55,7 @@ class BinancePrivateReadClient:
         sleep: Sleep = asyncio.sleep,
         clock: Clock = _utc_now_ms,
         recv_window_ms: int = 5_000,
+        retry_on_418: bool = True,
     ) -> None:
         if not api_key.strip() or not api_secret.strip():
             raise ValueError("api_key and api_secret must be non-empty")
@@ -78,6 +79,7 @@ class BinancePrivateReadClient:
         self._sleep = sleep
         self._clock = clock
         self._recv_window_ms = recv_window_ms
+        self._retry_on_418 = retry_on_418
 
     async def __aenter__(self) -> BinancePrivateReadClient:
         return self
@@ -128,6 +130,33 @@ class BinancePrivateReadClient:
         result = tuple(_parse_symbol_filter(row) for row in raw_symbols)
         return tuple(row for row in result if wanted is None or row.symbol == wanted)
 
+    async def account_config(self) -> dict[str, object]:
+        payload = await self._get_json("/fapi/v1/accountConfig", signed=True)
+        return cast(dict[str, object], _mapping(payload, "accountConfig"))
+
+    async def symbol_config(self, symbol: str) -> tuple[dict[str, object], ...]:
+        payload = await self._get_json(
+            "/fapi/v1/symbolConfig", signed=True, params=_optional_symbol(symbol)
+        )
+        return tuple(
+            cast(dict[str, object], _mapping(row, "symbolConfig"))
+            for row in _list_payload(payload, "symbolConfig")
+        )
+
+    async def user_trades(
+        self, symbol: str, from_id: int | None = None
+    ) -> tuple[dict[str, object], ...]:
+        params: list[QueryPair] = list(_optional_symbol(symbol))
+        if from_id is not None:
+            if isinstance(from_id, bool) or from_id < 0:
+                raise ValueError("from_id must be a non-negative integer")
+            params.append(("fromId", from_id))
+        payload = await self._get_json("/fapi/v1/userTrades", signed=True, params=params)
+        return tuple(
+            cast(dict[str, object], _mapping(row, "userTrades"))
+            for row in _list_payload(payload, "userTrades")
+        )
+
     async def _get_json(
         self,
         path: str,
@@ -161,6 +190,8 @@ class BinancePrivateReadClient:
                     category="temporary",
                 ) from exc
 
+            if response.status_code == 418 and not self._retry_on_418:
+                raise RateLimitError(status_code=response.status_code)
             if response.status_code in {418, 429}:
                 if attempt < len(self._retry_delays):
                     await self._sleep(self._retry_delays[attempt])
@@ -256,9 +287,26 @@ def _decimal(row: dict[str, Any], key: str, label: str, *, allow_zero: bool = Tr
 
 def _optional_decimal(row: dict[str, Any], key: str, label: str) -> Decimal | None:
     value = row.get(key)
-    if value in (None, "", "0", "0.0", "0.00000"):
+    if value is None or value == "":
         return None
-    return _decimal(row, key, label)
+    parsed = _decimal(row, key, label)
+    return None if parsed == 0 else parsed
+
+
+def _optional_integer(row: dict[str, Any], key: str, label: str) -> int | None:
+    value = row.get(key)
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise MalformedPayloadError(f"{label}.{key} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise MalformedPayloadError(f"{label}.{key} must be an integer") from exc
+    raise MalformedPayloadError(f"{label}.{key} must be an integer")
 
 
 def _position_side(value: object, label: str) -> str:
@@ -277,6 +325,12 @@ def _parse_position(row: object) -> PositionSnapshot:
         mark_price=_decimal(data, "markPrice", "position", allow_zero=False),
         unrealized_profit=_decimal(data, "unRealizedProfit", "position"),
         update_time_ms=_row_integer(data, "updateTime", "position"),
+        liquidation_price=_optional_decimal(data, "liquidationPrice", "position"),
+        break_even_price=_optional_decimal(data, "breakEvenPrice", "position"),
+        notional=_optional_decimal(data, "notional", "position"),
+        isolated_margin=_optional_decimal(data, "isolatedMargin", "position"),
+        maint_margin=_optional_decimal(data, "maintMargin", "position"),
+        adl=_optional_integer(data, "adl", "position"),
     )
 
 
