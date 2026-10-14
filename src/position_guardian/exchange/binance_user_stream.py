@@ -243,6 +243,7 @@ class BoundedUserEventBuffer:
         *,
         snapshot_id: str,
         snapshot_cursor: str,
+        defer_health_recovery: bool = False,
     ) -> RestResyncResult:
         """Restore certainty only when no stream event crossed the REST fence.
 
@@ -270,11 +271,12 @@ class BoundedUserEventBuffer:
                 reason="STREAM_ACTIVITY_CROSSED_REST_FENCE",
                 crossed_event_ids=crossed,
             )
-        self._active_resync = None
-        self._resync_event_ids = []
-        self._resync_interference = False
-        self._health = "HEALTHY"
-        self._last_ordering.clear()
+        if not defer_health_recovery:
+            self._active_resync = None
+            self._resync_event_ids = []
+            self._resync_interference = False
+            self._health = "HEALTHY"
+            self._last_ordering.clear()
         return RestResyncResult(
             status="CERTAIN",
             snapshot_id=snapshot_id,
@@ -282,6 +284,36 @@ class BoundedUserEventBuffer:
             reason=None,
             crossed_event_ids=(),
         )
+
+    def finalize_rest_resync(
+        self, session: RestResyncSession
+    ) -> tuple[bool, tuple[str, ...]]:
+        """Restore health only if no stream activity crossed the full recovery."""
+
+        valid, event_ids = self.validate_rest_resync(session)
+        if not valid:
+            return False, event_ids
+        self._active_resync = None
+        self._resync_event_ids = []
+        self._resync_interference = False
+        self._health = "HEALTHY"
+        self._last_ordering.clear()
+        return True, ()
+
+    def validate_rest_resync(
+        self, session: RestResyncSession
+    ) -> tuple[bool, tuple[str, ...]]:
+        """Check the final fence while retaining degraded health and the session."""
+
+        self._require_active_resync(session)
+        if (
+            self._resync_interference
+            or self._ingest_sequence != session.start_ingest_sequence
+            or self._queue
+            or self._resync_event_ids
+        ):
+            return False, self.fence_buffered_events(session)
+        return True, ()
 
     def fence_buffered_events(self, session: RestResyncSession) -> tuple[str, ...]:
         """Explicitly discard an unsafe interval and keep the buffer degraded."""

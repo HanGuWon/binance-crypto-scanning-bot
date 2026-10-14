@@ -1,0 +1,23 @@
+# Packaging only. Do not install or enable during L7-G1.
+[Unit]
+Description=Pump Fade v3 disabled shadow position tracker
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=pumpfadev3
+Group=pumpfadev3
+WorkingDirectory=/opt/pump-fade-v3
+ExecStart=/opt/pump-fade-v3/.venv/bin/python -m signalbot.pump_fade_v3.tracker_service --config config/pump_fade_v3/positions.json
+Restart=on-failure
+RestartSec=30
+MemoryMax=256M
+CPUQuota=10%
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/binance-bot-2/prospective-r/pump-fade-v3/positions
+PrivateTmp=true
