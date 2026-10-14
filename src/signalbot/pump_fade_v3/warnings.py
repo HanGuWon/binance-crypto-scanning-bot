@@ -188,7 +188,8 @@ class _EpisodeWarningState:
     liq_armed: dict[Decimal, bool] = field(default_factory=dict)
     add_reasons: frozenset[str] | None = None
     add_last_candle_ms: int | None = None
-    add_price_stages: set[int] = field(default_factory=set)
+    add_price_stages: set[tuple[str, int]] = field(default_factory=set)
+    state_record_values: dict[str, str] = field(default_factory=dict)
 
 
 class WarningEngine:
@@ -304,7 +305,14 @@ class WarningEngine:
         if not self._can_warn():
             return None
         if episode.side != "SHORT":
-            return self._state_record("THESIS_NOT_APPLICABLE", episode, occurred_ms, {})
+            return self._transition_state_record(
+                "THESIS_NOT_APPLICABLE",
+                episode,
+                occurred_ms,
+                {},
+                state_key="thesis_applicability",
+                state_value="NOT_APPLICABLE",
+            )
         triggers = frozenset(trigger for trigger in inputs.triggers if trigger in _GROUPS)
         groups = frozenset(_GROUPS[trigger] for trigger in triggers)
         validated_groups = frozenset(_GROUPS[t] for t in triggers if t in {"T1", "T2", "T3", "T4"})
@@ -354,7 +362,7 @@ class WarningEngine:
         episode: Episode,
         *,
         liquidation_price: Decimal | None,
-        rest_update_ms: int,
+        snapshot_received_ms: int,
         mark: Decimal | None,
         mark_update_ms: int,
         now_ms: int,
@@ -362,6 +370,12 @@ class WarningEngine:
         cross_margin: bool,
         margin_call: bool = False,
     ) -> dict[str, object] | None:
+        """Evaluate LIQ freshness using local REST response receipt time.
+
+        `snapshot_received_ms` is the client clock when the positionRisk response
+        arrived; Binance position `updateTime` is a position-change time and must
+        not be used as the snapshot freshness clock.
+        """
         if not self._can_warn():
             return None
         if (
@@ -369,63 +383,82 @@ class WarningEngine:
             or liquidation_price <= 0
             or mark is None
             or mark <= 0
-            or rest_update_ms > now_ms
+            or snapshot_received_ms > now_ms
             or mark_update_ms > now_ms
-            or now_ms - rest_update_ms > 15_000
+            or now_ms - snapshot_received_ms > 15_000
             or now_ms - mark_update_ms > 5_000
             or not account_supported
         ):
-            return self._state_record(
+            return self._transition_state_record(
                 "LIQ_PROXIMITY_UNKNOWN",
                 episode,
                 now_ms,
                 {"reason": "STALE_OR_UNAVAILABLE_SOURCE"},
+                state_key="liq_proximity",
+                state_value="UNKNOWN:STALE_OR_UNAVAILABLE_SOURCE",
             )
         sign = Decimal(-1) if episode.side == "SHORT" else Decimal(1)
         distance = sign * (mark - liquidation_price) / mark * Decimal(100)
         if distance < 0:
-            return self._state_record(
+            return self._transition_state_record(
                 "LIQ_PROXIMITY_UNKNOWN",
                 episode,
                 now_ms,
                 {"reason": "LIQUIDATION_PRICE_NOT_ADVERSE", "distance_percent": str(distance)},
+                state_key="liq_proximity",
+                state_value="UNKNOWN:LIQUIDATION_PRICE_NOT_ADVERSE",
             )
         state = self._state(episode)
+        state.state_record_values.pop("liq_proximity", None)
         for threshold in self._policy.liq_thresholds_percent:
-            armed = state.liq_armed.get(threshold, True)
-            if distance <= threshold and armed:
-                state.liq_armed[threshold] = False
-                return self._warning(
-                    "LIQ-PROXIMITY",
-                    episode,
-                    now_ms,
-                    {
-                        "distance_percent": str(distance),
-                        "threshold_percent": str(threshold),
-                        "liq_basis": "CROSS_ACCOUNT_DEPENDENT" if cross_margin else "ISOLATED",
-                        "l8_a3_liq_condition": distance <= self._policy.liq_thresholds_percent[-1],
-                        "margin_call": margin_call,
-                        "source_values": {
-                            "liquidation_price": str(liquidation_price),
-                            "liquidation_update_ms": rest_update_ms,
-                            "mark": str(mark),
-                            "mark_update_ms": mark_update_ms,
-                        },
-                    },
-                    invalidation=(
-                        f"Distance recovers above "
-                        f"{threshold + self._policy.liq_rearm_margin_percent}%."
-                    ),
-                )
             if distance >= threshold + self._policy.liq_rearm_margin_percent:
                 state.liq_armed[threshold] = True
+        armed_thresholds = [
+            threshold
+            for threshold in self._policy.liq_thresholds_percent
+            if distance <= threshold and state.liq_armed.get(threshold, True)
+        ]
+        if armed_thresholds:
+            threshold = min(armed_thresholds)
+            for armed_threshold in self._policy.liq_thresholds_percent:
+                if armed_threshold >= threshold:
+                    state.liq_armed[armed_threshold] = False
+            return self._warning(
+                "LIQ-PROXIMITY",
+                episode,
+                now_ms,
+                {
+                    "distance_percent": str(distance),
+                    "threshold_percent": str(threshold),
+                    "liq_basis": "CROSS_ACCOUNT_DEPENDENT" if cross_margin else "ISOLATED",
+                    "l8_a3_liq_condition": distance <= self._policy.liq_thresholds_percent[-1],
+                    "margin_call": margin_call,
+                    "source_values": {
+                        "liquidation_price": str(liquidation_price),
+                        "snapshot_received_ms": snapshot_received_ms,
+                        "mark": str(mark),
+                        "mark_update_ms": mark_update_ms,
+                    },
+                },
+                invalidation=(
+                    f"Distance recovers above "
+                    f"{threshold + self._policy.liq_rearm_margin_percent}%."
+                ),
+            )
         return None
 
     def add_blocked(self, episode: Episode, inputs: AddBlockInputs) -> dict[str, object] | None:
         if not self._can_warn():
             return None
         if episode.side != "SHORT":
-            return self._state_record("ADD_NOT_APPLICABLE", episode, inputs.closed_candle_ms, {})
+            return self._transition_state_record(
+                "ADD_NOT_APPLICABLE",
+                episode,
+                inputs.closed_candle_ms,
+                {},
+                state_key="add_applicability",
+                state_value="NOT_APPLICABLE",
+            )
         invalidation = episode.invalidation
         reasons: set[str] = set()
         if inputs.rule_state != "RELEASED":
@@ -467,14 +500,18 @@ class WarningEngine:
         stage = _price_stage(
             episode.last_entry_price, inputs.closed_mark, self._policy.legacy_spacing_percent
         )
-        staged = stage > 0 and stage not in state.add_price_stages
+        stage_key = (
+            str(episode.last_entry_price) if episode.last_entry_price is not None else "UNKNOWN",
+            stage,
+        )
+        staged = stage > 0 and stage_key not in state.add_price_stages
         if not ((changed and candle_fresh) or staged):
             state.add_reasons = reason_set
             return None
         state.add_reasons = reason_set
         state.add_last_candle_ms = inputs.closed_candle_ms
         if staged:
-            state.add_price_stages.add(stage)
+            state.add_price_stages.add(stage_key)
         remaining_r = (
             (inputs.r_live - current_risk) / inputs.r_live
             if inputs.r_live is not None and current_risk is not None and inputs.r_live > 0
@@ -625,6 +662,22 @@ class WarningEngine:
         record["record_id"] = hashlib.sha256(_stable_bytes(record)).hexdigest()
         self._sink.append(record)
         return record
+
+    def _transition_state_record(
+        self,
+        event_type: str,
+        episode: Episode,
+        occurred_ms: int,
+        details: dict[str, object],
+        *,
+        state_key: str,
+        state_value: str,
+    ) -> dict[str, object] | None:
+        state = self._state(episode)
+        if state.state_record_values.get(state_key) == state_value:
+            return None
+        state.state_record_values[state_key] = state_value
+        return self._state_record(event_type, episode, occurred_ms, details)
 
     def _state(self, episode: Episode) -> _EpisodeWarningState:
         state = self._states.get(episode.episode_id)

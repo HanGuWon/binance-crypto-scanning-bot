@@ -19,15 +19,16 @@ from position_guardian.exchange.binance_user_stream import BoundedUserEventBuffe
 Side = Literal["SHORT", "LONG"]
 OrderTerminal = Literal["FILLED", "CANCELED", "EXPIRED"]
 RESYNC_BACKOFF_SECONDS = (1.0, 2.0, 5.0)
+USER_TRADES_PAGE_LIMIT = 500
 MAX_SHADOW_RECORD_BYTES = 1_048_576
 
 
 class RecordSink(Protocol):
     def append(self, record: dict[str, object]) -> bool: ...
 
-    def contains_trade_id(self, trade_id: str) -> bool: ...
+    def contains_trade_id(self, symbol: str, trade_id: str) -> bool: ...
 
-    def remember_trade_id(self, trade_id: str) -> None: ...
+    def remember_trade_id(self, symbol: str, trade_id: str) -> None: ...
 
     def iter_records(self) -> tuple[dict[str, object], ...]: ...
 
@@ -79,22 +80,60 @@ class PositionStore:
                 "(record_id TEXT PRIMARY KEY, occurred_ms INTEGER NOT NULL, payload BLOB NOT NULL)"
             )
             connection.execute(
-                "CREATE TABLE IF NOT EXISTS shadow_trade_ids (trade_id TEXT PRIMARY KEY)"
+                "CREATE TABLE IF NOT EXISTS shadow_trade_ids "
+                "(symbol TEXT NOT NULL, trade_id TEXT NOT NULL, PRIMARY KEY(symbol, trade_id))"
             )
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(shadow_trade_ids)")
+            }
+            if "symbol" not in columns:
+                connection.execute("ALTER TABLE shadow_trade_ids RENAME TO shadow_trade_ids_legacy")
+                connection.execute(
+                    "CREATE TABLE shadow_trade_ids "
+                    "(symbol TEXT NOT NULL, trade_id TEXT NOT NULL, PRIMARY KEY(symbol, trade_id))"
+                )
+                legacy_trade_ids = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT trade_id FROM shadow_trade_ids_legacy"
+                    )
+                }
+                for (payload,) in connection.execute("SELECT payload FROM shadow_records"):
+                    try:
+                        record = json.loads(bytes(payload))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    details = record.get("details") if isinstance(record, dict) else None
+                    symbol = details.get("symbol") if isinstance(details, dict) else None
+                    trade_id = details.get("trade_id") if isinstance(details, dict) else None
+                    if (
+                        isinstance(symbol, str)
+                        and isinstance(trade_id, str)
+                        and trade_id in legacy_trade_ids
+                    ):
+                        connection.execute(
+                            "INSERT OR IGNORE INTO shadow_trade_ids(symbol, trade_id) "
+                            "VALUES (?, ?)",
+                            (symbol, trade_id),
+                        )
+                connection.execute("DROP TABLE shadow_trade_ids_legacy")
 
-    def contains_trade_id(self, trade_id: str) -> bool:
+    def contains_trade_id(self, symbol: str, trade_id: str) -> bool:
         with sqlite3.connect(self._database_path) as connection:
             return (
                 connection.execute(
-                    "SELECT 1 FROM shadow_trade_ids WHERE trade_id = ?", (trade_id,)
+                    "SELECT 1 FROM shadow_trade_ids "
+                    "WHERE trade_id = ? AND symbol IN (?, '*') LIMIT 1",
+                    (trade_id, symbol),
                 ).fetchone()
                 is not None
             )
 
-    def remember_trade_id(self, trade_id: str) -> None:
+    def remember_trade_id(self, symbol: str, trade_id: str) -> None:
         with sqlite3.connect(self._database_path) as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO shadow_trade_ids(trade_id) VALUES (?)", (trade_id,)
+                "INSERT OR IGNORE INTO shadow_trade_ids(symbol, trade_id) VALUES (?, ?)",
+                (symbol, trade_id),
             )
 
     def iter_records(self) -> tuple[dict[str, object], ...]:
@@ -118,6 +157,7 @@ class PositionStore:
         if not isinstance(record_id, str) or not isinstance(occurred_ms, int):
             raise ValueError("shadow records require record_id and occurred_ms")
         with sqlite3.connect(self._database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT payload FROM shadow_records WHERE record_id = ?", (record_id,)
             ).fetchone()
@@ -128,20 +168,14 @@ class PositionStore:
                 )
             elif bytes(existing[0]) != payload:
                 raise ValueError("record_id was reused with different shadow content")
+            inserted = existing is None
         day = datetime.fromtimestamp(occurred_ms / 1000, UTC).strftime("%Y-%m-%d")
-        daily_path = self._jsonl_directory / f"{day}.jsonl"
-        line = payload + b"\n"
-        already_present = False
-        if daily_path.exists():
-            with daily_path.open("rb") as input_file:
-                already_present = any(
-                    existing_line.rstrip(b"\r\n") == payload for existing_line in input_file
-                )
-        if not already_present:
+        if inserted:
+            daily_path = self._jsonl_directory / f"{day}.jsonl"
             with daily_path.open("ab") as output:
-                output.write(line)
+                output.write(payload + b"\n")
                 output.flush()
-        return existing is None
+        return inserted
 
 
 @dataclass(frozen=True)
@@ -264,7 +298,8 @@ class PositionLedger:
 
     def apply_fill(self, fill: Fill) -> tuple[Episode, ...]:
         _validate_fill(fill)
-        if fill.trade_id in self._trade_ids or self._sink.contains_trade_id(fill.trade_id):
+        trade_key = _trade_key(fill.symbol, fill.trade_id)
+        if trade_key in self._trade_ids or self._sink.contains_trade_id(fill.symbol, fill.trade_id):
             return ()
         changed: list[Episode] = []
         current = self._active_by_symbol.get(fill.symbol)
@@ -304,10 +339,9 @@ class PositionLedger:
             changed.append(current)
         self._last_trade_id.pop(fill.symbol, None)
         self._last_trade_id[fill.symbol] = fill.trade_id
-        while len(self._last_trade_id) > self._max_open_symbols * 2:
-            self._last_trade_id.pop(next(iter(self._last_trade_id)))
-        self._remember_trade_id(fill.trade_id)
-        self._sink.remember_trade_id(fill.trade_id)
+        self._prune_trade_cursors()
+        self._remember_trade_id(trade_key)
+        self._sink.remember_trade_id(fill.symbol, fill.trade_id)
         return tuple(changed)
 
     def close_tranche(
@@ -521,6 +555,34 @@ class PositionLedger:
                 applied += 1
         return applied
 
+    def mark_recovery_adjusted(
+        self, symbol: str, rest_amount: Decimal, occurred_ms: int, reason: str
+    ) -> None:
+        episode = self._active_by_symbol.get(symbol)
+        if episode is not None:
+            episode.ledger_quality = "ADJUSTED"
+            episode_id = episode.episode_id
+        else:
+            episode_id = ""
+        resync_id = f"resync:{symbol}:{occurred_ms}:{reason}"
+        self._sink.append(
+            _record(
+                "RESYNC_ADJUSTMENT",
+                occurred_ms,
+                episode_id,
+                {
+                    "symbol": symbol,
+                    "delta": "0",
+                    "rest_amount": str(rest_amount),
+                    "ledger_quality": "ADJUSTED",
+                    "resync_id": resync_id,
+                    "adjustment_quantity": "0",
+                    "reason": reason,
+                    "add_count_trusted": False,
+                },
+            )
+        )
+
     def active_episode(self, symbol: str) -> Episode | None:
         return self._active_by_symbol.get(symbol)
 
@@ -724,10 +786,23 @@ class PositionLedger:
         tranche.fill_count += 1
 
     def _restore_trade_identity(self, symbol: str, trade_id: str) -> None:
-        if trade_id not in self._trade_ids:
-            self._remember_trade_id(trade_id)
-        self._sink.remember_trade_id(trade_id)
+        trade_key = _trade_key(symbol, trade_id)
+        if trade_key not in self._trade_ids:
+            self._remember_trade_id(trade_key)
+        self._sink.remember_trade_id(symbol, trade_id)
         self._last_trade_id[symbol] = trade_id
+        self._prune_trade_cursors()
+
+    def _prune_trade_cursors(self) -> None:
+        maximum = self._max_open_symbols * 2
+        while len(self._last_trade_id) > maximum:
+            closed_symbol = next(
+                (symbol for symbol in self._last_trade_id if symbol not in self._active_by_symbol),
+                None,
+            )
+            if closed_symbol is None:
+                return
+            self._last_trade_id.pop(closed_symbol)
 
     def _ensure_episode_capacity(self, symbol: str) -> None:
         if (
@@ -969,6 +1044,10 @@ def _validate_fill(fill: Fill) -> None:
         raise ValueError("fill values must be positive and timestamp non-negative")
 
 
+def _trade_key(symbol: str, trade_id: str) -> str:
+    return f"{symbol}:{trade_id}"
+
+
 def derive_invalidation(
     candles: tuple[ClosedCandle, ...],
     *,
@@ -1064,8 +1143,10 @@ async def recover_user_stream_gap(
         if completed.status != "CERTAIN":
             fenced.extend(buffer.fence_buffered_events(session))
             continue
+        cursor = ledger.last_trade_id(symbol)
         try:
-            trades = await source.user_trades(symbol, ledger.last_trade_id(symbol))
+            trades = await source.user_trades(symbol, cursor) if cursor is not None else ()
+            page_limit_hit = len(trades) >= USER_TRADES_PAGE_LIMIT
             replayed = ledger.replay_recovered_trades(trades)
             reconciliation = ledger.reconcile(
                 symbol,
@@ -1081,7 +1162,7 @@ async def recover_user_stream_gap(
         if reconciliation == "DEFERRED":
             fenced.extend(buffer.fence_buffered_events(session))
             continue
-        if reconciliation != "MATCH":
+        if reconciliation != "MATCH" or page_limit_hit:
             stable, crossed = buffer.validate_rest_resync(session)
             fenced.extend(crossed)
             if not stable:
@@ -1093,9 +1174,16 @@ async def recover_user_stream_gap(
             except Exception:
                 fenced.extend(buffer.fence_buffered_events(session))
                 raise
-            if adjusted is None:
+            if adjusted is None and not page_limit_hit:
                 fenced.extend(buffer.fence_buffered_events(session))
                 continue
+            if page_limit_hit:
+                ledger.mark_recovery_adjusted(
+                    symbol,
+                    snapshot.position_amount,
+                    now_ms(),
+                    "USER_TRADES_PAGE_LIMIT_REACHED",
+                )
             recovered, crossed = buffer.finalize_rest_resync(session)
             fenced.extend(crossed)
             if recovered:

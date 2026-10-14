@@ -7,7 +7,7 @@ import re
 import sqlite3
 from decimal import Decimal
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -52,17 +52,17 @@ FIXTURES = ROOT / "tests" / "fixtures" / "pump_fade_v3"
 class MemorySink:
     def __init__(self) -> None:
         self.records: list[dict[str, object]] = []
-        self.trade_ids: set[str] = set()
+        self.trade_ids: set[tuple[str, str]] = set()
 
     def append(self, record: dict[str, object]) -> bool:
         self.records.append(record)
         return True
 
-    def contains_trade_id(self, trade_id: str) -> bool:
-        return trade_id in self.trade_ids
+    def contains_trade_id(self, symbol: str, trade_id: str) -> bool:
+        return (symbol, trade_id) in self.trade_ids
 
-    def remember_trade_id(self, trade_id: str) -> None:
-        self.trade_ids.add(trade_id)
+    def remember_trade_id(self, symbol: str, trade_id: str) -> None:
+        self.trade_ids.add((symbol, trade_id))
 
     def iter_records(self) -> tuple[dict[str, object], ...]:
         return tuple(self.records)
@@ -137,6 +137,50 @@ def test_partial_fills_share_a_tranche_and_trade_ids_are_deduplicated() -> None:
     assert episode.tranches["10"].fill_count == 2
     ledger.close_tranche("SYNTHUSDT", "10", "CANCELED", second.occurred_ms + 1)
     assert episode.tranches["10"].terminal_status == "CANCELED"
+
+
+def test_same_trade_id_on_distinct_symbols_is_not_deduplicated(tmp_path: Path) -> None:
+    store = PositionStore(tmp_path / "positions.sqlite", tmp_path / "daily")
+    ledger = PositionLedger("synthetic-account", store)
+    first = Fill("42", "order-a", "AAAUSDT", "SELL", Decimal("1"), Decimal("10"), 1000)
+    second = Fill("42", "order-b", "BBBUSDT", "BUY", Decimal("2"), Decimal("20"), 1001)
+
+    first_episode = ledger.apply_fill(first)[0]
+    second_episode = ledger.apply_fill(second)[0]
+
+    assert first_episode.symbol == "AAAUSDT" and first_episode.signed_quantity == Decimal("-1")
+    assert second_episode.symbol == "BBBUSDT" and second_episode.signed_quantity == Decimal("2")
+    assert ledger.apply_fill(first) == ()
+    with sqlite3.connect(tmp_path / "positions.sqlite") as connection:
+        rows = connection.execute(
+            "SELECT symbol, trade_id FROM shadow_trade_ids ORDER BY symbol"
+        ).fetchall()
+    assert rows == [("AAAUSDT", "42"), ("BBBUSDT", "42")]
+
+
+def test_legacy_trade_ids_migrate_with_symbol_from_shadow_records(tmp_path: Path) -> None:
+    database = tmp_path / "positions.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE shadow_records "
+            "(record_id TEXT PRIMARY KEY, occurred_ms INTEGER NOT NULL, payload BLOB NOT NULL)"
+        )
+        connection.execute("CREATE TABLE shadow_trade_ids (trade_id TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO shadow_trade_ids(trade_id) VALUES ('42')")
+        record = {
+            "record_id": "old-fill",
+            "occurred_ms": 1000,
+            "details": {"symbol": "AAAUSDT", "trade_id": "42"},
+        }
+        connection.execute(
+            "INSERT INTO shadow_records(record_id, occurred_ms, payload) VALUES (?, ?, ?)",
+            ("old-fill", 1000, json.dumps(record).encode()),
+        )
+
+    store = PositionStore(database, tmp_path / "daily")
+
+    assert store.contains_trade_id("AAAUSDT", "42")
+    assert not store.contains_trade_id("BBBUSDT", "42")
 
 
 @pytest.mark.parametrize("chunks", [("15",), ("8", "7")])
@@ -280,6 +324,29 @@ def test_same_time_close_fills_keep_distinct_durable_ids(tmp_path: Path) -> None
     assert {record["details"]["trade_id"] for record in closes} == {"close-a", "close-b"}  # type: ignore[index]
 
 
+def test_duplicate_store_append_uses_sqlite_without_reading_jsonl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = PositionStore(tmp_path / "positions.sqlite", tmp_path / "daily")
+    record: dict[str, object] = {"record_id": "synthetic-record", "occurred_ms": 1_700_000_000_000}
+    assert store.append(record)
+    path = tmp_path / "daily" / "2023-11-14.jsonl"
+    original_open = Path.open
+    modes: list[str] = []
+
+    def tracked_open(
+        self: Path, mode: str = "r", *args: Any, **kwargs: Any
+    ) -> Any:
+        modes.append(mode)
+        return original_open(self, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Path, "open", cast(Any, tracked_open))
+        assert not store.append(record)
+    assert modes == []
+    assert path.read_bytes().count(b"\n") == 1
+
+
 def test_api_key_never_enters_shadow_records(tmp_path: Path) -> None:
     store = PositionStore(tmp_path / "positions.sqlite", tmp_path / "daily")
     ledger = PositionLedger("synthetic-account", store)
@@ -341,10 +408,11 @@ async def test_gap_recovery_retries_rest_then_fetches_trades_from_cursor() -> No
                     '{"e":"ACCOUNT_UPDATE","E":11,"a":{"m":"ORDER"}}'
                 )
                 buffer.ingest(pending)
-            return (_fill("gap-fill", "gap-order", "SELL", "1", "100"),)
+            return (_fill("gap-fill", "gap-order", "SELL", "0.5", "100"),)
 
     buffer = BoundedUserEventBuffer()
     ledger = PositionLedger("synthetic-account", MemorySink())
+    ledger.apply_fill(_fill("cursor-0", "seed-order", "SELL", "0.5", "100"))
     source = Source()
     delays: list[float] = []
 
@@ -363,11 +431,80 @@ async def test_gap_recovery_retries_rest_then_fetches_trades_from_cursor() -> No
     assert result.status == "CERTAIN"
     assert result.fenced_event_ids
     assert source.snapshot_calls == 3
-    assert source.trade_cursors == [None, "gap-fill"]
+    assert source.trade_cursors == ["cursor-0", "gap-fill"]
     assert delays == [1.0, 2.0]
     assert ledger.active_episode("SYNTHUSDT") is not None
+    assert ledger.active_episode("SYNTHUSDT").signed_quantity == Decimal("-1")  # type: ignore[union-attr]
     assert ledger.last_trade_id("SYNTHUSDT") == "gap-fill"
     assert buffer.health == "HEALTHY"
+
+
+@pytest.mark.asyncio
+async def test_missing_trade_cursor_skips_user_trades_and_uses_rest_adjustment() -> None:
+    class Source:
+        def __init__(self) -> None:
+            self.trade_calls = 0
+
+        async def position_risk(self, symbol: str) -> RecoverySnapshot:
+            return RecoverySnapshot(Decimal("-1"), 1_700_000_100_000, "snap", "cursor")
+
+        async def user_trades(
+            self, symbol: str, from_trade_id: str | None
+        ) -> tuple[Fill, ...]:
+            self.trade_calls += 1
+            return (_fill("old-close", "old-order", "BUY", "1", "100"),)
+
+    source = Source()
+    sink = MemorySink()
+    ledger = PositionLedger("synthetic-account", sink)
+    result = await recover_user_stream_gap(
+        BoundedUserEventBuffer(),
+        ledger,
+        source,
+        "SYNTHUSDT",
+        now_ms=lambda: 1_700_000_200_000,
+        step_size=Decimal("0.1"),
+    )
+    assert result.status == "ADJUSTED" and result.replayed_trades == 0
+    assert source.trade_calls == 0
+    assert ledger.active_episode("SYNTHUSDT") is not None
+    assert ledger.active_episode("SYNTHUSDT").signed_quantity == Decimal("-1")  # type: ignore[union-attr]
+    assert sink.records[0]["event_type"] == "RESYNC_ADJUSTMENT"
+
+
+@pytest.mark.asyncio
+async def test_user_trades_page_limit_marks_recovery_adjusted() -> None:
+    class Source:
+        async def position_risk(self, symbol: str) -> RecoverySnapshot:
+            return RecoverySnapshot(Decimal("-1"), 1_700_000_100_000, "snap", "cursor")
+
+        async def user_trades(
+            self, symbol: str, from_trade_id: str | None
+        ) -> tuple[Fill, ...]:
+            return tuple(
+                _fill(str(index), f"order-{index}", "SELL", "0.0018", "100")
+                for index in range(2, 502)
+            )
+
+    sink = MemorySink()
+    ledger = PositionLedger("synthetic-account", sink)
+    ledger.apply_fill(_fill("1", "seed", "SELL", "0.1", "100"))
+    result = await recover_user_stream_gap(
+        BoundedUserEventBuffer(),
+        ledger,
+        Source(),
+        "SYNTHUSDT",
+        now_ms=lambda: 1_700_000_200_000,
+        step_size=Decimal("0.001"),
+    )
+    episode = ledger.active_episode("SYNTHUSDT")
+    assert result.status == "ADJUSTED" and result.replayed_trades == 500
+    assert episode is not None and episode.ledger_quality == "ADJUSTED"
+    assert any(
+        isinstance(details := record.get("details"), dict)
+        and details.get("reason") == "USER_TRADES_PAGE_LIMIT_REACHED"
+        for record in sink.records
+    )
 
 
 @pytest.mark.asyncio
@@ -401,10 +538,12 @@ async def test_trade_recovery_failure_leaves_stream_degraded() -> None:
             raise RuntimeError("synthetic recovery failure")
 
     buffer = BoundedUserEventBuffer()
+    ledger = PositionLedger("synthetic-account", MemorySink())
+    ledger.apply_fill(_fill("seed-trade", "seed-order", "SELL", "0.5", "100"))
     with pytest.raises(RuntimeError, match="synthetic recovery failure"):
         await recover_user_stream_gap(
             buffer,
-            PositionLedger("synthetic-account", MemorySink()),
+            ledger,
             Source(),
             "SYNTHUSDT",
             now_ms=lambda: 1_700_000_200_000,
@@ -444,6 +583,7 @@ async def test_stale_snapshot_does_not_adjust_ledger_after_stream_crossing() -> 
     buffer = BoundedUserEventBuffer()
     sink = MemorySink()
     ledger = PositionLedger("synthetic-account", sink)
+    ledger.apply_fill(_fill("seed-trade", "seed-order", "SELL", "0.5", "100"))
     result = await recover_user_stream_gap(
         buffer,
         ledger,
@@ -541,7 +681,7 @@ def test_long_thesis_is_not_applicable_and_liquidation_sign_is_directional() -> 
     liq = engine.liquidation_proximity(
         long,
         liquidation_price=Decimal("95"),
-        rest_update_ms=20_000,
+        snapshot_received_ms=20_000,
         mark=Decimal("100"),
         mark_update_ms=20_000,
         now_ms=20_000,
@@ -550,6 +690,26 @@ def test_long_thesis_is_not_applicable_and_liquidation_sign_is_directional() -> 
     )
     assert liq is not None and liq["warning_id"] == "LIQ-PROXIMITY"
     assert liq["details"]["distance_percent"] == "5.00"  # type: ignore[index]
+
+
+def test_liquidation_freshness_uses_snapshot_receive_time() -> None:
+    _ledger, episode = _short_episode()
+    engine = _warning_engine(MemorySink())
+    now_ms = 1_700_000_000_000
+    position_update_time_ms = now_ms - 3_600_000
+    snapshot_received_ms = now_ms - 1_000
+    result = engine.liquidation_proximity(
+        episode,
+        liquidation_price=Decimal("110"),
+        snapshot_received_ms=snapshot_received_ms,
+        mark=Decimal("100"),
+        mark_update_ms=now_ms - 500,
+        now_ms=now_ms,
+        account_supported=True,
+        cross_margin=False,
+    )
+    assert position_update_time_ms < now_ms - 15_000
+    assert result is not None and result["warning_id"] == "LIQ-PROXIMITY"
 
 
 @pytest.mark.parametrize(
@@ -570,7 +730,7 @@ def test_liquidation_unknown_inputs_fail_closed(
     result = engine.liquidation_proximity(
         episode,
         liquidation_price=liq,
-        rest_update_ms=rest_ms,
+        snapshot_received_ms=rest_ms,
         mark=mark,
         mark_update_ms=mark_ms,
         now_ms=20_000,
@@ -578,6 +738,51 @@ def test_liquidation_unknown_inputs_fail_closed(
         cross_margin=True,
     )
     assert result is not None and result["event_type"] == "LIQ_PROXIMITY_UNKNOWN"
+
+
+def test_unknown_and_not_applicable_records_emit_only_on_state_changes() -> None:
+    sink = MemorySink()
+    ledger, short = _short_episode(sink)
+    long = ledger.apply_fill(
+        Fill("long-1", "long-order", "LONGUSDT", "BUY", Decimal("1"), Decimal("100"), 1000)
+    )[0]
+    engine = _warning_engine(sink)
+
+    first_unknown = engine.liquidation_proximity(
+        short,
+        liquidation_price=None,
+        snapshot_received_ms=20_000,
+        mark=Decimal("100"),
+        mark_update_ms=20_000,
+        now_ms=20_000,
+        account_supported=True,
+        cross_margin=False,
+    )
+    assert first_unknown is not None
+    assert engine.liquidation_proximity(
+        short,
+        liquidation_price=None,
+        snapshot_received_ms=20_001,
+        mark=Decimal("100"),
+        mark_update_ms=20_001,
+        now_ms=20_001,
+        account_supported=True,
+        cross_margin=False,
+    ) is None
+
+    thesis = ThesisInputs(frozenset(), {})
+    assert engine.thesis_broken(long, thesis, 20_000) is not None
+    assert engine.thesis_broken(long, thesis, 20_001) is None
+    add_input = _block_input("100", 20_000)
+    assert engine.add_blocked(long, add_input) is not None
+    assert engine.add_blocked(long, AddBlockInputs(
+        add_input.closed_mark,
+        add_input.closed_candle_ms + 1,
+        add_input.rule_state,
+        add_input.confirmed,
+        add_input.next_quantity,
+        add_input.r_live,
+    )) is None
 
 
 def test_liquidation_threshold_hysteresis_and_cross_basis() -> None:
@@ -588,7 +793,7 @@ def test_liquidation_threshold_hysteresis_and_cross_basis() -> None:
         return engine.liquidation_proximity(
             episode,
             liquidation_price=liquidation_price,
-            rest_update_ms=20_000,
+            snapshot_received_ms=20_000,
             mark=Decimal("100"),
             mark_update_ms=20_000,
             now_ms=20_000,
@@ -603,6 +808,34 @@ def test_liquidation_threshold_hysteresis_and_cross_basis() -> None:
     assert check(Decimal("136")) is None
     again = check(Decimal("132"))
     assert again is not None
+
+
+def test_liquidation_jump_emits_only_the_lowest_breached_threshold() -> None:
+    _ledger, episode = _short_episode()
+    engine = _warning_engine(MemorySink())
+    result = engine.liquidation_proximity(
+        episode,
+        liquidation_price=Decimal("110"),
+        snapshot_received_ms=20_000,
+        mark=Decimal("100"),
+        mark_update_ms=20_000,
+        now_ms=20_000,
+        account_supported=True,
+        cross_margin=False,
+    )
+    assert result is not None
+    assert result["details"]["distance_percent"] == "10.0"  # type: ignore[index]
+    assert result["details"]["threshold_percent"] == "14"  # type: ignore[index]
+    assert engine.liquidation_proximity(
+        episode,
+        liquidation_price=Decimal("110"),
+        snapshot_received_ms=20_000,
+        mark=Decimal("100"),
+        mark_update_ms=20_000,
+        now_ms=20_001,
+        account_supported=True,
+        cross_margin=False,
+    ) is None
 
 
 def test_add_blocked_uses_closed_candle_reasons_and_five_percent_steps() -> None:
@@ -622,6 +855,18 @@ def test_add_blocked_uses_closed_candle_reasons_and_five_percent_steps() -> None
     )
     assert invalidated is not None
     assert "PRICE_AT_OR_ABOVE_INVALIDATION" in invalidated["details"]["reasons"]  # type: ignore[index,operator]
+
+
+def test_add_blocked_rearms_price_stage_after_entry_reference_changes() -> None:
+    ledger, episode = _short_episode()
+    episode.invalidation = Decimal("150")
+    engine = _warning_engine(MemorySink())
+    first = engine.add_blocked(episode, _block_input("105", 100))
+    assert first is not None and first["details"]["next_price_stage"] == 1  # type: ignore[index]
+
+    ledger.apply_fill(_fill("2", "add-1", "SELL", "0.25", "110", 101))
+    second = engine.add_blocked(episode, _block_input("115.5", 200))
+    assert second is not None and second["details"]["next_price_stage"] == 1  # type: ignore[index]
 
 
 def test_degraded_health_suppresses_warnings_and_counts_missed_conditions() -> None:
