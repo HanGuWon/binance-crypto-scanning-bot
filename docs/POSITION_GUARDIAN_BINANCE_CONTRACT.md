@@ -1,6 +1,6 @@
 # Position Guardian Binance USDⓈ-M read contract
 
-Verified against the official Binance Developer Documentation on 2026-09-21.
+Verified against the official Binance Developer Documentation on 2026-10-14.
 The Guardian contract is deliberately limited to read-only REST calls. This
 task adds no order placement, amendment, cancellation, or user-stream writer.
 
@@ -22,20 +22,31 @@ This package does not contact either host during tests.
 | --- | --- | --- | --- |
 | server clock | `GET /fapi/v1/time` | NONE | integer `serverTime` in milliseconds |
 | account positions | `GET /fapi/v3/positionRisk` | USER_DATA, signed | symbol, position side, amount, entry/mark price, PnL, update time |
+| account configuration | `GET /fapi/v1/accountConfig` | USER_DATA, signed | account configuration flags |
+| symbol configuration | `GET /fapi/v1/symbolConfig` | USER_DATA, signed | symbol margin/leverage configuration |
+| user trades | `GET /fapi/v1/userTrades` | USER_DATA, signed | account fills, optionally from `fromId` |
 | position mode | `GET /fapi/v1/positionSide/dual` | USER_DATA, signed | boolean `dualSidePosition`; `true` is Hedge Mode and `false` is One-way Mode |
 | normal open orders | `GET /fapi/v1/openOrders` | USER_DATA, signed | open stop/protective and other order rows |
 | algo open orders | `GET /fapi/v1/openAlgoOrders` | USER_DATA, signed | conditional TP/SL/trailing rows |
 | symbol filters | `GET /fapi/v1/exchangeInfo` | NONE | `PRICE_FILTER.tickSize`, `LOT_SIZE.stepSize/minQty`, symbol status |
 
-The position endpoint is treated as a REST snapshot and is intended to be
-paired with `ACCOUNT_UPDATE` in the later L50-06 stream task. The open algo
-order endpoint is parsed as an array, matching the current official example.
+The v3 position endpoint returns symbols with a position or open order; a missing
+symbol is interpreted by consumers as a zero-position observation. Its optional
+`liquidationPrice`, `breakEvenPrice`, `notional`, `isolatedMargin`, `maintMargin`,
+and `adl` fields are exposed without inferring missing values. Optional decimal
+values numerically equal to zero normalize to `None` (including strings such as
+`"0.00"`); this also applies to existing optional order prices such as
+`stopPrice`. The `adl` parser accepts an integer or numeric string. Negative
+`notional` is valid.
+The open algo order endpoint is parsed as an array, matching the current official example.
 
 ## USDⓈ-M private user stream
 
 The current official USDⓈ-M User Data Streams page was rechecked on
-2026-09-21. A listenKey is created and kept alive through the official
-`/fapi/v1/listenKey` lifecycle, is valid for 60 minutes after creation, and
+2026-10-14. High-frequency public streams use `/public`, market streams use
+`/market`, and private user streams use `/private`. A listenKey is created and
+kept alive through the official `/fapi/v1/listenKey` lifecycle, is valid for 60
+minutes after creation, and
 the raw stream URL is
 `wss://fstream.binance.com/private/ws/<listenKey>`. A single connection is
 valid for 24 hours, so reconnect is expected. The documented same-event-type
@@ -65,9 +76,17 @@ query string.
 
 The implementation uses a bounded retry schedule for transport failures,
 HTTP 418/429, and HTTP 5xx responses. `asyncio.CancelledError` is propagated
-without retry. Authentication failures and malformed payloads are terminal.
+without retry. `retry_on_418=False` fails immediately on HTTP 418 while leaving
+429 and other retry behavior unchanged; the default is `True` for backward
+compatibility. Authentication failures and malformed payloads are terminal.
 Binance error `-1021` is reported as temporary clock skew so the later runtime
 can resynchronize before considering a position manageable.
+
+The `ACCOUNT_UPDATE` cross-margin funding form carries balance `B` and symbol
+`S` without position `P`; consumers must treat it as a funding observation only.
+Conditional stop and take-profit orders moved to Binance's Algo Service.
+Guardian reads them through `GET /fapi/v1/openAlgoOrders` and observes
+`ALGO_UPDATE`.
 
 Secrets never appear in error messages, parsed models, recorded fixtures, or
 test output. Recorded JSON fixtures are synthetic and contain no account

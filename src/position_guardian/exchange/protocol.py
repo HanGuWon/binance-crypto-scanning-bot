@@ -78,6 +78,12 @@ class PositionSnapshot:
     mark_price: Decimal
     unrealized_profit: Decimal
     update_time_ms: int
+    liquidation_price: Decimal | None = None
+    break_even_price: Decimal | None = None
+    notional: Decimal | None = None
+    isolated_margin: Decimal | None = None
+    maint_margin: Decimal | None = None
+    adl: int | None = None
 
 
 @dataclass(frozen=True)
@@ -138,3 +144,11 @@ class PrivateReadClient(Protocol):
     async def symbol_filters(
         self, symbol: str | None = None
     ) -> tuple[SymbolFilterSnapshot, ...]: ...
+
+    async def account_config(self) -> dict[str, object]: ...
+
+    async def symbol_config(self, symbol: str) -> tuple[dict[str, object], ...]: ...
+
+    async def user_trades(
+        self, symbol: str, from_id: int | None = None
+    ) -> tuple[dict[str, object], ...]: ...
