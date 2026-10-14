@@ -1,0 +1,4 @@
+[
+  {"trade_id": "9001", "order_id": "7001", "symbol": "SYNTHUSDT", "side": "SELL", "quantity": "8", "price": "100", "occurred_ms": 1700000000000},
+  {"trade_id": "9002", "order_id": "7002", "symbol": "SYNTHUSDT", "side": "BUY", "quantity": "15", "price": "110", "occurred_ms": 1700000010000}
+]

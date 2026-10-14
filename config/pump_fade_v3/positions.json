@@ -1,0 +1,26 @@
+{
+  "schema": "pump_fade_v3_positions_v1",
+  "enabled": false,
+  "rule_context": "UNAVAILABLE",
+  "storage": {
+    "mode": "append_only_sqlite_and_daily_jsonl",
+    "retention_days": 30
+  },
+  "policy_references": {
+    "max_adds": "policy_v3.ladder.primary_max_adds",
+    "legacy_adds": "policy_v3.ladder.legacy_adds",
+    "add_size_q0": "policy_v3.ladder.primary_max_each_add_q0",
+    "legacy_spacing_percent": "policy_v3.ladder.legacy_add_spacing_percent",
+    "risk_reserve_bps": "policy_v3.ladder.risk_cost_reserve_roundtrip_bps",
+    "liquidation_distance_percent": "policy_v3.replay.liquidation_distance_percent"
+  },
+  "activation": {
+    "adverse_continuation": {"enabled": false, "rule_hash": null},
+    "runner": {"enabled": false, "rule_hash": null}
+  },
+  "limits": {
+    "max_market_symbols": 32,
+    "max_buffered_events": 4096,
+    "max_dedupe_ids": 16384
+  }
+}

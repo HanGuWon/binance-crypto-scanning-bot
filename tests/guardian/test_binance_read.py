@@ -15,6 +15,7 @@ from position_guardian.exchange.protocol import (
     ClockSkewError,
     GuardianReadError,
     MalformedPayloadError,
+    RateLimitError,
     UnknownPositionModeError,
 )
 from position_guardian.exchange.signing import canonical_query, sign_query
@@ -214,3 +215,104 @@ async def test_retry_sleep_preserves_cancellation_path() -> None:
     async with http_client:
         with pytest.raises(asyncio.CancelledError):
             await client.server_time()
+
+
+@pytest.mark.parametrize("adl", [3, "3"])
+@pytest.mark.asyncio
+async def test_position_v3_optional_fields_normalize_zero_and_accept_negative_notional(
+    adl: int | str,
+) -> None:
+    row = {
+        "symbol": "SYNTHUSDT",
+        "positionSide": "BOTH",
+        "positionAmt": "-1",
+        "entryPrice": "10",
+        "markPrice": "11",
+        "unRealizedProfit": "-1",
+        "updateTime": 1700000000000,
+        "liquidationPrice": "0.00000000",
+        "breakEvenPrice": "10.25",
+        "notional": "-11",
+        "isolatedMargin": "0.00",
+        "maintMargin": "0.12",
+        "adl": adl,
+    }
+    client, http_client = _client(lambda _request: httpx.Response(200, json=[row]))
+    async with http_client:
+        position = (await client.positions())[0]
+    assert position.liquidation_price is None
+    assert position.break_even_price == Decimal("10.25")
+    assert position.notional == Decimal("-11")
+    assert position.isolated_margin is None
+    assert position.maint_margin == Decimal("0.12")
+    assert position.adl == 3
+
+
+@pytest.mark.asyncio
+async def test_read_addendum_methods_are_signed_gets_with_expected_queries() -> None:
+    payloads = {
+        "/fapi/v1/accountConfig": {"dualSidePosition": False, "multiAssetsMargin": False},
+        "/fapi/v1/symbolConfig": [{"symbol": "SYNTHUSDT", "marginType": "isolated"}],
+        "/fapi/v1/userTrades": [{"symbol": "SYNTHUSDT", "id": 9}],
+    }
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=payloads[request.url.path])
+
+    client, http_client = _client(handler)
+    async with http_client:
+        assert (await client.account_config())["dualSidePosition"] is False
+        assert (await client.symbol_config("synthusdt"))[0]["symbol"] == "SYNTHUSDT"
+        assert (await client.user_trades("SYNTHUSDT", 8))[0]["id"] == 9
+    assert all(request.method == "GET" for request in requests)
+    assert requests[1].url.params["symbol"] == "SYNTHUSDT"
+    assert requests[2].url.params["fromId"] == "8"
+
+
+@pytest.mark.asyncio
+async def test_418_is_terminal_immediately_when_retry_is_disabled() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(418, json=_fixture("error_rate_limit.json"))
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    client = BinancePrivateReadClient(
+        api_key="fixture-api-key",
+        api_secret="fixture-api-secret",
+        retry_on_418=False,
+        retry_delays_seconds=(0.25, 0.5),
+        client=http_client,
+    )
+    async with http_client:
+        with pytest.raises(RateLimitError) as error:
+            await client.server_time()
+    assert error.value.status_code == 418
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_418_retries_by_default_for_backward_compatibility() -> None:
+    responses = [
+        httpx.Response(418, json=_fixture("error_rate_limit.json")),
+        httpx.Response(200, json=_fixture("server_time.json")),
+    ]
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return responses.pop(0)
+
+    client, http_client = _client(handler, retry_delays_seconds=(0.25,))
+    async with http_client:
+        assert (await client.server_time()).server_time_ms == 1700000000123
+
+
+@pytest.mark.asyncio
+async def test_user_trades_rejects_negative_from_id_before_request() -> None:
+    client, http_client = _client(lambda _request: httpx.Response(200, json=[]))
+    async with http_client:
+        with pytest.raises(ValueError, match="from_id"):
+            await client.user_trades("SYNTHUSDT", -1)
