@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from signalbot.alerts.embeds import build_discord_payload
@@ -36,10 +38,16 @@ from signalbot.persistence.repository import SqlRepository
 from signalbot.prospective.pilot_guard import ShadowPilotGuard
 from signalbot.prospective.public_structure_flow_v2 import PublicStructureFlowShadowObserver
 from signalbot.regime.market import MarketRegimeEngine
+from signalbot.signals.episodes import (
+    FOUR_HOUR_BARS,
+    TrendZoneTracker,
+    build_position_line,
+)
 from signalbot.signals.market_watch import MarketWatchEngine
 from signalbot.signals.positions import (
     PaperLifecycleCheckpoint,
     PaperPositionLifecycle,
+    PaperRecoveryError,
 )
 from signalbot.signals.rules import SignalRuleEngine
 from signalbot.signals.state_machine import SignalStateMachine
@@ -48,6 +56,21 @@ LOGGER = logging.getLogger(__name__)
 DecisionHandler = Callable[[SignalDecision], Awaitable[object]]
 GapRecoverer = Callable[[CandleGap], Awaitable[list[Candle]]]
 FEATURE_HISTORY_LIMIT = 4
+GAP_RECOVERY_POLICY = "paper_gap_recovery_v1"
+
+
+@dataclass(frozen=True, slots=True)
+class _AlertInputs:
+    """Closed-bar facts the alert presentation needs; built only when it is enabled."""
+
+    feature: FeatureSnapshot
+    candles: list[Candle]
+
+
+@dataclass(slots=True)
+class _ContiguityHold:
+    held_bars: int = 0
+    released_through_open_ms: int = -1
 
 
 class MarketRuntime:
@@ -85,7 +108,19 @@ class MarketRuntime:
             market=market,
             primary_interval=settings.binance.primary_interval,
             maximum_symbols=settings.binance.top_n,
+            tag_tracking_interruption=settings.runtime.paper_gap_stats_split,
         )
+        alerts = settings.alerts
+        self.zone_tracker: TrendZoneTracker | None = (
+            TrendZoneTracker(
+                suppress=alerts.repeat_suppression,
+                max_hours=alerts.repeat_suppression_max_hours,
+                maximum_symbols=settings.binance.top_n,
+            )
+            if alerts.alert_position_line or alerts.repeat_suppression
+            else None
+        )
+        self._contiguity: dict[tuple[str, str], _ContiguityHold] = {}
         self.anomaly = AnomalyDetector(settings.signals)
         self.market_watch = MarketWatchEngine(settings.alerts.market_watch)
         self.public_structure_flow_shadow: PublicStructureFlowShadowObserver | None = None
@@ -214,6 +249,11 @@ class MarketRuntime:
         self.state_machine.prune_symbols(surveillance | watch)
         self.state_machine.prune_directional_states(tradable)
         self.paper_positions.prune_symbols(tradable)
+        if self.zone_tracker is not None:
+            self.zone_tracker.prune_symbols(tradable)
+        self._contiguity = {
+            key: hold for key, hold in self._contiguity.items() if key[0] in retained_market_data
+        }
         self._features = {
             key: feature
             for key, feature in self._features.items()
@@ -362,18 +402,22 @@ class MarketRuntime:
         gap = self.candles.detect_latest_gap(candle)
         recovered = True
         if gap is not None:
-            if (
+            paper_symbol = (
                 candle.interval == self.settings.binance.primary_interval
                 and candle.symbol in self.tradable_symbols
-            ):
-                checkpoint = self.paper_positions.checkpoint_symbol(candle.symbol)
-                try:
-                    gap_exits = self.paper_positions.reset_for_gap(candle)
-                except Exception:
-                    self.paper_positions.restore_checkpoint(checkpoint)
-                    raise
-                await self._publish_paper_transition(gap_exits, checkpoint)
-            recovered = await self._recover_gap(gap)
+            )
+            if paper_symbol and self.settings.runtime.paper_gap_recovery:
+                recovered = await self._recover_gap_before_paper(candle, gap)
+            else:
+                if paper_symbol:
+                    checkpoint = self.paper_positions.checkpoint_symbol(candle.symbol)
+                    try:
+                        gap_exits = self.paper_positions.reset_for_gap(candle)
+                    except Exception:
+                        self.paper_positions.restore_checkpoint(checkpoint)
+                        raise
+                    await self._publish_paper_transition(gap_exits, checkpoint)
+                recovered = await self._recover_gap(gap, candle=candle)
         if not recovered:
             if candle.interval == self.settings.binance.primary_interval:
                 self._record_public_structure_flow_missing(
@@ -400,6 +444,10 @@ class MarketRuntime:
             )
             return
         self._register_public_structure_flow_opportunity(candle, feature)
+        if self.settings.runtime.require_contiguous_bars and self._hold_for_missing_bars(candle):
+            if candle.symbol in self.tradable_symbols:
+                await self._advance_paper_without_signals(candle, feature)
+            return
         new_decisions: list[SignalDecision] = []
         prior_candles = self.candles.get(candle.market, candle.symbol, candle.interval)
         pressure = None
@@ -426,8 +474,12 @@ class MarketRuntime:
         if candle.symbol not in self.tradable_symbols:
             return
         contexts = self._context_features(candle.symbol, feature.event_time_ms)
+        alert_inputs: _AlertInputs | None = None
+        if self.zone_tracker is not None:
+            self.zone_tracker.update(feature, contexts)
+            alert_inputs = _AlertInputs(feature, prior_candles[-FOUR_HOUR_BARS:])
         for evaluation in self.rule_engine.evaluate(feature, contexts):
-            decision = await self._process(evaluation)
+            decision = await self._process(evaluation, alert_inputs=alert_inputs)
             if decision is not None:
                 new_decisions.append(decision)
         checkpoint = self.paper_positions.checkpoint_symbol(candle.symbol)
@@ -442,13 +494,66 @@ class MarketRuntime:
             raise
         await self._publish_paper_transition(exits, checkpoint)
 
-    async def _recover_gap(self, gap: CandleGap) -> bool:
+    async def _recover_gap(self, gap: CandleGap, *, candle: Candle | None = None) -> bool:
+        """Bounded REST fill of one gap; ``True`` only when the whole range was applied."""
+
+        started = time.monotonic()
+        ok, rows = await self._recover_gap_rows(gap)
+        if candle is not None:
+            self._log_gap_event(
+                gap, candle, ok=ok, recovered_bars=len(rows), started=started,
+                paper_policy="legacy",
+            )
+        return ok
+
+    def _log_gap_event(
+        self,
+        gap: CandleGap,
+        candle: Candle,
+        *,
+        ok: bool,
+        recovered_bars: int,
+        started: float,
+        paper_policy: str,
+        paper_result: str = "n/a",
+        paper_exit_reasons: tuple[str, ...] = (),
+    ) -> None:
+        """One structured line per gap: range, REST outcome, duration, PAPER outcome."""
+
+        if not self.settings.runtime.paper_gap_log:
+            return
+        step_ms = interval_to_milliseconds(gap.interval)
+        LOGGER.info(
+            "candle gap handled",
+            extra={
+                "market": gap.market.value,
+                "symbol": gap.symbol,
+                "fields": {
+                    "event": "candle_gap",
+                    "interval": gap.interval,
+                    "gap_start_open_ms": gap.start_time_ms,
+                    "gap_end_ms": gap.end_time_ms,
+                    "missing_bars": (gap.end_time_ms - gap.start_time_ms + 1) // step_ms,
+                    "first_return_open_ms": candle.open_time_ms,
+                    "rest_ok": ok,
+                    "recovered_bars": recovered_bars,
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "paper_policy": paper_policy,
+                    "paper_result": paper_result,
+                    "paper_exit_reasons": list(paper_exit_reasons),
+                },
+            },
+        )
+
+    async def _recover_gap_rows(
+        self, gap: CandleGap
+    ) -> tuple[bool, list[tuple[Candle, FeatureSnapshot | None]]]:
         if self.gap_recoverer is None:
             LOGGER.warning(
                 "candle gap detected without recovery provider",
                 extra={"market": gap.market.value, "symbol": gap.symbol},
             )
-            return False
+            return False, []
         try:
             recovered = await self.gap_recoverer(gap)
         except Exception as exc:
@@ -457,7 +562,7 @@ class MarketRuntime:
                 extra={"market": gap.market.value, "symbol": gap.symbol},
                 exc_info=exc,
             )
-            return False
+            return False, []
         step_ms = interval_to_milliseconds(gap.interval)
         expected_opens = list(range(gap.start_time_ms, gap.end_time_ms + 1, step_ms))
         ordered = sorted(recovered, key=lambda item: item.open_time_ms)
@@ -479,15 +584,16 @@ class MarketRuntime:
                     "received": len(ordered),
                 },
             )
-            return False
+            return False, []
         inserted = 0
+        rows: list[tuple[Candle, FeatureSnapshot | None]] = []
         for candle in ordered:
             if not self.candles.add(candle):
-                return False
+                return False, rows
             inserted += 1
             if self.settings.runtime.persist_candles:
                 self.repository.save_candle(candle)
-            self._update_derived_for_candle(candle)
+            rows.append((candle, self._update_derived_for_candle(candle)))
             observer = self.public_structure_flow_shadow
             if observer is not None and candle.interval == "1m":
                 try:
@@ -502,7 +608,75 @@ class MarketRuntime:
         LOGGER.info(
             "recovered missing candles", extra={"market": gap.market.value, "symbol": gap.symbol}
         )
-        return inserted == len(expected_opens)
+        return inserted == len(expected_opens), rows
+
+    async def _recover_gap_before_paper(self, candle: Candle, gap: CandleGap) -> bool:
+        """``paper_gap_recovery``: finish the bounded REST fill first, then decide PAPER.
+
+        When the whole range is recovered and every bar has an indicator row, the bars
+        are replayed in order through the existing PAPER position only (exits of an
+        already open position; no new entry, no old signal alert). Otherwise PAPER ends
+        with the same ``data_gap`` exit as before.
+        """
+
+        started = time.monotonic()
+        ok, rows = await self._recover_gap_rows(gap)
+        checkpoint = self.paper_positions.checkpoint_symbol(candle.symbol)
+        had_position = self.paper_positions.has_position(candle.symbol)
+        exits: list[SignalDecision] = []
+        continued = False
+        if ok:
+            try:
+                for recovered_candle, feature in rows:
+                    if feature is None:
+                        raise PaperRecoveryError("no indicator row for a recovered bar")
+                    exits.extend(
+                        self.paper_positions.advance_recovered_candle(recovered_candle, feature)
+                    )
+                continued = True
+            except PaperRecoveryError as exc:
+                self.paper_positions.restore_checkpoint(checkpoint)
+                exits = []
+                LOGGER.warning(
+                    "recovered bars could not continue the PAPER position; ending it as data_gap",
+                    extra={"market": candle.market.value, "symbol": candle.symbol},
+                    exc_info=exc,
+                )
+            except Exception:
+                self.paper_positions.restore_checkpoint(checkpoint)
+                raise
+        if continued:
+            observed_ms = self.clock.now_ms()
+            exits = [
+                item.model_copy(
+                    update={
+                        "metadata": {
+                            **item.metadata,
+                            "late_observation": True,
+                            "observed_wall_time_ms": observed_ms,
+                            "gap_recovery_policy": GAP_RECOVERY_POLICY,
+                        }
+                    }
+                )
+                for item in exits
+            ]
+            paper_result = (
+                "no_position" if not had_position else "exited" if exits else "continued"
+            )
+        else:
+            try:
+                exits = self.paper_positions.reset_for_gap(candle)
+            except Exception:
+                self.paper_positions.restore_checkpoint(checkpoint)
+                raise
+            paper_result = "data_gap" if exits else "no_position"
+        self._log_gap_event(
+            gap, candle, ok=ok, recovered_bars=len(rows), started=started,
+            paper_policy=GAP_RECOVERY_POLICY, paper_result=paper_result,
+            paper_exit_reasons=tuple(str(item.metadata.get("exit_reason")) for item in exits),
+        )
+        await self._publish_paper_transition(exits, checkpoint)
+        return ok
 
     def maintain_public_structure_flow_shadow(self) -> None:
         """Run bounded shadow expiry/retry work on an existing scanner maintenance clock."""
@@ -681,8 +855,82 @@ class MarketRuntime:
                 exc_info=exc,
             )
 
+    def _hold_for_missing_bars(self, candle: Candle) -> bool:
+        """``require_contiguous_bars``: hold signal evaluation while the indicator input
+        window still contains an unrecovered hole.
+
+        The hold is bounded: after ``contiguity_hold_limit_bars`` consecutive held bars
+        the holes seen so far are acknowledged (logged once) and no longer block, so a
+        delisting, trading halt or permanently missing exchange bar cannot freeze a
+        symbol. The state clears itself once the holes leave the window.
+        """
+
+        runtime = self.settings.runtime
+        key = (candle.symbol, candle.interval)
+        missing = self.candles.missing_opens(
+            candle.market, candle.symbol, candle.interval, runtime.contiguity_window_bars
+        )
+        if not missing:
+            self._contiguity.pop(key, None)
+            return False
+        newest_hole = max(missing)
+        hold = self._contiguity.setdefault(key, _ContiguityHold())
+        if newest_hole <= hold.released_through_open_ms:
+            return False
+        hold.held_bars += 1
+        if hold.held_bars > runtime.contiguity_hold_limit_bars:
+            hold.released_through_open_ms = newest_hole
+            hold.held_bars = 0
+            LOGGER.warning(
+                "indicator window hole acknowledged after hold limit; evaluation resumes",
+                extra={
+                    "market": candle.market.value,
+                    "symbol": candle.symbol,
+                    "fields": {
+                        "event": "contiguity_released",
+                        "interval": candle.interval,
+                        "missing_bars": len(missing),
+                        "newest_missing_open_ms": newest_hole,
+                        "hold_limit_bars": runtime.contiguity_hold_limit_bars,
+                    },
+                },
+            )
+            return False
+        if hold.held_bars == 1:
+            LOGGER.warning(
+                "holding signal evaluation: indicator window has missing bars",
+                extra={
+                    "market": candle.market.value,
+                    "symbol": candle.symbol,
+                    "fields": {
+                        "event": "contiguity_hold",
+                        "interval": candle.interval,
+                        "missing_bars": len(missing),
+                        "newest_missing_open_ms": newest_hole,
+                    },
+                },
+            )
+        return True
+
+    async def _advance_paper_without_signals(
+        self, candle: Candle, feature: FeatureSnapshot
+    ) -> None:
+        """Keep an open PAPER position tracking while signal evaluation is held."""
+
+        checkpoint = self.paper_positions.checkpoint_symbol(candle.symbol)
+        try:
+            exits = self.paper_positions.on_closed_candle(candle, feature, [])
+        except Exception:
+            self.paper_positions.restore_checkpoint(checkpoint)
+            raise
+        await self._publish_paper_transition(exits, checkpoint)
+
     async def _process(
-        self, evaluation: RuleEvaluation, *, delivery_allowed: bool = True,
+        self,
+        evaluation: RuleEvaluation,
+        *,
+        delivery_allowed: bool = True,
+        alert_inputs: _AlertInputs | None = None,
     ) -> SignalDecision | None:
         if evaluation.metadata.get("market_watch") is True:
             if not evaluation.triggered:
@@ -699,18 +947,53 @@ class MarketRuntime:
         decision = self.state_machine.process(evaluation)
         if decision is None:
             return None
-        return await self._publish_decision(decision)
+        return await self._publish_decision(decision, alert_inputs=alert_inputs)
 
-    async def _publish_decision(self, decision: SignalDecision) -> SignalDecision | None:
-        if not self._persist_decision(decision):
+    async def _publish_decision(
+        self, decision: SignalDecision, *, alert_inputs: _AlertInputs | None = None
+    ) -> SignalDecision | None:
+        if not self._persist_decision(decision, alert_inputs=alert_inputs):
             return None
         self.decision_count += 1
         await self.decision_handler(decision)
         return decision
 
+    def _apply_zone_policy(
+        self, decision: SignalDecision, delivery_enabled: bool, alert_inputs: _AlertInputs
+    ) -> tuple[SignalDecision, bool, str | None]:
+        """Zone ordinal, optional position line and optional repeat suppression.
+
+        A suppressed repeat is still stored (signal row plus a disabled outbox row,
+        tagged ``suppressed_repeat``) and still reaches PAPER exactly as before; only
+        its Discord delivery is withheld.
+        """
+
+        tracker = self.zone_tracker
+        if tracker is None:
+            return decision, delivery_enabled, None
+        alerts = self.settings.alerts
+        assessment = tracker.register(decision)
+        metadata = {
+            **decision.metadata,
+            "alert_episode_ordinal": assessment.ordinal,
+            "alert_episode_start_ms": assessment.start_ms,
+        }
+        if assessment.suppressed and alerts.repeat_suppression:
+            metadata["suppressed_repeat"] = True
+            delivery_enabled = False
+        line: str | None = None
+        if alerts.alert_position_line:
+            line = build_position_line(
+                direction=decision.direction,
+                ordinal=assessment.ordinal,
+                feature=alert_inputs.feature,
+                candles=alert_inputs.candles,
+            ).text
+        return decision.model_copy(update={"metadata": metadata}), delivery_enabled, line
+
     def _persist_decision(
         self, decision: SignalDecision, *, observation: RuleEvaluation | None = None,
-        delivery_allowed: bool = True,
+        delivery_allowed: bool = True, alert_inputs: _AlertInputs | None = None,
     ) -> bool:
         """Durably store one immutable signal/outbox intent without dispatching it."""
 
@@ -726,10 +1009,21 @@ class MarketRuntime:
             cooldown_ms = self.settings.alerts.market_watch.event_cooldown_seconds * 1000
             if previous_ms is not None and decision.event_time_ms - previous_ms < cooldown_ms:
                 delivery_enabled = False
+        position_line: str | None = None
+        if (
+            alert_inputs is not None
+            and self.zone_tracker is not None
+            and TrendZoneTracker.applies(decision)
+        ):
+            decision, delivery_enabled, position_line = self._apply_zone_policy(
+                decision, delivery_enabled, alert_inputs
+            )
         payload = build_discord_payload(
             decision,
             self.settings.alerts.discord_username,
             message_style=self.settings.alerts.message_style,
+            wording_v2=self.settings.alerts.alert_wording_v2,
+            position_line=position_line,
         )
         if observation is not None:
             return self.repository.save_signal_and_enqueue(

@@ -35,6 +35,16 @@ class ExitReason(StrEnum):
     END_OF_DATA = "end_of_data"
 
 
+TRACKING_INTERRUPTED_METADATA: dict[str, object] = {
+    "exit_class": "tracking_interrupted",
+    "censored": True,
+}
+
+
+class PaperRecoveryError(RuntimeError):
+    """Recovered bars cannot be applied to the PAPER state in order."""
+
+
 @dataclass(slots=True)
 class PaperPosition:
     decision: SignalDecision
@@ -207,9 +217,11 @@ class PaperPositionLifecycle:
         market: Market,
         primary_interval: str,
         maximum_symbols: int,
+        tag_tracking_interruption: bool = False,
     ) -> None:
         if maximum_symbols < 1:
             raise ValueError("maximum_symbols must be positive")
+        self.tag_tracking_interruption = tag_tracking_interruption
         self.settings = settings
         self.rule_version = rule_version
         self.market = market
@@ -242,6 +254,10 @@ class PaperPositionLifecycle:
             or state.pending_entry is not None
             or state.pending_exit is not None
         )
+
+    def has_position(self, symbol: str) -> bool:
+        state = self._states.get(symbol.upper())
+        return state is not None and state.position is not None
 
     def checkpoint_symbol(self, symbol: str) -> PaperLifecycleCheckpoint:
         """Snapshot only one bounded symbol state before attempting persistence."""
@@ -279,28 +295,70 @@ class PaperPositionLifecycle:
         if state is None or state.position is None:
             return []
         regime_feature = state.last_closed_feature
-        return [
-            self._exit_decision(
-                state.position,
-                reason=ExitReason.DATA_GAP,
-                price=float(candle.open),
-                fill_time_ms=candle.open_time_ms,
-                observed_at_ms=candle.close_time_ms,
-                held_bars=max(0, state.bar_index - state.position.entry_index + 1),
-                execution_model="paper_first_post_gap_open",
-                regime_feature=regime_feature,
-                regime_context_source=(
-                    "last_pre_gap_closed_primary"
-                    if regime_feature is not None
-                    else "entry_signal_fallback"
-                ),
-                regime_observed_at_ms=(
-                    regime_feature.event_time_ms
-                    if regime_feature is not None
-                    else state.position.decision.event_time_ms
-                ),
+        interrupted = self._exit_decision(
+            state.position,
+            reason=ExitReason.DATA_GAP,
+            price=float(candle.open),
+            fill_time_ms=candle.open_time_ms,
+            observed_at_ms=candle.close_time_ms,
+            held_bars=max(0, state.bar_index - state.position.entry_index + 1),
+            execution_model="paper_first_post_gap_open",
+            regime_feature=regime_feature,
+            regime_context_source=(
+                "last_pre_gap_closed_primary"
+                if regime_feature is not None
+                else "entry_signal_fallback"
+            ),
+            regime_observed_at_ms=(
+                regime_feature.event_time_ms
+                if regime_feature is not None
+                else state.position.decision.event_time_ms
+            ),
+        )
+        if self.tag_tracking_interruption:
+            # Label only: this is a censored observation, not a completed exit. The
+            # reason, price, fill time and event ID are unchanged.
+            interrupted = interrupted.model_copy(
+                update={"metadata": {**interrupted.metadata, **TRACKING_INTERRUPTED_METADATA}}
             )
-        ]
+        return [interrupted]
+
+    def advance_recovered_candle(
+        self, candle: Candle, feature: FeatureSnapshot
+    ) -> list[SignalDecision]:
+        """Advance an *existing* PAPER position through one REST-recovered closed bar.
+
+        Only exits of a position that was already open before the gap can result. A
+        pending (not yet opened) entry is discarded and no new entry, opposite-signal
+        exit or alert is created from the past bar. The caller must feed the recovered
+        bars in order and treat ``PaperRecoveryError`` as "cannot continue".
+        """
+
+        if not self.settings.enabled:
+            return []
+        if not self._is_primary_closed_candle(candle):
+            raise ValueError("paper lifecycle requires a closed primary candle")
+        self._validate_feature(candle, feature)
+        state = self._states.get(candle.symbol.upper())
+        if state is None:
+            return []
+        if state.last_open_time_ms is None:
+            raise PaperRecoveryError("paper state has no processed bar to continue from")
+        if candle.open_time_ms <= state.last_open_time_ms:
+            return []
+        if candle.open_time_ms - state.last_open_time_ms != self.interval_ms:
+            raise PaperRecoveryError("recovered bar does not follow the last processed bar")
+        exits: list[SignalDecision] = []
+        state.pending_entry = None
+        state.last_open_time_ms = candle.open_time_ms
+        state.bar_index += 1
+        self._advance_existing_position(state, candle, feature, exits)
+        if state.position is not None:
+            state.pending_exit = self.engine.after_close(
+                state.position, candle, feature, state.bar_index, False
+            )
+        state.last_closed_feature = feature
+        return exits
 
     def on_closed_candle(
         self,

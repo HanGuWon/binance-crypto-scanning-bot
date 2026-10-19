@@ -210,6 +210,12 @@ class AlertSettings(StrictModel):
     max_attempts: int = Field(default=3, ge=1, le=10)
     timeout_seconds: float = Field(default=10, ge=1, le=60)
     outbox_max_active_items: int = Field(default=10_000, ge=100, le=1_000_000)
+    # Stage-1 presentation controls. All default off so an untouched config keeps
+    # the exact event IDs, payloads and delivery intents of the previous release.
+    alert_wording_v2: bool = False
+    alert_position_line: bool = False
+    repeat_suppression: bool = False
+    repeat_suppression_max_hours: int = Field(default=12, ge=1, le=168)
 
     @field_validator("discord_username", mode="before")
     @classmethod
@@ -252,6 +258,14 @@ class RuntimeSettings(StrictModel):
         ge=1_048_576,
         le=10_995_116_277_760,
     )
+    # PAPER data_gap handling. B1/B3 only change labelling and logging; B2/B4 change
+    # behaviour and therefore default off.
+    paper_gap_stats_split: bool = True
+    paper_gap_log: bool = True
+    paper_gap_recovery: bool = False
+    require_contiguous_bars: bool = False
+    contiguity_window_bars: int = Field(default=210, ge=20, le=600)
+    contiguity_hold_limit_bars: int = Field(default=48, ge=1, le=600)
 
 
 class Settings(StrictModel):

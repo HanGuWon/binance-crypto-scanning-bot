@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from dataclasses import dataclass
+from itertools import pairwise
 
 from signalbot.domain.enums import Market
 from signalbot.domain.models import Candle
@@ -69,6 +70,30 @@ class CandleStore:
         return CandleGap(
             candle.market, candle.symbol, candle.interval, expected, candle.open_time_ms - 1
         )
+
+    def missing_opens(
+        self, market: Market, symbol: str, interval: str, window: int
+    ) -> list[int]:
+        """Open times missing *between stored bars* of the latest ``window`` intervals.
+
+        History that simply starts later than the window (a recent listing, a fresh
+        bootstrap) is not a hole; only a stored bar followed by a later stored bar with
+        bars missing in between is.
+        """
+
+        if window < 2:
+            raise ValueError("window must cover at least two bars")
+        series = self._series.get((market, symbol.upper(), interval))
+        if not series or len(series) < 2:
+            return []
+        step = interval_to_milliseconds(interval)
+        start = series[-1].open_time_ms - (window - 1) * step
+        opens = [item.open_time_ms for item in series if item.open_time_ms >= start]
+        missing: list[int] = []
+        for earlier, later in pairwise(opens):
+            if later - earlier > step:
+                missing.extend(range(earlier + step, later, step))
+        return missing
 
     def get(self, market: Market, symbol: str, interval: str) -> list[Candle]:
         return list(self._series.get((market, symbol.upper(), interval), []))

@@ -155,7 +155,33 @@ def _color(d: SignalDecision) -> int:
     return 0x2ECC71 if d.direction in {Direction.LONG, Direction.RISK_UP} else 0xE74C3C
 
 
-def _recommendation_summary(d: SignalDecision) -> str:
+_TRACKING_INTERRUPTED = "tracking_interrupted"
+
+
+def _tracking_interrupted(d: SignalDecision) -> bool:
+    return d.metadata.get("exit_class") == _TRACKING_INTERRUPTED
+
+
+def _confirmed_state_summary(d: SignalDecision) -> str:
+    """State-style wording for a CONFIRMED directional decision (``alert_wording_v2``).
+
+    It reports what the closed bar confirmed; it makes no forecast and does not tell
+    the reader to open a position.
+    """
+
+    trigger = {
+        SignalFamily.BREAKDOWN_SHORT: f"{d.timeframe} 저점 이탈",
+        SignalFamily.BREAKOUT_LONG: f"{d.timeframe} 고점 돌파",
+    }.get(d.family, f"{d.timeframe} 조건 충족")
+    if d.direction is Direction.LONG:
+        who = "매수는" if d.market is Market.SPOT else "롱은"
+        tail = f"신규 {who} 위치 확인 필요"
+        return f"🔺 상승 추세 확인 ({trigger}) · {tail}"
+    tail = "신규 매수 보류" if d.market is Market.SPOT else "신규 숏은 위치 확인 필요"
+    return f"🔻 하락 추세 확인 ({trigger}) · {tail}"
+
+
+def _recommendation_summary(d: SignalDecision, *, wording_v2: bool = False) -> str:
     """Translate the existing decision state into a direct user-facing recommendation.
 
     This is presentation-only. It does not create a new score, probability,
@@ -181,6 +207,9 @@ def _recommendation_summary(d: SignalDecision) -> str:
         side = "LONG 매수" if d.family is SignalFamily.RANGE_LONG else "SHORT 매도"
         return f"🔎 박스권 {side} 후보 · 검증 전 관찰 신호"
     if d.family is SignalFamily.TECHNICAL_EXIT:
+        if _tracking_interrupted(d):
+            side = "매수" if d.direction is Direction.LONG else "숏"
+            return f"⚪ 모의 {side} 포지션 추적 중단 (데이터 공백) · 청산 아님"
         if d.market is Market.SPOT:
             return "🟠 추천: 보유 포지션 정리 검토 · 신규 매수 보류"
         side = "LONG" if d.direction is Direction.LONG else "SHORT"
@@ -197,6 +226,8 @@ def _recommendation_summary(d: SignalDecision) -> str:
     if d.stage is not SignalStage.CONFIRMED:
         bias = "상승 조건 형성 중" if d.direction is Direction.LONG else "하락 조건 형성 중"
         return f"⏸️ 추천: 진입 보류 · {bias}"
+    if wording_v2 and d.direction in {Direction.LONG, Direction.SHORT}:
+        return _confirmed_state_summary(d)
     if d.direction is Direction.LONG:
         action = "매수 후보" if d.market is Market.SPOT else "LONG 후보"
         return f"🟢 추천: 상승 예상 · {action}"
@@ -629,10 +660,16 @@ def _readable_reason(reason: str) -> str:
     return _truncate_text(text, 160)
 
 
-def _simple_payload(d: SignalDecision, username: str) -> dict[str, object]:
+def _simple_payload(
+    d: SignalDecision,
+    username: str,
+    *,
+    wording_v2: bool = False,
+    position_line: str | None = None,
+) -> dict[str, object]:
     watch = d.metadata.get("market_watch") is True
     paper = d.metadata.get("paper_only") is True
-    recommendation = _recommendation_summary(d)
+    recommendation = _recommendation_summary(d, wording_v2=wording_v2)
     fields: list[dict[str, object]] = []
     if watch:
         names = {
@@ -731,6 +768,11 @@ def _simple_payload(d: SignalDecision, username: str) -> dict[str, object]:
             if paper:
                 side = "매수" if d.direction is Direction.LONG else "숏"
                 recommendation = f"모의 {side} 포지션 종료"
+                if _tracking_interrupted(d):
+                    recommendation = f"모의 {side} 포지션 추적 중단 (데이터 공백)"
+                    description = "모의 포지션 알림 · 실제 거래소 주문 없음 · 청산이 아닌 추적 중단"
+                if d.metadata.get("late_observation") is True:
+                    description += " · 데이터 복구 후 늦게 확인됨"
         elif d.family in {SignalFamily.PUMP_RISK, SignalFamily.CRASH_RISK}:
             reasons = "짧은 구간의 가격 변동이 급격합니다. 추격 진입에 주의하세요."
         elif d.stage is SignalStage.INVALIDATED:
@@ -763,14 +805,31 @@ def _simple_payload(d: SignalDecision, username: str) -> dict[str, object]:
                 "data_gap": "봉 누락으로 추적 중단",
                 "end_of_data": "분석 자료 구간 종료",
             }
+            exit_label = exit_labels.get(str(d.metadata.get("exit_reason")), "종료 조건 관찰")
+            if _tracking_interrupted(d):
+                exit_label += " · 정상 청산과 따로 집계"
             fields[2] = {
                 "name": "모의 종료 이유",
-                "value": exit_labels.get(str(d.metadata.get("exit_reason")), "종료 조건 관찰"),
+                "value": exit_label,
                 "inline": False,
             }
             fill = d.metadata.get("fill_time_ms")
             if isinstance(fill, int):
                 fields.append({"name": "모의 체결 시각", "value": _times(fill), "inline": False})
+            observed_wall = d.metadata.get("observed_wall_time_ms")
+            if d.metadata.get("late_observation") is True and isinstance(observed_wall, int):
+                fields.append(
+                    {
+                        "name": "확인 시각 (복구 후)",
+                        "value": (
+                            f"{_times(observed_wall)}\n"
+                            "체결 시각은 위 봉 기준이며 지금 체결된 것이 아닙니다."
+                        ),
+                        "inline": False,
+                    }
+                )
+    if position_line and not watch and not paper:
+        fields.insert(0, {"name": "현재 위치", "value": position_line, "inline": False})
     basis = (
         "실시간 위험 관찰"
         if d.family in {SignalFamily.PUMP_RISK, SignalFamily.CRASH_RISK}
@@ -799,7 +858,12 @@ def _simple_payload(d: SignalDecision, username: str) -> dict[str, object]:
 
 
 def build_discord_payload(
-    d: SignalDecision, username: str, *, message_style: Literal["simple", "detailed"] = "detailed",
+    d: SignalDecision,
+    username: str,
+    *,
+    message_style: Literal["simple", "detailed"] = "detailed",
+    wording_v2: bool = False,
+    position_line: str | None = None,
 ) -> dict[str, object]:
     d = SignalDecision.model_validate(d.model_dump(mode="python", warnings="none"))
     if message_style not in {"simple", "detailed"}:
@@ -807,7 +871,7 @@ def build_discord_payload(
     if d.metadata.get("informational_only") is True and d.stage is SignalStage.CONFIRMED:
         raise ValueError("informational-only decisions cannot be CONFIRMED")
     if message_style == "simple":
-        return _simple_payload(d, username)
+        return _simple_payload(d, username, wording_v2=wording_v2, position_line=position_line)
     reasons = "\n".join(f"• {reason}" for reason in d.reasons[:10]) or "• No details"
     invalidation = (
         str(d.invalidation)
@@ -834,12 +898,14 @@ def build_discord_payload(
     informational_only = d.metadata.get("informational_only") is True
     if informational_only and d.stage is SignalStage.CONFIRMED:
         raise ValueError("informational-only decisions cannot be CONFIRMED")
-    recommendation = _recommendation_summary(d)
+    recommendation = _recommendation_summary(d, wording_v2=wording_v2)
     status_line = (
         "PAPER 포지션 종료 추적"
         if paper_exit
         else f"상태: {d.stage.value.upper()} · 근거 강도: {d.score}/100"
     )
+    if position_line and not paper_exit and d.metadata.get("market_watch") is not True:
+        fields.insert(0, {"name": "Position", "value": position_line[:1024], "inline": False})
     if d.metadata.get("market_watch") is True:
         status_line = "폐봉 조건 관찰 · 수익률·정확도 검증 전"
     if paper_exit:
@@ -853,6 +919,9 @@ def build_discord_payload(
                 f"Paper fill: {_times(fill_time_ms)}\n"
                 f"Alert observation (closed candle): {_times(observed_at_ms)}"
             )
+        observed_wall = d.metadata.get("observed_wall_time_ms")
+        if d.metadata.get("late_observation") is True and isinstance(observed_wall, int):
+            timing += f"\nObserved after gap recovery (not a live fill): {_times(observed_wall)}"
         regime_timing = "unavailable"
         if isinstance(regime_observed_at_ms, int) and isinstance(regime_context_source, str):
             regime_timing = f"{regime_context_source}: {_times(regime_observed_at_ms)}"
