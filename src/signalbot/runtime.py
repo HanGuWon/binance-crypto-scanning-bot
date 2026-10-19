@@ -33,6 +33,8 @@ from signalbot.domain.models import (
 from signalbot.exchange.binance.schemas import PayloadError, parse_payload
 from signalbot.indicators.core import FeatureEngine
 from signalbot.persistence.repository import SqlRepository
+from signalbot.prospective.pilot_guard import ShadowPilotGuard
+from signalbot.prospective.public_structure_flow_v2 import PublicStructureFlowShadowObserver
 from signalbot.regime.market import MarketRegimeEngine
 from signalbot.signals.market_watch import MarketWatchEngine
 from signalbot.signals.positions import (
@@ -86,6 +88,32 @@ class MarketRuntime:
         )
         self.anomaly = AnomalyDetector(settings.signals)
         self.market_watch = MarketWatchEngine(settings.alerts.market_watch)
+        self.public_structure_flow_shadow: PublicStructureFlowShadowObserver | None = None
+        self._public_shadow_repository: SqlRepository | None = None
+        shadow_url = (
+            settings.alerts.market_watch.public_structure_flow_database_url or repository.url
+        )
+        self._public_shadow_guard = ShadowPilotGuard(settings.alerts.market_watch, shadow_url)
+        self._public_shadow_stop_logged = False
+        if settings.alerts.market_watch.public_structure_flow_shadow_enabled:
+            try:
+                shadow_repository = repository
+                if settings.alerts.market_watch.public_structure_flow_database_url:
+                    self._public_shadow_repository = SqlRepository(shadow_url)
+                    self._public_shadow_repository.initialize()
+                    shadow_repository = self._public_shadow_repository
+                self.public_structure_flow_shadow = PublicStructureFlowShadowObserver(
+                    settings,
+                    shadow_repository,
+                    registered_at_ms=clock.now_ms(),
+                )
+            except Exception as exc:
+                self.close_public_structure_flow_shadow()
+                LOGGER.error(
+                    "public structure-flow shadow startup failed; incumbent continues",
+                    extra={"market": market.value},
+                    exc_info=exc,
+                )
         self.tradable_symbols: frozenset[str] = frozenset()
         self.surveillance_symbols: frozenset[str] = frozenset()
         self.context_symbols: frozenset[str] = frozenset()
@@ -94,6 +122,13 @@ class MarketRuntime:
         self._feature_history: dict[tuple[str, str], deque[FeatureSnapshot]] = {}
         self.decision_count = 0
         self.parse_error_count = 0
+
+    def close_public_structure_flow_shadow(self) -> None:
+        """Release only the owned research engine; the application owns production storage."""
+        if self._public_shadow_repository is not None:
+            self._public_shadow_repository.close()
+            self._public_shadow_repository = None
+        self.public_structure_flow_shadow = None
 
     def set_priority_gainers(
         self, instruments: tuple[Instrument, ...], retained: tuple[Instrument, ...] = (),
@@ -135,6 +170,7 @@ class MarketRuntime:
     ) -> None:
         """Apply one bounded universe rotation and prune all runtime-owned state."""
 
+        previous_market_data = self.tradable_symbols | self.context_symbols | self.watch_symbols
         tradable = frozenset(symbol.upper() for symbol in tradable_symbols)
         surveillance = frozenset(symbol.upper() for symbol in surveillance_symbols)
         context = frozenset(symbol.upper() for symbol in context_symbols)
@@ -153,6 +189,22 @@ class MarketRuntime:
         self.context_symbols = context
         self.watch_symbols = watch
         retained_market_data = tradable | context | watch
+        observer = self.public_structure_flow_shadow
+        if observer is not None:
+            removed_shadow_symbols = previous_market_data - retained_market_data
+            if removed_shadow_symbols:
+                try:
+                    observer.finalize_removed_symbols(
+                        removed_shadow_symbols,
+                        now_ms=self.clock.now_ms(),
+                    )
+                except Exception as exc:
+                    LOGGER.error(
+                        "public structure-flow shadow rotation finalization failed; "
+                        "incumbent continues",
+                        extra={"market": self.market.value},
+                        exc_info=exc,
+                    )
         self.candles.retain_symbols(self.market, retained_market_data)
         self.order_flow.retain_symbols(self.market, tradable)
         self.books.retain_symbols(self.market, tradable)
@@ -291,6 +343,19 @@ class MarketRuntime:
     async def _handle_candle(self, candle: Candle) -> None:
         if not candle.is_closed:
             return
+        observer = self.public_structure_flow_shadow
+        if observer is not None:
+            try:
+                if candle.interval == "1m":
+                    observer.accept_minute(candle, received_at_ms=self.clock.now_ms())
+                observer.expire_due(self.clock.now_ms())
+            except Exception as exc:
+                LOGGER.error(
+                    "public structure-flow shadow late-evidence handling failed; "
+                    "incumbent continues",
+                    extra={"market": self.market.value, "symbol": candle.symbol},
+                    exc_info=exc,
+                )
         latest = self.candles.latest(candle.market, candle.symbol, candle.interval)
         if latest is not None and candle.open_time_ms < latest.open_time_ms:
             return
@@ -310,6 +375,11 @@ class MarketRuntime:
                 await self._publish_paper_transition(gap_exits, checkpoint)
             recovered = await self._recover_gap(gap)
         if not recovered:
+            if candle.interval == self.settings.binance.primary_interval:
+                self._record_public_structure_flow_missing(
+                    candle,
+                    reason="unrecovered_primary_candle_gap",
+                )
             LOGGER.warning(
                 "holding signal evaluation after unrecovered candle gap",
                 extra={"market": candle.market.value, "symbol": candle.symbol},
@@ -321,10 +391,15 @@ class MarketRuntime:
         if self.settings.runtime.persist_candles:
             self.repository.save_candle(candle)
         feature = self._update_derived_for_candle(candle)
-        if feature is None:
-            return
         if candle.interval != self.settings.binance.primary_interval:
             return
+        if feature is None:
+            self._record_public_structure_flow_missing(
+                candle,
+                reason="primary_feature_unavailable",
+            )
+            return
+        self._register_public_structure_flow_opportunity(candle, feature)
         new_decisions: list[SignalDecision] = []
         prior_candles = self.candles.get(candle.market, candle.symbol, candle.interval)
         pressure = None
@@ -413,10 +488,51 @@ class MarketRuntime:
             if self.settings.runtime.persist_candles:
                 self.repository.save_candle(candle)
             self._update_derived_for_candle(candle)
+            observer = self.public_structure_flow_shadow
+            if observer is not None and candle.interval == "1m":
+                try:
+                    observer.accept_minute(candle, received_at_ms=self.clock.now_ms())
+                except Exception as exc:
+                    LOGGER.error(
+                        "public structure-flow shadow recovered-minute handling failed; "
+                        "incumbent continues",
+                        extra={"market": self.market.value, "symbol": candle.symbol},
+                        exc_info=exc,
+                    )
         LOGGER.info(
             "recovered missing candles", extra={"market": gap.market.value, "symbol": gap.symbol}
         )
         return inserted == len(expected_opens)
+
+    def maintain_public_structure_flow_shadow(self) -> None:
+        """Run bounded shadow expiry/retry work on an existing scanner maintenance clock."""
+
+        observer = self.public_structure_flow_shadow
+        if observer is None:
+            return
+        self._public_shadow_admission_allowed()
+        try:
+            observer.expire_due(self.clock.now_ms())
+        except Exception as exc:
+            LOGGER.error(
+                "public structure-flow shadow maintenance failed; incumbent continues",
+                extra={"market": self.market.value},
+                exc_info=exc,
+            )
+
+    def _public_shadow_admission_allowed(self) -> bool:
+        try:
+            allowed = self._public_shadow_guard.admission_allowed(self.clock.now_ms())
+        except OSError:
+            self._public_shadow_guard.reason = "storage_guard_io_failure"
+            allowed = False
+        if not allowed and not self._public_shadow_stop_logged:
+            self._public_shadow_stop_logged = True
+            LOGGER.warning(
+                "shadow admission stopped; pending drains and incumbent continues",
+                extra={"reason": self._public_shadow_guard.reason},
+            )
+        return allowed
 
     def _update_derived_for_candle(self, candle: Candle) -> FeatureSnapshot | None:
         self.regime.update_candle(candle)
@@ -495,6 +611,75 @@ class MarketRuntime:
             if event_time_ms - snapshot.event_time_ms <= maximum_age_ms:
                 contexts[interval] = snapshot
         return contexts
+
+    def _register_public_structure_flow_opportunity(
+        self, candle: Candle, feature: FeatureSnapshot
+    ) -> None:
+        """Freeze one event-time shadow denominator without changing production decisions."""
+
+        observer = self.public_structure_flow_shadow
+        watch_settings = self.settings.alerts.market_watch
+        if observer is None or self.market is not watch_settings.market:
+            return
+        if not self._public_shadow_admission_allowed():
+            return
+        event_time_ms = candle.close_time_ms
+        watch_snapshot = self.market_watch.snapshot_with_time_for(candle.symbol, event_time_ms)
+        if watch_snapshot is None:
+            return
+        watch_observed_ms, watch_context = watch_snapshot
+        primary_interval = self.settings.binance.primary_interval
+        primary_rows = self.candles.get(self.market, candle.symbol, primary_interval)
+        minute_rows = self.candles.get(self.market, candle.symbol, "1m")
+        try:
+            observer.register_opportunity(
+                candle=candle,
+                feature=feature,
+                five_minute_candles=primary_rows,
+                minute_candles=minute_rows,
+                contexts=self._context_features(candle.symbol, event_time_ms),
+                watch_context=watch_context,
+                watch_observed_ms=watch_observed_ms,
+                received_at_ms=self.clock.now_ms(),
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "public structure-flow shadow opportunity failed; incumbent continues",
+                extra={"market": self.market.value, "symbol": candle.symbol},
+                exc_info=exc,
+            )
+
+    def _record_public_structure_flow_missing(self, candle: Candle, *, reason: str) -> None:
+        """Record an unrecoverable shadow denominator without altering production control flow."""
+
+        observer = self.public_structure_flow_shadow
+        watch_settings = self.settings.alerts.market_watch
+        if observer is None or self.market is not watch_settings.market:
+            return
+        if not self._public_shadow_admission_allowed():
+            return
+        watch_snapshot = self.market_watch.snapshot_with_time_for(
+            candle.symbol,
+            candle.close_time_ms,
+        )
+        if watch_snapshot is None:
+            return
+        watch_observed_ms, watch_context = watch_snapshot
+        try:
+            observer.register_missing_opportunity(
+                candle=candle,
+                watch_context=watch_context,
+                watch_observed_ms=watch_observed_ms,
+                received_at_ms=self.clock.now_ms(),
+                reason=reason,
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "public structure-flow shadow missing-denominator write failed; "
+                "incumbent continues",
+                extra={"market": self.market.value, "symbol": candle.symbol},
+                exc_info=exc,
+            )
 
     async def _process(
         self, evaluation: RuleEvaluation, *, delivery_allowed: bool = True,

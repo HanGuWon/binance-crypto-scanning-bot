@@ -211,6 +211,38 @@ class MarketWatchEngine:
             if item.expires_at_ms is not None and now_ms < item.expires_at_ms
         )
 
+    def snapshot_for(self, symbol: str, event_time_ms: int) -> PriorityGainer | None:
+        """Return the latest event-time watch membership without consulting future snapshots."""
+
+        result = self.snapshot_with_time_for(symbol, event_time_ms)
+        return None if result is None else result[1]
+
+    def snapshot_with_time_for(
+        self, symbol: str, event_time_ms: int
+    ) -> tuple[int, PriorityGainer] | None:
+        """Return source snapshot time plus membership available by event time."""
+
+        normalized = symbol.upper()
+        matched = next(
+            (
+                (observed_ms, items)
+                for observed_ms, items in reversed(self._snapshots)
+                if observed_ms <= event_time_ms
+            ),
+            None,
+        )
+        if matched is None:
+            return None
+        observed_ms, snapshot = matched
+        item = snapshot.get(normalized)
+        if item is None:
+            return None
+        if item.rank is None and (
+            item.expires_at_ms is None or event_time_ms >= item.expires_at_ms
+        ):
+            return None
+        return observed_ms, item
+
     def evaluate(
         self, candle: Candle, feature: FeatureSnapshot, history: list[Candle] | None = None,
         *, now_ms: int | None = None,
@@ -228,12 +260,7 @@ class MarketWatchEngine:
             return ()
         if candle.symbol not in (self._priority.keys() | self._retained.keys()):
             return ()
-        snapshot = next(
-            (items for observed_ms, items in reversed(self._snapshots)
-             if observed_ms <= candle.close_time_ms),
-            {},
-        )
-        gainer = snapshot.get(candle.symbol)
+        gainer = self.snapshot_for(candle.symbol, candle.close_time_ms)
         if gainer is None:
             return ()
         effective_now = max(candle.close_time_ms, now_ms or 0)

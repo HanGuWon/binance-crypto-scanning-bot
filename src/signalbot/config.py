@@ -9,6 +9,10 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from signalbot.domain.enums import Market
+from signalbot.prospective.public_structure_flow_contract_v2 import (
+    PUBLIC_STRUCTURE_FLOW_CONTRACT_SHA256,
+    PUBLIC_STRUCTURE_FLOW_VERSION,
+)
 
 
 class StrictModel(BaseModel):
@@ -173,6 +177,17 @@ class MarketWatchSettings(StrictModel):
     max_retained_symbols: int = Field(default=10, ge=1, le=20)
     context_alerts_enabled: bool = False
     minute_pressure_enabled: bool = False
+    public_structure_flow_shadow_enabled: bool = False
+    public_structure_flow_shadow_version: Literal["public-structure-flow-v2"] = (
+        PUBLIC_STRUCTURE_FLOW_VERSION
+    )
+    public_structure_flow_campaign_id: str | None = None
+    public_structure_flow_activation_ms: int | None = Field(default=None, ge=0)
+    public_structure_flow_contract_sha256: str | None = None
+    public_structure_flow_database_url: str | None = None
+    public_structure_flow_stop_ms: int | None = Field(default=None, ge=0)
+    public_structure_flow_min_free_disk_bytes: int = Field(default=0, ge=0)
+    public_structure_flow_max_database_bytes: int = Field(default=0, ge=0)
     range_round_trip_cost_bps: float = Field(default=26, gt=0, le=1000)
 
     @model_validator(mode="after")
@@ -278,6 +293,38 @@ class Settings(StrictModel):
                 raise ValueError("market_watch.market must be enabled in binance.markets")
             if self.alerts.market_watch.top_n > self.binance.top_n:
                 raise ValueError("market_watch.top_n must be <= binance.top_n")
+        if self.alerts.market_watch.public_structure_flow_shadow_enabled:
+            watch = self.alerts.market_watch
+            if (
+                watch.public_structure_flow_stop_ms is not None
+                and watch.public_structure_flow_activation_ms is not None
+                and watch.public_structure_flow_stop_ms <= watch.public_structure_flow_activation_ms
+            ):
+                raise ValueError("public structure-flow stop must be after activation")
+            if not watch.enabled:
+                raise ValueError("public structure-flow shadow requires market_watch.enabled")
+            if watch.market is not Market.FUTURES:
+                raise ValueError("public structure-flow shadow requires futures market_watch")
+            if self.binance.primary_interval != "5m":
+                raise ValueError("public structure-flow shadow requires primary_interval=5m")
+            required_intervals = {"1m", "5m", "15m", "1h"}
+            missing = sorted(required_intervals.difference(self.binance.intervals))
+            if missing:
+                raise ValueError(
+                    "public structure-flow shadow requires subscribed intervals: "
+                    + ", ".join(missing)
+                )
+            if not watch.public_structure_flow_campaign_id:
+                raise ValueError("public structure-flow shadow requires a campaign id")
+            if watch.public_structure_flow_activation_ms is None:
+                raise ValueError("public structure-flow shadow requires an activation time")
+            if (
+                watch.public_structure_flow_contract_sha256
+                != PUBLIC_STRUCTURE_FLOW_CONTRACT_SHA256
+            ):
+                raise ValueError(
+                    "public structure-flow shadow requires the frozen contract sha256"
+                )
         return self
 
     @field_validator("log_level")

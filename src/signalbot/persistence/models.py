@@ -52,6 +52,52 @@ class MarketWatchEpisodeRow(Base):
     membership_end_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
+class PublicStructureFlowCampaignRow(Base):
+    __tablename__ = "public_structure_flow_campaigns"
+    campaign_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    candidate_version: Mapped[str] = mapped_column(String(64), index=True)
+    activation_ms: Mapped[int] = mapped_column(BigInteger)
+    contract_sha256: Mapped[str] = mapped_column(String(64))
+    manifest_json: Mapped[str] = mapped_column(Text)
+    manifest_sha256: Mapped[str] = mapped_column(String(64))
+    registered_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
+class PublicStructureFlowShadowRow(Base):
+    __tablename__ = "public_structure_flow_shadow"
+    observation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(String(128), index=True)
+    market: Mapped[str] = mapped_column(String(16), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    timeframe: Mapped[str] = mapped_column(String(16))
+    event_time_ms: Mapped[int] = mapped_column(BigInteger, index=True)
+    candidate_version: Mapped[str] = mapped_column(String(64), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_sha256: Mapped[str] = mapped_column(String(64))
+    recorded_at_ms: Mapped[int] = mapped_column(BigInteger)
+
+
+class PublicStructureFlowOpportunityRow(Base):
+    __tablename__ = "public_structure_flow_opportunities"
+    opportunity_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(String(128), index=True)
+    market: Mapped[str] = mapped_column(String(16), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    event_time_ms: Mapped[int] = mapped_column(BigInteger, index=True)
+    deadline_ms: Mapped[int] = mapped_column(BigInteger, index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    evidence_json: Mapped[str] = mapped_column(Text)
+    evidence_sha256: Mapped[str] = mapped_column(String(64))
+    observation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at_ms: Mapped[int] = mapped_column(BigInteger)
+    updated_at_ms: Mapped[int] = mapped_column(BigInteger)
+    ready_at_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
+    late_event_count: Mapped[int] = mapped_column(Integer, default=0)
+    conflict_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class SignalRow(Base):
     __tablename__ = "signals"
     event_id: Mapped[str] = mapped_column(String(32), primary_key=True)

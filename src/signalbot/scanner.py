@@ -82,7 +82,10 @@ class MarketScanner:
         )
 
     async def close(self) -> None:
-        await self.rest.close()
+        try:
+            await self.rest.close()
+        finally:
+            self.runtime.close_public_structure_flow_shadow()
 
     async def prepare(self) -> Universe:
         universe = await self.selector.select(self.rest)
@@ -372,6 +375,7 @@ class MarketScanner:
                 for task in completed_websockets:
                     self._raise_unexpected_task_exit(task, "Binance WebSocket consumer")
                 if refresh_task in done:
+                    self.runtime.maintain_public_structure_flow_shadow()
                     replacement = await self._poll_universe_candidate()
                     if replacement is not None:
                         await self._cancel_tasks(websocket_tasks)
